@@ -682,7 +682,7 @@ function DashboardTab({ db, cycle }: any) {
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
 function RatesTab({ db, api, reload, showToast }: any) {
-  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: null, status: 'active' };
+  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
@@ -711,7 +711,7 @@ function RatesTab({ db, api, reload, showToast }: any) {
 // Tab: เงื่อนไขตัวหาร + กลุ่มผู้รับ
 // ===========================================================================
 function RulesTab({ db, api, reload, showToast }: any) {
-  const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: new Date().toISOString().slice(0, 10), effectiveTo: null };
+  const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null };
   const [form, setForm] = useState<any>(blank);
   const [fSender, setFSender] = useState('');
   const [fGroup, setFGroup] = useState('');
