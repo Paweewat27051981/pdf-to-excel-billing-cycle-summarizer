@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Firebase service account (ความลับ ห้าม commit)
+serviceAccountKey.json
+*serviceAccount*.json
+
+# external agent skills (ไม่เกี่ยวกับโปรเจกต์)
+.agent/

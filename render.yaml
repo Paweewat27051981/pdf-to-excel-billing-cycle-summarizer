@@ -1,0 +1,22 @@
+# Render Blueprint — deploy แอป (Express + Vite static + Firebase)
+# วิธีใช้: push repo ขึ้น GitHub แล้ว Render > New > Blueprint จะอ่านไฟล์นี้
+services:
+  - type: web
+    name: trip-fuel-summarizer
+    runtime: node
+    plan: free
+    region: singapore
+    # --include=dev บังคับลง devDeps (vite/esbuild) แม้ NODE_ENV=production
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/config
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: FIREBASE_DB_URL
+        value: https://excel-billing-cycle-summarizer-default-rtdb.asia-southeast1.firebasedatabase.app
+      # ตั้งค่าใน Dashboard (ความลับ) — sync:false = ไม่เก็บใน repo
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false

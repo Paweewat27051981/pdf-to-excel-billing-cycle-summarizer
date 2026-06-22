@@ -1,0 +1,6 @@
+{
+  "name": "PDF to Excel Billing Cycle Summarizer",
+  "description": "A full-stack system that extracts billing transactions from PDFs via Gemini, allows users to verify and modify entries, calculates sums in a structured server-side database to prevent formula errors, and exports cycle summaries to custom-formatted Excel sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
