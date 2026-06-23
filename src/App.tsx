@@ -601,9 +601,9 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked }: any) {
       </div>
 
       {/* warnings */}
-      {prev.warnings.length > 0 && (
+      {(prev.warnings || []).length > 0 && (
         <div className="bg-[#FCE4D6] border border-amber-200 rounded-xl p-3 text-xs text-[#9C0006] flex flex-col gap-1">
-          {prev.warnings.map((w, i) => <div key={i} className="flex gap-1.5"><AlertTriangle className="w-4 h-4 shrink-0" />{w}</div>)}
+          {(prev.warnings || []).map((w: string, i: number) => <div key={i} className="flex gap-1.5"><AlertTriangle className="w-4 h-4 shrink-0" />{w}</div>)}
         </div>
       )}
 
@@ -693,7 +693,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked }: any) {
             <button onClick={() => updReceipt(ri, { items: [...r.items, { productName: '', quantity: 0 }] })} className="text-[#1B365D] text-xs font-semibold mt-1 flex items-center gap-1"><Plus className="w-3 h-3" />เพิ่มสินค้า</button>
             {pr?.hasAdjustment && (
               <div className="mt-2 text-[11px] text-[#C65911] font-semibold flex flex-wrap gap-2">
-                {pr.adjustments.map((a, i) => <span key={i} className="bg-white border border-[#C65911]/40 rounded-full px-2 py-0.5">🟧÷{a.divisor} {a.productName}: {a.note}</span>)}
+                {(pr.adjustments || []).map((a: any, i: number) => <span key={i} className="bg-white border border-[#C65911]/40 rounded-full px-2 py-0.5">🟧÷{a.divisor} {a.productName}: {a.note}</span>)}
               </div>
             )}
             {pr?.requiresManualBox && (
@@ -747,11 +747,11 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
           <tbody>
             {trip.receipts.map((r) => (
               <tr key={r.id} className={r.hasAdjustment ? 'bg-[#FFF2CC]' : ''}>
-                <td className="py-1">{r.hasAdjustment && <span className="text-[#C65911] font-bold">🟧÷{r.adjustments[0].divisor} </span>}{r.receiptNo}</td>
+                <td className="py-1">{r.hasAdjustment && r.adjustments?.[0] && <span className="text-[#C65911] font-bold">🟧÷{r.adjustments[0].divisor} </span>}{r.receiptNo}</td>
                 <td>{r.receiverName}</td>
                 <td>{r.districtRaw} {r.provinceRaw}</td>
                 <td className="text-center">{r.totalQty}</td>
-                <td className="text-center font-bold text-[#C00000]" title={r.adjustments.map((a) => a.note).join(' | ')}>{r.billingQty}</td>
+                <td className="text-center font-bold text-[#C00000]" title={(r.adjustments || []).map((a) => a.note).join(' | ')}>{r.billingQty}</td>
                 <td className="text-right">{trip.rateType === 'piece' ? money(r.receiptAmount) : (r.flatPrice != null ? money(r.flatPrice) : '-')}</td>
               </tr>
             ))}

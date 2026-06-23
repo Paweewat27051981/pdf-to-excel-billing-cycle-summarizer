@@ -166,6 +166,20 @@ function withBranch<T extends object>(list: T[] | undefined, fallback: T[]): T[]
   return (list ?? fallback).map((x: any) => (x.branchId ? x : { ...x, branchId: DEFAULT_BRANCH_ID }));
 }
 
+// Firebase ตัด array ว่างทิ้ง -> อ่านกลับมาเป็น undefined -> .map พัง
+// คืนค่า array ที่ขาดให้ trip/receipt ทุกตัว
+function normalizeTrips(list: any[]): any[] {
+  return (list ?? []).map((t) => ({
+    ...t,
+    warnings: t.warnings ?? [],
+    receipts: (t.receipts ?? []).map((r: any) => ({
+      ...r,
+      items: r.items ?? [],
+      adjustments: r.adjustments ?? [],
+    })),
+  }));
+}
+
 // migrate: เติม key ที่ขาดให้ db เก่า
 export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   const seed = seedState();
@@ -181,7 +195,7 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     conversionRules: state.conversionRules ?? seed.conversionRules,
     manualBoxSenders: state.manualBoxSenders ?? seed.manualBoxSenders,
     moneyCategories: state.moneyCategories ?? seed.moneyCategories,
-    tripDocuments: withBranch(state.tripDocuments, []),
+    tripDocuments: normalizeTrips(withBranch(state.tripDocuments, [])),
     fuelEntries: withBranch(state.fuelEntries, []),
     deductions: withBranch(migrateDeductions(state.deductions as any[]), []),
   };
