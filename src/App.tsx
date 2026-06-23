@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
+  Building2, LogOut,
 } from 'lucide-react';
 import {
-  DatabaseState, BillingCycle, Vehicle, RateMaster, ReceiverGroup, ReceiverGroupAlias,
+  DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
 import { exportCycleToExcel } from './excel-export';
@@ -24,11 +25,13 @@ const GEMINI_MODELS = [
 
 const EMPTY: DatabaseState = {
   settings: { geminiModel: 'gemini-3.5-flash' },
+  branches: [],
   cycles: [], vehicles: [], rateMasters: [], rateMasterHistory: [], receiverGroups: [],
   receiverGroupAliases: [], conversionRules: [], manualBoxSenders: [], moneyCategories: [], tripDocuments: [], fuelEntries: [], deductions: [],
 };
 
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard';
+type BranchAuth = { id: string; name: string; isHQ: boolean };
+type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -40,13 +43,32 @@ export default function App() {
   const [selectedCycleId, setSelectedCycleId] = useState('');
   const [tab, setTab] = useState<Tab>('calc');
   const [aiEnabled, setAiEnabled] = useState(true);
+  const [auth, setAuth] = useState<BranchAuth | null>(() => {
+    try { return JSON.parse(localStorage.getItem('branchAuth') || 'null'); } catch { return null; }
+  });
+  // สาขาที่กำลังทำงาน: ผู้ใช้สาขา = สาขาตัวเอง; HQ = เลือกได้
+  const [workBranchId, setWorkBranchId] = useState('');
 
   const showToast = (type: Toast['type'], message: string) => notify(type, message);
+
+  const api = async (url: string, method: string, body?: any) => {
+    const res = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'เกิดข้อผิดพลาด');
+    return res.json();
+  };
+
+  // branchId ที่ใช้กรอง/บันทึก
+  const effBranchId = auth?.isHQ ? workBranchId : (auth?.id || '');
 
   const fetchState = async (autoCycle?: string) => {
     setLoading(true);
     try {
-      const res = await fetch('/api/state');
+      const url = effBranchId ? `/api/state?branchId=${encodeURIComponent(effBranchId)}` : '/api/state';
+      const res = await fetch(url);
       const data: DatabaseState = await res.json();
       setDb(data);
       if (autoCycle) setSelectedCycleId(autoCycle);
@@ -60,23 +82,51 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  // โหลด config + branches เสมอ (สำหรับหน้า login)
   useEffect(() => {
-    fetchState();
     fetch('/api/config').then((r) => r.json()).then((c) => setAiEnabled(!!c.aiEnabled)).catch(() => setAiEnabled(false));
   }, []);
 
+  // เมื่อ login แล้ว: ตั้งสาขาเริ่มต้น (HQ = สาขาแรกที่ไม่ใช่ HQ)
+  useEffect(() => {
+    if (!auth) { fetch('/api/state').then((r) => r.json()).then(setDb).finally(() => setLoading(false)); return; }
+    if (auth.isHQ && !workBranchId) return; // รอเลือกสาขา (effect ถัดไปจะ fetch)
+    fetchState();
+  }, [auth, workBranchId]);
+
+  // HQ: ตั้งสาขาทำงานเริ่มต้นหลังโหลด branches
+  useEffect(() => {
+    if (auth?.isHQ && !workBranchId && db.branches.length) {
+      const first = db.branches.find((b) => !b.isHQ && b.status === 'active');
+      if (first) setWorkBranchId(first.id);
+    }
+  }, [auth, db.branches]);
+
+  const doLogin = async (a: BranchAuth) => {
+    localStorage.setItem('branchAuth', JSON.stringify(a));
+    setAuth(a);
+    setWorkBranchId(a.isHQ ? '' : a.id);
+    setLoading(true);
+  };
+  const logout = () => { localStorage.removeItem('branchAuth'); setAuth(null); setWorkBranchId(''); setDb(EMPTY); };
+
+  // ยังไม่ login -> หน้าเลือกสาขา + รหัสผ่าน
+  if (!auth) return <BranchLogin branches={db.branches} api={api} onLogin={doLogin} />;
+
   const cycle = db.cycles.find((c) => c.id === selectedCycleId) || null;
   const cycleTrips = db.tripDocuments.filter((t) => t.cycleId === selectedCycleId);
+  const activeBranchName = db.branches.find((b) => b.id === effBranchId)?.name || (auth.isHQ ? '— เลือกสาขา —' : auth.name);
 
-  const api = async (url: string, method: string, body?: any) => {
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'เกิดข้อผิดพลาด');
-    return res.json();
-  };
+  const tabs: [Tab, string, any][] = [
+    ['calc', 'คำนวณค่าเที่ยว', Calculator],
+    ['fuel', 'ค่าน้ำมัน & รายการหัก', Fuel],
+    ['dashboard', 'Dashboard', Database],
+    ['rates', 'Master ราคาขนส่ง', Tag],
+    ['rules', 'เงื่อนไขตัวหาร', Filter],
+    ['vehicles', 'รถ & คนขับ', Truck],
+  ];
+  if (auth.isHQ) tabs.push(['branches', 'จัดการสาขา', Building2]);
 
   return (
     <div className="min-h-screen bg-natural-bg text-natural-text font-sans flex flex-col">
@@ -86,23 +136,35 @@ export default function App() {
           <div className="w-10 h-10 bg-[#1B365D] text-white rounded-xl flex items-center justify-center"><Truck className="w-5 h-5" /></div>
           <div>
             <h1 className="text-lg font-bold text-[#1B365D]">ระบบค่าเที่ยว + ค่าน้ำมันรถร่วม</h1>
-            <p className="text-xs text-natural-muted">PDF ใบกระจาย → Review → คำนวณรอบ 1-15 / 16-31 → Export Excel</p>
+            <p className="text-xs text-natural-muted">PDF/Excel ใบกระจาย → Review → คำนวณรอบ → Export</p>
           </div>
         </div>
-        <CycleBar cycles={db.cycles} selectedCycleId={selectedCycleId} setSelectedCycleId={setSelectedCycleId}
-          onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} />
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* สาขา */}
+          <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1.5">
+            <Building2 className="w-4 h-4 text-emerald-700" />
+            {auth.isHQ ? (
+              <select aria-label="เลือกสาขา" value={workBranchId} onChange={(e) => setWorkBranchId(e.target.value)}
+                className="bg-transparent text-xs font-bold text-emerald-800 outline-none">
+                {db.branches.filter((b) => !b.isHQ && b.status === 'active').map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="text-xs font-bold text-emerald-800">{activeBranchName}</span>
+            )}
+            {auth.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5">HQ</span>}
+          </div>
+          <CycleBar cycles={db.cycles} selectedCycleId={selectedCycleId} setSelectedCycleId={setSelectedCycleId}
+            onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} />
+          <button onClick={logout} title="ออกจากระบบ"
+            className="text-natural-muted hover:text-red-600 flex items-center gap-1 text-xs font-semibold"><LogOut className="w-4 h-4" /></button>
+        </div>
       </header>
 
       {/* Tabs */}
       <nav className="bg-white border-b border-natural-border px-6 flex gap-1 overflow-x-auto">
-        {([
-          ['calc', 'คำนวณค่าเที่ยว', Calculator],
-          ['fuel', 'ค่าน้ำมัน & รายการหัก', Fuel],
-          ['dashboard', 'Dashboard', Database],
-          ['rates', 'Master ราคาขนส่ง', Tag],
-          ['rules', 'เงื่อนไขตัวหาร', Filter],
-          ['vehicles', 'รถ & คนขับ', Truck],
-        ] as [Tab, string, any][]).map(([key, label, Icon]) => (
+        {tabs.map(([key, label, Icon]) => (
           <button key={key} onClick={() => setTab(key)}
             className={`px-4 py-3 text-sm font-semibold border-b-2 whitespace-nowrap flex items-center gap-1.5 transition-colors ${
               tab === key ? 'border-[#1B365D] text-[#1B365D]' : 'border-transparent text-natural-muted hover:text-natural-text'}`}>
@@ -119,17 +181,131 @@ export default function App() {
           </div>
         ) : (
           <>
-            {tab === 'calc' && <CalcTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} aiEnabled={aiEnabled}
+            {tab === 'calc' && <CalcTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} aiEnabled={aiEnabled} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
-            {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api}
+            {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} />}
-            {tab === 'rates' && <RatesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'rules' && <RulesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
-            {tab === 'vehicles' && <VehiclesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'branches' && <BranchesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+// ===========================================================================
+// หน้า Login: เลือกสาขา + ใส่รหัสผ่าน
+// ===========================================================================
+function BranchLogin({ branches, api, onLogin }: any) {
+  const active = (branches as Branch[]).filter((b) => b.status === 'active');
+  const [branchId, setBranchId] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { if (!branchId && active.length) setBranchId(active[0].id); }, [branches]);
+
+  const submit = async () => {
+    if (!branchId) return;
+    setBusy(true);
+    try {
+      const r = await api('/api/branch-login', 'POST', { branchId, password });
+      onLogin(r.branch);
+    } catch (e: any) { notify('error', e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="min-h-screen bg-natural-bg flex items-center justify-center p-6">
+      <div className="bg-white rounded-2xl border border-natural-border shadow-lg p-8 w-full max-w-sm flex flex-col items-center">
+        <div className="w-14 h-14 bg-[#1B365D] text-white rounded-2xl flex items-center justify-center mb-3"><Building2 className="w-7 h-7" /></div>
+        <h1 className="text-lg font-bold text-[#1B365D]">ระบบค่าเที่ยว + ค่าน้ำมัน</h1>
+        <p className="text-xs text-natural-muted mb-5">เลือกสาขา และใส่รหัสผ่านเพื่อเข้าใช้งาน</p>
+        <label className="w-full text-xs font-semibold text-natural-dark-muted mb-1">สาขา</label>
+        <select aria-label="สาขา" value={branchId} onChange={(e) => setBranchId(e.target.value)}
+          className="w-full border border-natural-border rounded-lg px-3 py-2 text-sm mb-3">
+          {active.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+        </select>
+        <label className="w-full text-xs font-semibold text-natural-dark-muted mb-1">รหัสผ่าน</label>
+        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && submit()} aria-label="รหัสผ่าน"
+          className="w-full border border-natural-border rounded-lg px-3 py-2 text-sm mb-5" placeholder="••••" />
+        <button onClick={submit} disabled={busy || !branchId}
+          className="w-full bg-[#1B365D] disabled:bg-natural-muted text-white rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2">
+          {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />} เข้าใช้งาน
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// Tab: จัดการสาขา (เฉพาะ HQ)
+// ===========================================================================
+function BranchesTab({ db, api, reload, showToast }: any) {
+  const blank = { name: '', password: '1234' };
+  const [form, setForm] = useState(blank);
+
+  const add = async () => {
+    if (!form.name.trim()) return showToast('warning', 'กรอกชื่อสาขา');
+    try {
+      await api('/api/branches', 'POST', { name: form.name.trim(), password: form.password || '1234', status: 'active' });
+      showToast('success', `เพิ่มสาขา "${form.name}" แล้ว`);
+      setForm(blank);
+      reload();
+    } catch (e: any) { showToast('error', e.message); }
+  };
+  const setPwd = async (b: Branch) => {
+    const np = prompt(`ตั้งรหัสผ่านใหม่ของสาขา "${b.name}"`, '');
+    if (np == null || np === '') return;
+    await api(`/api/branches/${b.id}`, 'PUT', { password: np });
+    showToast('success', 'เปลี่ยนรหัสผ่านแล้ว');
+    reload();
+  };
+  const del = async (b: Branch) => {
+    if (b.isHQ) return showToast('warning', 'ลบสำนักงานใหญ่ไม่ได้');
+    if (!(await confirmDelete(`สาขา "${b.name}"`))) return;
+    await api(`/api/branches/${b.id}`, 'DELETE');
+    reload();
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="bg-white rounded-2xl border border-natural-border p-4">
+        <h3 className="font-bold text-[#1B365D] mb-3 flex items-center gap-2"><Building2 className="w-4 h-4" />เพิ่มสาขาใหม่</h3>
+        <div className="flex flex-wrap gap-2 items-end">
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ชื่อสาขา เช่น ตาก"
+            className="border border-natural-border rounded-lg px-3 py-2 text-sm flex-1 min-w-[160px]" />
+          <input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="รหัสผ่าน"
+            className="border border-natural-border rounded-lg px-3 py-2 text-sm w-32" />
+          <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-1"><Plus className="w-4 h-4" />เพิ่ม</button>
+        </div>
+        <p className="text-[11px] text-natural-muted mt-2">💡 สาขาใหม่เริ่มจากว่าง — เฟส 2 จะมีปุ่มคัดลอกกฎ/ราคาจากสาขาต้นแบบ</p>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-natural-border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-natural-bg text-natural-dark-muted text-xs">
+            <tr><th className="text-left px-4 py-2">สาขา</th><th className="text-left px-4 py-2">รถ</th><th className="text-left px-4 py-2">ราคา</th><th className="px-4 py-2"></th></tr>
+          </thead>
+          <tbody>
+            {(db.branches as Branch[]).map((b) => (
+              <tr key={b.id} className="border-t border-natural-border">
+                <td className="px-4 py-2 font-semibold text-[#1B365D]">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}</td>
+                <td className="px-4 py-2 text-natural-muted">{db.vehicles.filter((v: Vehicle) => v.branchId === b.id).length}</td>
+                <td className="px-4 py-2 text-natural-muted">{db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length}</td>
+                <td className="px-4 py-2 text-right whitespace-nowrap">
+                  <button onClick={() => setPwd(b)} className="text-xs text-[#1B365D] font-semibold mr-3">ตั้งรหัสผ่าน</button>
+                  {!b.isHQ && <button type="button" title="ลบสาขา" onClick={() => del(b)} className="text-red-500"><Trash2 className="w-4 h-4 inline" /></button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -211,7 +387,7 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
 // ===========================================================================
 // Tab: คำนวณค่าเที่ยว (upload + review + list)
 // ===========================================================================
-function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, reload, showToast }: any) {
+function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, showToast }: any) {
   const [extracting, setExtracting] = useState(false);
   const [pending, setPending] = useState<{ extracted: ExtractedTripDocument; fileName: string; preview: TripDocument } | null>(null);
   const [filter, setFilter] = useState<'all' | 'divider' | 'warning'>('all');
@@ -220,9 +396,10 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, reload, showToast }: a
   const excelRef = useRef<HTMLInputElement>(null);
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกหรือเปิดรอบคำนวณก่อน" />;
+  if (!branchId) return <EmptyHint text="กรุณาเลือกสาขาก่อน (มุมเมนูบน) เพื่อเริ่มทำงาน" />;
 
   const preview = async (extracted: ExtractedTripDocument, fileName: string) => {
-    const p: TripDocument = await api('/api/trips/preview', 'POST', { cycleId: cycle.id, extracted, fileName });
+    const p: TripDocument = await api('/api/trips/preview', 'POST', { cycleId: cycle.id, extracted, fileName, branchId });
     setPending({ extracted, fileName, preview: p });
   };
 
@@ -280,7 +457,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, reload, showToast }: a
   const save = async () => {
     if (!pending) return;
     try {
-      await api('/api/trips', 'POST', { cycleId: cycle.id, extracted: pending.extracted, fileName: pending.fileName });
+      await api('/api/trips', 'POST', { cycleId: cycle.id, extracted: pending.extracted, fileName: pending.fileName, branchId });
       showToast('success', 'บันทึกใบกระจายลงฐานข้อมูลแล้ว');
       setPending(null);
       reload();
@@ -588,7 +765,7 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
 // ===========================================================================
 // Tab: ค่าน้ำมัน & รายการหัก
 // ===========================================================================
-function FuelDeductionTab({ db, cycle, api, reload, showToast }: any) {
+function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) {
   const cats: MoneyCategory[] = db.moneyCategories || [];
   const incomeCats = cats.filter((c) => c.kind === 'income' && c.status === 'active');
   const dedCats = cats.filter((c) => c.kind === 'deduction' && c.status === 'active');
@@ -606,13 +783,13 @@ function FuelDeductionTab({ db, cycle, api, reload, showToast }: any) {
 
   const addFuel = async () => {
     if (!fForm.plateNo || !fForm.amount) return showToast('warning', 'กรอกทะเบียนและจำนวนเงิน');
-    await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id });
+    await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id, branchId });
     setFForm({ plateNo: '', refNo: '', date: cycle.startDate, amount: 0 }); reload();
   };
   const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', reset: () => void) => {
     const cat = cats.find((c) => c.id === categoryId) || (kind === 'income' ? incomeCats[0] : dedCats[0]);
     if (!plateNo || !amount || !cat) return showToast('warning', 'กรอกทะเบียน/จำนวนเงิน และเลือกประเภท');
-    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, cycleId: cycle.id });
+    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, cycleId: cycle.id, branchId });
     reset(); reload();
   };
 
@@ -741,12 +918,12 @@ function DashboardTab({ db, cycle }: any) {
 // ===========================================================================
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
-function RatesTab({ db, api, reload, showToast }: any) {
+function RatesTab({ db, api, branchId, reload, showToast }: any) {
   const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
-    await api('/api/rate-masters', 'POST', form); setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
+    await api('/api/rate-masters', 'POST', { ...form, branchId }); setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
   };
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
@@ -922,11 +1099,11 @@ function GroupManager({ db, api, reload, showToast }: any) {
 // ===========================================================================
 // Tab: รถ & คนขับ
 // ===========================================================================
-function VehiclesTab({ db, api, reload, showToast }: any) {
+function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
   const [form, setForm] = useState({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' });
   const add = async () => {
     if (!form.plateNo) return showToast('warning', 'กรอกทะเบียน');
-    await api('/api/vehicles', 'POST', form); setForm({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' }); reload();
+    await api('/api/vehicles', 'POST', { ...form, branchId }); setForm({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' }); reload();
   };
   return (
     <Section title="Master รถร่วม & คนขับ" icon={Truck}>

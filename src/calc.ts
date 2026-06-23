@@ -423,6 +423,7 @@ export function computeTripDocument(
 
   return {
     id: idFactory(),
+    branchId: '', // กำหนดในชั้น server ตามสาขาที่บันทึก
     cycleId: ctx.cycleId,
     documentNo: extracted.documentNo,
     documentDate: refDate,

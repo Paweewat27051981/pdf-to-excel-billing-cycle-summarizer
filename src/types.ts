@@ -24,10 +24,22 @@ export interface BillingCycle {
 }
 
 // ---------------------------------------------------------------------------
+// 1.5) Master: สาขา (แต่ละสาขาแยกข้อมูล ราคา/รถ/กฎ + รหัสผ่านเข้าใช้งาน)
+// ---------------------------------------------------------------------------
+export interface Branch {
+  id: string;
+  name: string;          // ชื่อสาขา เช่น "นครสวรรค์"
+  password: string;      // รหัสผ่านเข้าใช้งานสาขา (ไม่ส่งกลับใน /api/state)
+  isHQ?: boolean;        // true = สำนักงานใหญ่ (เห็นทุกสาขา + จัดการสาขา)
+  status: RecordStatus;
+}
+
+// ---------------------------------------------------------------------------
 // 2) Master: รถร่วม + คนขับ
 // ---------------------------------------------------------------------------
 export interface Vehicle {
   id: string;
+  branchId: string;      // สาขาที่รถประจำ
   plateNo: string;       // ทะเบียนรถ
   driverName: string;    // ชื่อคนขับ
   vehicleType: string;   // ประเภทรถ
@@ -39,6 +51,7 @@ export interface Vehicle {
 // ---------------------------------------------------------------------------
 export interface RateMaster {
   id: string;
+  branchId: string;        // สาขาเจ้าของราคานี้
   destinationName: string; // ปลายทาง เช่น "อ.เมือง จ.นว"
   provinceName: string;    // จังหวัด เช่น "นครสวรรค์"
   provinceShort: string;   // ตัวย่อจังหวัด เช่น "นว"
@@ -179,6 +192,7 @@ export interface TripReceipt {
 // ใบกระจาย (1 คัน 1 เที่ยว)
 export interface TripDocument {
   id: string;
+  branchId: string;
   cycleId: string;
   documentNo: string;
   documentDate: string;     // YYYY-MM-DD
@@ -205,6 +219,7 @@ export interface TripDocument {
 // ---------------------------------------------------------------------------
 export interface FuelEntry {
   id: string;
+  branchId: string;
   cycleId: string;
   plateNo: string;
   refNo: string;        // เลขใบสั่งเติม
@@ -235,6 +250,7 @@ export interface MoneyCategory {
 
 export interface DeductionEntry {
   id: string;
+  branchId: string;
   cycleId: string;
   plateNo: string;
   categoryId: string;  // อ้างอิง MoneyCategory
@@ -279,6 +295,7 @@ export interface AppSettings {
 // ---------------------------------------------------------------------------
 export interface DatabaseState {
   settings: AppSettings;
+  branches: Branch[];
   cycles: BillingCycle[];
   vehicles: Vehicle[];
   rateMasters: RateMaster[];

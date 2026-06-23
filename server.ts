@@ -6,6 +6,7 @@ import { getDb, saveDb } from './server-db.js';
 import {
   DatabaseState,
   BillingCycle,
+  Branch,
   Vehicle,
   RateMaster,
   ReceiverGroup,
@@ -56,15 +57,17 @@ function recomputeTrip(
   db: DatabaseState,
   cycle: BillingCycle,
   extracted: ExtractedTripDocument,
-  fileName: string
+  fileName: string,
+  branchId: string
 ): TripDocument {
-  return computeTripDocument(
+  // ใช้รถ/ราคาของสาขานั้นเท่านั้น (กฎ/กลุ่มยังใช้ร่วมในเฟส 1)
+  const trip = computeTripDocument(
     extracted,
     {
       cycleId: cycle.id,
       cycle: cycleCtx(cycle),
-      vehicles: db.vehicles,
-      rates: db.rateMasters,
+      vehicles: db.vehicles.filter((v) => v.branchId === branchId),
+      rates: db.rateMasters.filter((r) => r.branchId === branchId),
       groups: db.receiverGroups,
       aliases: db.receiverGroupAliases,
       rules: db.conversionRules,
@@ -73,6 +76,8 @@ function recomputeTrip(
     },
     () => generateId('rcp')
   );
+  trip.branchId = branchId;
+  return trip;
 }
 
 async function startServer() {
@@ -98,10 +103,42 @@ async function startServer() {
     }
   });
 
-  // ===================== STATE =====================
-  app.get('/api/state', async (_req, res) => {
+  // ===================== BRANCH LOGIN =====================
+  // ตรวจรหัสผ่านสาขา -> คืนข้อมูลสาขา (ไม่คืน password)
+  app.post('/api/branch-login', async (req, res) => {
     try {
-      res.json(await getDb());
+      const { branchId, password } = req.body as { branchId: string; password: string };
+      const db = await getDb();
+      const branch = db.branches.find((b) => b.id === branchId && b.status === 'active');
+      if (!branch) return res.status(404).json({ error: 'ไม่พบสาขา' });
+      if (String(branch.password) !== String(password)) {
+        return res.status(401).json({ error: 'รหัสผ่านไม่ถูกต้อง' });
+      }
+      res.json({ ok: true, branch: { id: branch.id, name: branch.name, isHQ: !!branch.isHQ } });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ===================== STATE =====================
+  // ?branchId=xxx -> กรองข้อมูลเฉพาะสาขานั้น (ถ้าไม่ส่ง = HQ เห็นทุกสาขา)
+  // ตัด password ของสาขาออกเสมอ
+  app.get('/api/state', async (req, res) => {
+    try {
+      const db = await getDb();
+      const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : '';
+      const inBranch = <T extends { branchId?: string }>(arr: T[]) =>
+        branchId ? arr.filter((x) => x.branchId === branchId) : arr;
+      const safe: DatabaseState = {
+        ...db,
+        branches: db.branches.map((b) => ({ ...b, password: '' })),
+        vehicles: inBranch(db.vehicles),
+        rateMasters: inBranch(db.rateMasters),
+        tripDocuments: inBranch(db.tripDocuments),
+        fuelEntries: inBranch(db.fuelEntries),
+        deductions: inBranch(db.deductions),
+      };
+      res.json(safe);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -191,6 +228,7 @@ async function startServer() {
     });
   }
 
+  masterRoutes<Branch>('branches', 'branches', 'br');
   masterRoutes<MoneyCategory>('money-categories', 'moneyCategories', 'cat');
   masterRoutes<ManualBoxSender>('manual-box-senders', 'manualBoxSenders', 'mbs');
   masterRoutes<Vehicle>('vehicles', 'vehicles', 'veh');
@@ -259,15 +297,16 @@ async function startServer() {
   // บันทึก trip ที่ผ่าน Review (รับ extracted + คำนวณใหม่ฝั่ง server)
   app.post('/api/trips', async (req, res) => {
     try {
-      const { cycleId, extracted, fileName } = req.body as {
-        cycleId: string; extracted: ExtractedTripDocument; fileName: string;
+      const { cycleId, extracted, fileName, branchId } = req.body as {
+        cycleId: string; extracted: ExtractedTripDocument; fileName: string; branchId: string;
       };
+      if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
       const db = await getDb();
       const cycle = db.cycles.find((c) => c.id === cycleId);
       if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
       if (cycle.status === 'closed') return res.status(400).json({ error: 'รอบนี้ถูกปิดล็อกแล้ว' });
 
-      const trip = recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf');
+      const trip = recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId);
       // บังคับ: ผู้ส่งที่ต้องกรอกกล่อง แต่ยังไม่กรอก -> บันทึกไม่ได้
       const missingBox = trip.receipts.find((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
       if (missingBox) {
@@ -320,7 +359,7 @@ async function startServer() {
             manualBoxQty: r.manualBoxQty ?? undefined,
           })),
         };
-        const recomputed = recomputeTrip(db, cycle, extracted, t.fileName);
+        const recomputed = recomputeTrip(db, cycle, extracted, t.fileName, t.branchId);
         return { ...recomputed, id: t.id, isVerified: t.isVerified, createdAt: t.createdAt };
       });
       await saveDb(db);
@@ -333,13 +372,13 @@ async function startServer() {
   // ===================== PREVIEW (คำนวณก่อนบันทึก โดยไม่เซฟ) =====================
   app.post('/api/trips/preview', async (req, res) => {
     try {
-      const { cycleId, extracted, fileName } = req.body as {
-        cycleId: string; extracted: ExtractedTripDocument; fileName: string;
+      const { cycleId, extracted, fileName, branchId } = req.body as {
+        cycleId: string; extracted: ExtractedTripDocument; fileName: string; branchId: string;
       };
       const db = await getDb();
       const cycle = db.cycles.find((c) => c.id === cycleId);
       if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
-      res.json(recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf'));
+      res.json(recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId || ''));
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

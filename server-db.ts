@@ -3,7 +3,22 @@ import fsSync from 'fs';
 import path from 'path';
 import { initializeApp, cert, getApps, type ServiceAccount } from 'firebase-admin/app';
 import { getDatabase, type Database } from 'firebase-admin/database';
-import { DatabaseState, Vehicle, RateMaster } from './src/types.js';
+import { DatabaseState, Vehicle, RateMaster, Branch } from './src/types.js';
+
+// สาขาเริ่มต้น (ข้อมูลเดิมทั้งหมดจะถูกผูกกับสาขานี้)
+export const DEFAULT_BRANCH_ID = 'br-nakhonsawan';
+
+function defaultBranches(): Branch[] {
+  return [
+    { id: 'br-hq', name: 'สำนักงานใหญ่ (HQ)', password: '9999', isHQ: true, status: 'active' },
+    { id: DEFAULT_BRANCH_ID, name: 'นครสวรรค์', password: '1234', status: 'active' },
+    { id: 'br-kamphaengphet', name: 'กำแพงเพชร', password: '1234', status: 'active' },
+    { id: 'br-phitsanulok', name: 'พิษณุโลก', password: '1234', status: 'active' },
+    { id: 'br-maesot', name: 'แม่สอด', password: '1234', status: 'active' },
+    { id: 'br-sai3', name: 'สาย3', password: '1234', status: 'active' },
+    { id: 'br-chiangmai', name: 'เชียงใหม่', password: '1234', status: 'active' },
+  ];
+}
 
 const DB_FILE = path.join(process.cwd(), 'db.json');
 const SEED_MASTERS_FILE = path.join(process.cwd(), 'seed-masters.json');
@@ -57,7 +72,10 @@ function loadSeedMasters(): { vehicles: Vehicle[]; rateMasters: RateMaster[] } {
     const raw = fsSync.readFileSync(SEED_MASTERS_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed.vehicles) && Array.isArray(parsed.rateMasters)) {
-      return { vehicles: parsed.vehicles, rateMasters: parsed.rateMasters };
+      // ผูกข้อมูล seed กับสาขาเริ่มต้น (นครสวรรค์)
+      const vehicles = parsed.vehicles.map((v: Vehicle) => ({ branchId: DEFAULT_BRANCH_ID, ...v }));
+      const rateMasters = parsed.rateMasters.map((r: RateMaster) => ({ branchId: DEFAULT_BRANCH_ID, ...r }));
+      return { vehicles, rateMasters };
     }
   } catch {
     /* ไม่มีไฟล์ -> ใช้ตัวอย่าง */
@@ -65,11 +83,11 @@ function loadSeedMasters(): { vehicles: Vehicle[]; rateMasters: RateMaster[] } {
   const now = new Date().toISOString();
   return {
     vehicles: [
-      { id: 'veh-001', plateNo: '70-1234', driverName: 'สมชาย ขับดี', vehicleType: '6 ล้อ', status: 'active' },
-      { id: 'veh-002', plateNo: '82-5678', driverName: 'สมหญิง ส่งไว', vehicleType: '4 ล้อ', status: 'active' },
+      { id: 'veh-001', branchId: DEFAULT_BRANCH_ID, plateNo: '70-1234', driverName: 'สมชาย ขับดี', vehicleType: '6 ล้อ', status: 'active' },
+      { id: 'veh-002', branchId: DEFAULT_BRANCH_ID, plateNo: '82-5678', driverName: 'สมหญิง ส่งไว', vehicleType: '4 ล้อ', status: 'active' },
     ],
     rateMasters: [
-      { id: 'rate-001', destinationName: 'อ.เมือง จ.นว', provinceName: 'นครสวรรค์', provinceShort: 'นว', districtName: 'เมือง', priceType: 'flat', price: 700, effectiveFrom: '2026-05-01', effectiveTo: null, status: 'active', remark: '', createdBy: 'system', createdAt: now },
+      { id: 'rate-001', branchId: DEFAULT_BRANCH_ID, destinationName: 'อ.เมือง จ.นว', provinceName: 'นครสวรรค์', provinceShort: 'นว', districtName: 'เมือง', priceType: 'flat', price: 700, effectiveFrom: '2026-05-01', effectiveTo: null, status: 'active', remark: '', createdBy: 'system', createdAt: now },
     ],
   };
 }
@@ -81,6 +99,7 @@ function seedState(): DatabaseState {
   const { vehicles, rateMasters } = loadSeedMasters();
   return {
     settings: { geminiModel: 'gemini-3.5-flash' },
+    branches: defaultBranches(),
     cycles: [],
     vehicles,
     rateMasters,
@@ -142,23 +161,29 @@ function migrateDeductions(list: any[]): any[] {
   });
 }
 
+// เติม branchId ให้ record เก่าที่ยังไม่มี (ผูกกับสาขาเริ่มต้น)
+function withBranch<T extends object>(list: T[] | undefined, fallback: T[]): T[] {
+  return (list ?? fallback).map((x: any) => (x.branchId ? x : { ...x, branchId: DEFAULT_BRANCH_ID }));
+}
+
 // migrate: เติม key ที่ขาดให้ db เก่า
 export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   const seed = seedState();
   return {
     settings: { ...seed.settings, ...(state.settings || {}) },
+    branches: state.branches && state.branches.length ? state.branches : seed.branches,
     cycles: state.cycles ?? [],
-    vehicles: state.vehicles ?? seed.vehicles,
-    rateMasters: state.rateMasters ?? seed.rateMasters,
+    vehicles: withBranch(state.vehicles, seed.vehicles),
+    rateMasters: withBranch(state.rateMasters, seed.rateMasters),
     rateMasterHistory: state.rateMasterHistory ?? [],
     receiverGroups: state.receiverGroups ?? seed.receiverGroups,
     receiverGroupAliases: state.receiverGroupAliases ?? seed.receiverGroupAliases,
     conversionRules: state.conversionRules ?? seed.conversionRules,
     manualBoxSenders: state.manualBoxSenders ?? seed.manualBoxSenders,
     moneyCategories: state.moneyCategories ?? seed.moneyCategories,
-    tripDocuments: state.tripDocuments ?? [],
-    fuelEntries: state.fuelEntries ?? [],
-    deductions: migrateDeductions(state.deductions as any[]),
+    tripDocuments: withBranch(state.tripDocuments, []),
+    fuelEntries: withBranch(state.fuelEntries, []),
+    deductions: withBranch(migrateDeductions(state.deductions as any[]), []),
   };
 }
 
