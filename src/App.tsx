@@ -88,25 +88,17 @@ export default function App() {
     fetch('/api/config').then((r) => r.json()).then((c) => setAiEnabled(!!c.aiEnabled)).catch(() => setAiEnabled(false));
   }, []);
 
-  // เมื่อ login แล้ว: ตั้งสาขาเริ่มต้น (HQ = สาขาแรกที่ไม่ใช่ HQ)
+  // โหลดข้อมูลตามสาขาที่เลือก (HQ workBranchId='' = ทุกสาขา)
   useEffect(() => {
     if (!auth) { fetch('/api/state').then((r) => r.json()).then(setDb).finally(() => setLoading(false)); return; }
-    if (auth.isHQ && !workBranchId) return; // รอเลือกสาขา (effect ถัดไปจะ fetch)
     fetchState();
   }, [auth, workBranchId]);
-
-  // HQ: ตั้งสาขาทำงานเริ่มต้นหลังโหลด branches
-  useEffect(() => {
-    if (auth?.isHQ && !workBranchId && db.branches.length) {
-      const first = db.branches.find((b) => !b.isHQ && b.status === 'active');
-      if (first) setWorkBranchId(first.id);
-    }
-  }, [auth, db.branches]);
 
   const doLogin = async (a: BranchAuth) => {
     localStorage.setItem('branchAuth', JSON.stringify(a));
     setAuth(a);
     setWorkBranchId(a.isHQ ? '' : a.id);
+    if (a.isHQ) setTab('dashboard'); // HQ เริ่มที่ภาพรวมทุกสาขา
     setLoading(true);
   };
   const logout = () => { localStorage.removeItem('branchAuth'); setAuth(null); setWorkBranchId(''); setDb(EMPTY); };
@@ -146,6 +138,7 @@ export default function App() {
             {auth.isHQ ? (
               <select aria-label="เลือกสาขา" value={workBranchId} onChange={(e) => setWorkBranchId(e.target.value)}
                 className="bg-transparent text-xs font-bold text-emerald-800 outline-none">
+                <option value="">🌐 ทุกสาขา (ภาพรวม)</option>
                 {db.branches.filter((b) => !b.isHQ && b.status === 'active').map((b) => (
                   <option key={b.id} value={b.id}>{b.name}</option>
                 ))}
@@ -185,7 +178,7 @@ export default function App() {
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
-            {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} />}
+            {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={auth.isHQ} />}
             {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -799,6 +792,7 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
 // ===========================================================================
 // Tab: ค่าน้ำมัน & รายการหัก
 // ===========================================================================
+const ALL_BRANCH_HINT = 'อยู่โหมดภาพรวมทุกสาขา — เลือกสาขาที่มุมบนขวาเพื่อจัดการข้อมูล';
 function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) {
   const cats: MoneyCategory[] = db.moneyCategories || [];
   const incomeCats = cats.filter((c) => c.kind === 'income' && c.status === 'active');
@@ -814,6 +808,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0 });
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
+  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
   const addFuel = async () => {
     if (!fForm.plateNo || !fForm.amount) return showToast('warning', 'กรอกทะเบียนและจำนวนเงิน');
@@ -911,8 +906,12 @@ function CategoryManager({ cats, api, branchId, reload, showToast }: any) {
 // ===========================================================================
 // Tab: Dashboard (สรุปรับสุทธิต่อทะเบียน)
 // ===========================================================================
-function DashboardTab({ db, cycle }: any) {
+function DashboardTab({ db, cycle, branchId, isHQ }: any) {
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
+
+  // โหมด HQ ภาพรวมทุกสาขา (เลือก "ทุกสาขา")
+  if (isHQ && !branchId) return <HQDashboard db={db} cycle={cycle} />;
+
   const sums = summarizeByVehicle(cycle.id, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles);
   const g = sums.reduce((a, s) => ({ trip: a.trip + s.totalTripAmount, fuel: a.fuel + s.fuelTotal, net: a.net + s.netReceive }), { trip: 0, fuel: 0, net: 0 });
 
@@ -950,6 +949,86 @@ function DashboardTab({ db, cycle }: any) {
 }
 
 // ===========================================================================
+// Dashboard รวมทุกสาขา (HQ) — เทียบยอดระหว่างสาขา
+// ===========================================================================
+function HQDashboard({ db, cycle }: any) {
+  const branches = (db.branches as Branch[]).filter((b) => !b.isHQ && b.status === 'active');
+  const rows = branches.map((b) => {
+    const trips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id && t.branchId === b.id);
+    const sums = summarizeByVehicle(
+      cycle.id,
+      db.tripDocuments.filter((t: TripDocument) => t.branchId === b.id),
+      db.fuelEntries.filter((f: FuelEntry) => f.branchId === b.id),
+      db.deductions.filter((d: DeductionEntry) => d.branchId === b.id),
+      db.vehicles.filter((v: Vehicle) => v.branchId === b.id),
+    );
+    return {
+      branch: b,
+      docs: trips.length,
+      trucks: sums.length,
+      trip: sums.reduce((a, s) => a + s.totalTripAmount, 0),
+      fuel: sums.reduce((a, s) => a + s.fuelTotal, 0),
+      income: sums.reduce((a, s) => a + s.incomeAdd, 0),
+      deduct: sums.reduce((a, s) => a + s.deductionTotal + s.deduction1Percent, 0),
+      net: sums.reduce((a, s) => a + s.netReceive, 0),
+    };
+  });
+  const g = rows.reduce((a, r) => ({
+    docs: a.docs + r.docs, trip: a.trip + r.trip, fuel: a.fuel + r.fuel, net: a.net + r.net,
+  }), { docs: 0, trip: 0, fuel: 0, net: 0 });
+  const maxTrip = Math.max(1, ...rows.map((r) => r.trip));
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2 text-sm font-semibold text-emerald-800 flex items-center gap-2">
+        <Building2 className="w-4 h-4" /> ภาพรวมทุกสาขา · {cycle.name}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Stat label="ใบกระจายรวม" value={`${g.docs}`} />
+        <Stat label="ค่าเที่ยวรวมทุกสาขา" value={`฿${money(g.trip)}`} />
+        <Stat label="ค่าน้ำมันรวม" value={`฿${money(g.fuel)}`} />
+        <Stat label="รับสุทธิรวม" value={`฿${money(g.net)}`} highlight />
+      </div>
+
+      <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
+        <table className="w-full text-xs min-w-[760px]">
+          <thead className="bg-[#1B365D] text-white"><tr>
+            {['สาขา', 'ใบกระจาย', 'รถ', 'ค่าเที่ยว', 'ค่าน้ำมัน', '+รายได้เพิ่ม', 'รวมหัก', 'รับสุทธิ', 'สัดส่วน'].map((h) => <th key={h} className="p-2 font-semibold text-left">{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.branch.id} className={i % 2 ? 'bg-[#F9FAFC]' : ''}>
+                <td className="p-2 font-semibold text-[#1B365D]">{r.branch.name}</td>
+                <td className="p-2">{r.docs}</td>
+                <td className="p-2">{r.trucks}</td>
+                <td className="p-2 text-right">{money(r.trip)}</td>
+                <td className="p-2 text-right text-rose-700">{money(r.fuel)}</td>
+                <td className="p-2 text-right text-emerald-700">{money(r.income)}</td>
+                <td className="p-2 text-right text-rose-700">{money(r.deduct)}</td>
+                <td className="p-2 text-right font-bold text-[#C00000]">{money(r.net)}</td>
+                <td className="p-2 w-32"><div className="bg-natural-bg rounded-full h-2 overflow-hidden"><div className="bg-[#1B365D] h-2 rounded-full" style={{ width: `${(r.trip / maxTrip) * 100}%` }} /></div></td>
+              </tr>
+            ))}
+            <tr className="border-t-2 border-[#1B365D] font-bold bg-[#FFF2CC]">
+              <td className="p-2">รวมทุกสาขา</td>
+              <td className="p-2">{g.docs}</td>
+              <td className="p-2"></td>
+              <td className="p-2 text-right">{money(g.trip)}</td>
+              <td className="p-2 text-right">{money(g.fuel)}</td>
+              <td className="p-2"></td>
+              <td className="p-2"></td>
+              <td className="p-2 text-right text-[#C00000]">{money(g.net)}</td>
+              <td className="p-2"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-natural-muted">💡 เลือกสาขาที่มุมบนเพื่อดู/แก้ไขรายละเอียดของแต่ละสาขา</p>
+    </div>
+  );
+}
+
+// ===========================================================================
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
 function RatesTab({ db, api, branchId, reload, showToast }: any) {
@@ -959,6 +1038,7 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     await api('/api/rate-masters', 'POST', { ...form, branchId }); setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
   };
+  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
       <div className="flex flex-wrap gap-2 mb-3 text-sm">
@@ -1001,6 +1081,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
   const senderOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.senderKeyword));
   const productOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.productKeyword));
   const sizeOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.productSizeKeyword));
+  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   return (
     <div className="flex flex-col gap-5">
       <Section title="เงื่อนไขแปลงจำนวนสินค้า (ตัวหาร)" icon={Filter}>
@@ -1139,6 +1220,7 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
     if (!form.plateNo) return showToast('warning', 'กรอกทะเบียน');
     await api('/api/vehicles', 'POST', { ...form, branchId }); setForm({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' }); reload();
   };
+  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   return (
     <Section title="Master รถร่วม & คนขับ" icon={Truck}>
       <div className="flex flex-wrap gap-2 mb-3 text-sm">
