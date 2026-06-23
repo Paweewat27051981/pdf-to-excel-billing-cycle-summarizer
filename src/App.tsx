@@ -1039,6 +1039,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<'base' | 'cycle'>('base');
   const [adv, setAdv] = useState(false);
+  const [filterGroup, setFilterGroup] = useState('__all__');
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     // เก็บคืน/Peat mass คิดเป็นชิ้นเสมอ
@@ -1059,7 +1060,8 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : 'งานปกติ';
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
-  const rates: RateMaster[] = db.rateMasters;
+  const allRates: RateMaster[] = db.rateMasters;
+  const rates = filterGroup === '__all__' ? allRates : allRates.filter((r) => (r.rateGroup || '') === (filterGroup === '__none__' ? '' : filterGroup));
   const toggle = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allChecked = rates.length > 0 && rates.every((r) => sel.has(r.id));
   const toggleAll = () => setSel(allChecked ? new Set() : new Set(rates.map((r) => r.id)));
@@ -1111,6 +1113,16 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
           🏷️ ราคาเฉพาะรอบ{cycle ? `: ${cycle.name}` : ' (เลือกรอบก่อน)'}
         </button>
         {cycleMode && <span className="text-amber-700">แก้ราคา/จุดตัด = ทับเฉพาะรอบนี้ · รอบอื่นใช้ราคาหลัก</span>}
+        {branchGroups.length > 0 && (
+          <label className="flex items-center gap-1 text-xs text-natural-muted ml-auto">
+            กรองกลุ่ม:
+            <select aria-label="กรองกลุ่มราคา" value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1 text-xs font-semibold text-[#1B365D]">
+              <option value="__all__">ทุกกลุ่ม</option>
+              {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
+              <option value="__none__">— ไม่ระบุกลุ่ม (ใช้ร่วม) —</option>
+            </select>
+          </label>
+        )}
       </div>
       <div className="flex flex-wrap gap-2 mb-3 text-sm items-center">
         <input aria-label="ปลายทาง" placeholder="ปลายทาง" value={form.destinationName} onChange={(e) => setForm({ ...form, destinationName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
@@ -1155,6 +1167,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
           <thead>
             <tr className="text-natural-muted text-left border-b border-natural-border">
               <th className="w-8 py-1.5 px-1"><input type="checkbox" aria-label="เลือกทั้งหมด" checked={allChecked} onChange={toggleAll} /></th>
+              {branchGroups.length > 0 && <th className="py-1.5 px-1">กลุ่ม</th>}
               {['ปลายทาง', 'จังหวัด', 'อำเภอ', 'หมวด', 'ประเภท', 'ราคา', 'จุดตัดชิ้น', 'เริ่มใช้'].map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}
               <th className="w-8"></th>
             </tr>
@@ -1163,6 +1176,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
             {rates.map((r) => (
               <tr key={r.id} className={`border-b border-natural-border/60 ${sel.has(r.id) ? 'bg-red-50' : ''}`}>
                 <td className="py-1.5 px-1"><input type="checkbox" aria-label={`เลือก ${r.destinationName}`} checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                {branchGroups.length > 0 && <td className="py-1.5 px-1">{r.rateGroup ? <span className="text-[#1B365D] font-semibold">{r.rateGroup}</span> : <span className="text-natural-muted text-[10px]">ใช้ร่วม</span>}</td>}
                 <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{r.destinationName}</td>
                 <td className="py-1.5 px-1">{r.provinceName}</td>
                 <td className="py-1.5 px-1">{r.districtName}</td>
@@ -1186,7 +1200,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
                 </td>
               </tr>
             ))}
-            {rates.length === 0 && <tr><td colSpan={10} className="py-6 text-center text-natural-muted">ยังไม่มีราคาในสาขานี้</td></tr>}
+            {rates.length === 0 && <tr><td colSpan={branchGroups.length > 0 ? 11 : 10} className="py-6 text-center text-natural-muted">ไม่มีราคา (ลองเปลี่ยนตัวกรองกลุ่ม)</td></tr>}
           </tbody>
         </table>
       </div>
