@@ -1052,6 +1052,10 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
     if (!(await confirmDelete(`ราคา ${r.destinationName || r.provinceName}`))) return;
     await api(`/api/rate-masters/${r.id}`, 'DELETE'); reload();
   };
+  const updateRate = async (r: RateMaster, patch: any) => {
+    try { await api(`/api/rate-masters/${r.id}`, 'PUT', patch); showToast('success', 'บันทึกแล้ว'); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
   const bulkDel = async () => {
     if (!sel.size) return;
     if (!(await confirmDelete(`ราคา ${sel.size} รายการที่เลือก`))) return;
@@ -1095,8 +1099,16 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
                 <td className="py-1.5 px-1">{r.provinceName}</td>
                 <td className="py-1.5 px-1">{r.districtName}</td>
                 <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
-                <td className="py-1.5 px-1">{money(r.price)}</td>
-                <td className="py-1.5 px-1">{r.pieceThreshold != null ? r.pieceThreshold : '-'}</td>
+                <td className="py-1.5 px-1">
+                  <input type="number" key={`p-${r.id}-${r.price}`} defaultValue={r.price} aria-label={`ราคา ${r.destinationName}`}
+                    onBlur={(e) => { const v = +e.target.value; if (v !== r.price) updateRate(r, { price: v }); }}
+                    className="w-20 border border-natural-border rounded px-1 py-0.5 text-xs text-right focus:border-[#1B365D] outline-none" />
+                </td>
+                <td className="py-1.5 px-1">
+                  <input type="number" key={`t-${r.id}-${r.pieceThreshold ?? ''}`} defaultValue={r.pieceThreshold ?? ''} placeholder="-" aria-label={`จุดตัด ${r.destinationName}`}
+                    onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v !== (r.pieceThreshold ?? null)) updateRate(r, { pieceThreshold: v }); }}
+                    className="w-16 border border-natural-border rounded px-1 py-0.5 text-xs text-right focus:border-[#1B365D] outline-none" />
+                </td>
                 <td className="py-1.5 px-1">{r.effectiveFrom}</td>
                 <td className="py-1.5 px-1"><button type="button" title="ลบ" onClick={() => delOne(r)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
               </tr>
