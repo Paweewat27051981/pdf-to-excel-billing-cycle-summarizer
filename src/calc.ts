@@ -190,6 +190,7 @@ export function matchRate(
   const candidates = rates.filter((r) => {
     if (r.status !== 'active') return false;
     if ((r.productCategory || 'normal') !== category) return false;
+    if ((r.districtName || '').includes('+')) return false; // ราคาชุดอำเภอ (คิดระดับใบ ไม่ใช่ต่อจุด)
     if (!isEffective(params.refDate, r.effectiveFrom, r.effectiveTo)) return false;
     const provOk =
       textContains(params.provinceRaw, r.provinceName) ||
@@ -216,6 +217,35 @@ export function matchRate(
     if (r.priceType === 'piece' && !result.piece) result.piece = match;
   }
   return result;
+}
+
+// ราคาชุดอำเภอ (เช่น "เมือง+คีรีมาศ" = 1400): จับเมื่อใบส่งหลายอำเภอตรงชุดพอดี
+// คืนราคาเหมาของชุด ถ้าไม่เจอ = null (ไปใช้ราคาเหมาสูงสุดต่อจุดแทน)
+export function matchCombinedFlat(
+  province: string,
+  docDistricts: string[],
+  rates: RateMaster[],
+  refDate: string
+): number | null {
+  const dm = (a: string, b: string) => textContains(a, b) || textContains(b, a);
+  let best: number | null = null;
+  for (const r of rates) {
+    if (r.status !== 'active' || r.priceType !== 'flat') continue;
+    if ((r.productCategory || 'normal') !== 'normal') continue;
+    if (!(r.districtName || '').includes('+')) continue;
+    if (!isEffective(refDate, r.effectiveFrom, r.effectiveTo)) continue;
+    const provOk =
+      textContains(province, r.provinceName) ||
+      textContains(province, r.provinceShort) ||
+      textContains(r.provinceName, province);
+    if (!provOk) continue;
+    const rDistricts = r.districtName.split('+').map((s) => s.trim()).filter(Boolean);
+    if (rDistricts.length !== docDistricts.length) continue;
+    // ทุกอำเภอในชุดต้องจับกับอำเภอในใบได้ครบ (และจำนวนเท่ากัน)
+    const ok = rDistricts.every((rd) => docDistricts.some((dd) => dm(dd, rd)));
+    if (ok && (best === null || r.price < best)) best = r.price; // เจอหลายชุด เลือกถูกสุด
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -410,8 +440,18 @@ export function computeTripDocument(
   const anyFlat = receipts.some((r) => r.flatPrice != null);
   const anyPiece = receipts.some((r) => r.piecePrice != null);
 
-  // ยอดถ้าคิดเหมา (ราคาเหมาสูงสุด) vs ยอดถ้าคิดชิ้น (รวมทุกจุด)
-  const flatTotal = anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : 0;
+  // ราคาชุดอำเภอ: ถ้าใบส่งหลายอำเภอ (งานปกติ) ตรงชุดที่ตั้งไว้ ใช้ราคาเหมาของชุดแทนเหมาสูงสุด
+  const docDistricts = [...new Set(
+    receipts.filter((r) => r.normalQty > 0).map((r) => (r.districtRaw || '').trim()).filter(Boolean)
+  )];
+  const docProvince = receipts.find((r) => r.normalQty > 0)?.provinceRaw || extracted.provinceRaw;
+  const combinedFlat = docDistricts.length >= 2
+    ? matchCombinedFlat(docProvince, docDistricts, ctx.rates, refDate)
+    : null;
+
+  // ยอดถ้าคิดเหมา (ชุดอำเภอ > เหมาสูงสุด) vs ยอดถ้าคิดชิ้น (รวมทุกจุด)
+  const maxFlat = anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : 0;
+  const flatTotal = combinedFlat ?? maxFlat;
   const pieceTotal = anyPiece ? receipts.reduce((s, r) => s + (r.piecePrice != null ? r.billingQty * r.piecePrice : 0), 0) : 0;
 
   // จุดตัดชิ้นของใบนี้ (ใช้ตัวแรกที่เจอ — ปกติทั้งใบเป็นจังหวัดเดียวกัน)
@@ -419,17 +459,20 @@ export function computeTripDocument(
   // อัตโนมัติ (เมื่อมีทั้งเหมา+ชิ้น):
   //  - มีจุดตัด -> จำนวนคิดค่าเที่ยว(หลังหาร) <=จุดตัด=เหมา, >จุดตัด=ชิ้น (กำแพงเพชร)
   //  - ไม่มีจุดตัด -> "สูงกว่า": เลือกอันที่ยอดเงินมากกว่า (พิษณุโลก/สุโขทัย/อุตรดิตถ์/เพชรบูรณ์)
+  const hasFlat = anyFlat || combinedFlat != null;
   let autoType: PriceType | null = null;
-  if (anyFlat && anyPiece) {
+  if (hasFlat && anyPiece) {
     if (docThreshold != null) autoType = billingQty <= docThreshold ? 'flat' : 'piece';
     else autoType = pieceTotal > flatTotal ? 'piece' : 'flat';
   }
+  // ส่งหลายอำเภอตรงชุด -> คิดราคาเหมาของชุดเสมอ
+  if (combinedFlat != null) autoType = 'flat';
 
-  // เลือกแบบเดียวกันทั้งใบ: ผู้ใช้เลือกเอง > อัตโนมัติตามจุดตัด > default (เหมาก่อน)
+  // เลือกแบบเดียวกันทั้งใบ: ผู้ใช้เลือกเอง > อัตโนมัติ > default (เหมาก่อน)
   let rateType: PriceType | null = extracted.rateChoice ?? null;
-  if (rateType === 'flat' && !anyFlat) rateType = null;
+  if (rateType === 'flat' && !hasFlat) rateType = null;
   if (rateType === 'piece' && !anyPiece) rateType = null;
-  if (!rateType) rateType = autoType ?? (anyFlat ? 'flat' : anyPiece ? 'piece' : null);
+  if (!rateType) rateType = autoType ?? (hasFlat ? 'flat' : anyPiece ? 'piece' : null);
 
   // มีงานปกติในเที่ยวนี้ไหม (มีผลกับการคิด Peat mass: ผสม=ชิ้นละ 20, อย่างเดียว=ราคาอำเภอ)
   const hasNormal = receipts.some((r) => r.normalQty > 0);
@@ -445,15 +488,13 @@ export function computeTripDocument(
         else warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}) ไม่เจอราคาชิ้น`);
       }
     } else if (rateType === 'flat') {
-      let maxFlat: number | null = null;
-      for (const r of receipts) {
-        if (r.normalQty > 0 && r.flatPrice != null) {
-          r.receiptAmount = r.flatPrice;
-          if (maxFlat === null || r.flatPrice > maxFlat) maxFlat = r.flatPrice;
-        }
+      // ราคาชุดอำเภอ (ถ้าเจอ) > เหมาสูงสุดต่อจุด
+      if (flatTotal > 0) {
+        normalAmount = flatTotal;
+        for (const r of receipts) if (r.normalQty > 0 && r.flatPrice != null) r.receiptAmount = r.flatPrice;
+      } else {
+        warnings.push('ไม่เจอราคาเหมาของปลายทางใดเลย');
       }
-      if (maxFlat === null) warnings.push('ไม่เจอราคาเหมาของปลายทางใดเลย');
-      else normalAmount = maxFlat;
     } else {
       warnings.push('ไม่เจอ Master ราคาขนส่งของปลายทาง (งานปกติ)');
     }
