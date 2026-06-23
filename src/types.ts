@@ -84,12 +84,14 @@ export interface RateMasterHistory {
 // ---------------------------------------------------------------------------
 export interface ReceiverGroup {
   id: string;
+  branchId: string;
   groupName: string;
   status: RecordStatus;
 }
 
 export interface ReceiverGroupAlias {
   id: string;
+  branchId: string;
   receiverGroupId: string;
   aliasName: string;
   status: RecordStatus;
@@ -100,6 +102,7 @@ export interface ReceiverGroupAlias {
 // ---------------------------------------------------------------------------
 export interface ProductConversionRule {
   id: string;
+  branchId: string;
   ruleName: string;
   senderKeyword: string;        // คำที่ต้องเจอในชื่อผู้ส่ง เช่น "ซีโน"
   receiverGroupId: string;      // กลุ่มผู้รับที่ใช้กฎ (เช่น แม็คโคร/เซลส์)
@@ -119,6 +122,7 @@ export interface ProductConversionRule {
 // ---------------------------------------------------------------------------
 export interface ManualBoxSender {
   id: string;
+  branchId: string;
   senderKeyword: string;  // คำในชื่อผู้ส่ง เช่น "คอนซูเมอร์"
   note?: string;
   status: RecordStatus;
@@ -242,6 +246,7 @@ export type MoneyKind = 'income' | 'deduction';
 // Master ประเภทรายการเงิน (เพิ่ม/แก้ได้จากหน้าจอ ไม่ต้องแก้โค้ด)
 export interface MoneyCategory {
   id: string;
+  branchId: string;
   name: string;        // ชื่อแสดงใน dropdown เช่น "ค่าโทรศัพท์", "ค่าอัพเดทบิล"
   kind: MoneyKind;
   status: RecordStatus;

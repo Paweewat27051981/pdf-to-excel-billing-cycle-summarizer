@@ -105,31 +105,31 @@ function seedState(): DatabaseState {
     rateMasters,
     rateMasterHistory: [],
     receiverGroups: [
-      { id: 'grp-macro', groupName: 'แม็คโคร/เซลส์', status: 'active' },
+      { id: 'grp-macro', branchId: DEFAULT_BRANCH_ID, groupName: 'แม็คโคร/เซลส์', status: 'active' },
     ],
     receiverGroupAliases: [
-      { id: 'al-1', receiverGroupId: 'grp-macro', aliasName: 'แม็คโคร', status: 'active' },
-      { id: 'al-2', receiverGroupId: 'grp-macro', aliasName: 'MK', status: 'active' },
-      { id: 'al-3', receiverGroupId: 'grp-macro', aliasName: 'CP AXTRA', status: 'active' },
-      { id: 'al-4', receiverGroupId: 'grp-macro', aliasName: 'ซีพี แอ็กซ์ตร้า', status: 'active' },
-      { id: 'al-5', receiverGroupId: 'grp-macro', aliasName: 'เซลส์', status: 'active' },
+      { id: 'al-1', branchId: DEFAULT_BRANCH_ID, receiverGroupId: 'grp-macro', aliasName: 'แม็คโคร', status: 'active' },
+      { id: 'al-2', branchId: DEFAULT_BRANCH_ID, receiverGroupId: 'grp-macro', aliasName: 'MK', status: 'active' },
+      { id: 'al-3', branchId: DEFAULT_BRANCH_ID, receiverGroupId: 'grp-macro', aliasName: 'CP AXTRA', status: 'active' },
+      { id: 'al-4', branchId: DEFAULT_BRANCH_ID, receiverGroupId: 'grp-macro', aliasName: 'ซีพี แอ็กซ์ตร้า', status: 'active' },
+      { id: 'al-5', branchId: DEFAULT_BRANCH_ID, receiverGroupId: 'grp-macro', aliasName: 'เซลส์', status: 'active' },
     ],
     conversionRules: [
       {
-        id: 'rule-yupi', ruleName: 'ยูปี้ 14 กรัม หาร 3', senderKeyword: 'ซีโน', receiverGroupId: 'grp-macro',
-        productKeyword: 'ยูปี้', productSizeKeyword: '14 กรัม', divisor: 3, roundingMethod: 'half_up',
-        applyLevel: 'receipt', status: 'active', effectiveFrom: '2026-05-01', effectiveTo: null,
-        remark: 'เฉพาะงานซีโนที่ส่งแม็คโคร/เซลส์',
+        id: 'rule-yupi', branchId: DEFAULT_BRANCH_ID, ruleName: 'ยูปี้ หาร 3', senderKeyword: 'ซีโน', receiverGroupId: '',
+        productKeyword: 'ยูปี้', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up',
+        applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null,
+        remark: 'ยูปี้ทุกชนิด ส่งแม็คโคร/ซีพีแอ็กซ์ตร้า',
       },
       {
-        id: 'rule-pringles', ruleName: 'พริงเกิล 42 กรัม หาร 3', senderKeyword: 'ซีโน', receiverGroupId: 'grp-macro',
-        productKeyword: 'พริงเกิล', productSizeKeyword: '42 กรัม', divisor: 3, roundingMethod: 'half_up',
-        applyLevel: 'receipt', status: 'active', effectiveFrom: '2026-05-01', effectiveTo: null,
-        remark: 'ร้านค้าปกติไม่หาร',
+        id: 'rule-pringles', branchId: DEFAULT_BRANCH_ID, ruleName: 'พริงเกิล หาร 3', senderKeyword: 'ซีโน', receiverGroupId: '',
+        productKeyword: 'พริงเกิล', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up',
+        applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null,
+        remark: 'พริงเกิลส ทุกรส',
       },
     ],
     manualBoxSenders: [
-      { id: 'mbs-cpconsumer', senderKeyword: 'คอนซูเมอร์', note: 'ซ.พี.คอนซูเมอร์ โพรดักส์ — ส่งเป็นชิ้น ต้องกรอกจำนวนกล่องเอง', status: 'active' },
+      { id: 'mbs-cpconsumer', branchId: DEFAULT_BRANCH_ID, senderKeyword: 'คอนซูเมอร์', note: 'ซ.พี.คอนซูเมอร์ โพรดักส์ — ส่งเป็นชิ้น ต้องกรอกจำนวนกล่องเอง', status: 'active' },
     ],
     moneyCategories: defaultMoneyCategories(),
     tripDocuments: [],
@@ -140,14 +140,15 @@ function seedState(): DatabaseState {
 
 // ประเภทรายการเงินตั้งต้น (income = รายได้เพิ่ม, deduction = หักออก)
 function defaultMoneyCategories() {
+  const b = DEFAULT_BRANCH_ID;
   return [
-    { id: 'cat-bill_update', name: 'ค่าอัพเดทบิล', kind: 'income' as const, status: 'active' as const, builtin: true },
-    { id: 'cat-phone', name: 'ค่าโทรศัพท์', kind: 'deduction' as const, status: 'active' as const, builtin: true },
-    { id: 'cat-gps', name: 'ค่า GPS', kind: 'deduction' as const, status: 'active' as const, builtin: true },
-    { id: 'cat-loan', name: 'ยืมเงิน', kind: 'deduction' as const, status: 'active' as const, builtin: true },
-    { id: 'cat-gps_yearly', name: 'GPS รายปี', kind: 'deduction' as const, status: 'active' as const, builtin: true },
-    { id: 'cat-insurance', name: 'ประกัน', kind: 'deduction' as const, status: 'active' as const, builtin: true },
-    { id: 'cat-other', name: 'อื่นๆ', kind: 'deduction' as const, status: 'active' as const, builtin: true },
+    { id: 'cat-bill_update', branchId: b, name: 'ค่าอัพเดทบิล', kind: 'income' as const, status: 'active' as const, builtin: true },
+    { id: 'cat-phone', branchId: b, name: 'ค่าโทรศัพท์', kind: 'deduction' as const, status: 'active' as const, builtin: true },
+    { id: 'cat-gps', branchId: b, name: 'ค่า GPS', kind: 'deduction' as const, status: 'active' as const, builtin: true },
+    { id: 'cat-loan', branchId: b, name: 'ยืมเงิน', kind: 'deduction' as const, status: 'active' as const, builtin: true },
+    { id: 'cat-gps_yearly', branchId: b, name: 'GPS รายปี', kind: 'deduction' as const, status: 'active' as const, builtin: true },
+    { id: 'cat-insurance', branchId: b, name: 'ประกัน', kind: 'deduction' as const, status: 'active' as const, builtin: true },
+    { id: 'cat-other', branchId: b, name: 'อื่นๆ', kind: 'deduction' as const, status: 'active' as const, builtin: true },
   ];
 }
 
@@ -190,11 +191,11 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     vehicles: withBranch(state.vehicles, seed.vehicles),
     rateMasters: withBranch(state.rateMasters, seed.rateMasters),
     rateMasterHistory: state.rateMasterHistory ?? [],
-    receiverGroups: state.receiverGroups ?? seed.receiverGroups,
-    receiverGroupAliases: state.receiverGroupAliases ?? seed.receiverGroupAliases,
-    conversionRules: state.conversionRules ?? seed.conversionRules,
-    manualBoxSenders: state.manualBoxSenders ?? seed.manualBoxSenders,
-    moneyCategories: state.moneyCategories ?? seed.moneyCategories,
+    receiverGroups: withBranch(state.receiverGroups, seed.receiverGroups),
+    receiverGroupAliases: withBranch(state.receiverGroupAliases, seed.receiverGroupAliases),
+    conversionRules: withBranch(state.conversionRules, seed.conversionRules),
+    manualBoxSenders: withBranch(state.manualBoxSenders, seed.manualBoxSenders),
+    moneyCategories: withBranch(state.moneyCategories, seed.moneyCategories),
     tripDocuments: normalizeTrips(withBranch(state.tripDocuments, [])),
     fuelEntries: withBranch(state.fuelEntries, []),
     deductions: withBranch(migrateDeductions(state.deductions as any[]), []),

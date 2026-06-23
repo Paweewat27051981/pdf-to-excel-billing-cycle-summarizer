@@ -68,10 +68,10 @@ function recomputeTrip(
       cycle: cycleCtx(cycle),
       vehicles: db.vehicles.filter((v) => v.branchId === branchId),
       rates: db.rateMasters.filter((r) => r.branchId === branchId),
-      groups: db.receiverGroups,
-      aliases: db.receiverGroupAliases,
-      rules: db.conversionRules,
-      manualBoxSenders: db.manualBoxSenders,
+      groups: db.receiverGroups.filter((g) => g.branchId === branchId),
+      aliases: db.receiverGroupAliases.filter((a) => a.branchId === branchId),
+      rules: db.conversionRules.filter((r) => r.branchId === branchId),
+      manualBoxSenders: db.manualBoxSenders.filter((m) => m.branchId === branchId),
       fileName,
     },
     () => generateId('rcp')
@@ -120,6 +120,54 @@ async function startServer() {
     }
   });
 
+  // ===================== CLONE MASTER ระหว่างสาขา =====================
+  // คัดลอก กฎตัวหาร/กลุ่มผู้รับ/alias/ประเภทเงิน/ผู้ส่งกล่อง จากสาขาต้นแบบ -> สาขาปลายทาง
+  app.post('/api/branches/clone', async (req, res) => {
+    try {
+      const { sourceBranchId, targetBranchId, replace } = req.body as {
+        sourceBranchId: string; targetBranchId: string; replace?: boolean;
+      };
+      if (!sourceBranchId || !targetBranchId || sourceBranchId === targetBranchId) {
+        return res.status(400).json({ error: 'เลือกสาขาต้นแบบและปลายทางให้ถูกต้อง' });
+      }
+      const db = await getDb();
+
+      // ลบของเดิมในสาขาปลายทางก่อน (ถ้าเลือกแทนที่)
+      if (replace) {
+        db.receiverGroups = db.receiverGroups.filter((x) => x.branchId !== targetBranchId);
+        db.receiverGroupAliases = db.receiverGroupAliases.filter((x) => x.branchId !== targetBranchId);
+        db.conversionRules = db.conversionRules.filter((x) => x.branchId !== targetBranchId);
+        db.moneyCategories = db.moneyCategories.filter((x) => x.branchId !== targetBranchId);
+        db.manualBoxSenders = db.manualBoxSenders.filter((x) => x.branchId !== targetBranchId);
+      }
+
+      // กลุ่มผู้รับ: id ใหม่ + จำ map เดิม->ใหม่ (เพื่อ remap alias/rule)
+      const groupIdMap: Record<string, string> = {};
+      for (const g of db.receiverGroups.filter((x) => x.branchId === sourceBranchId)) {
+        const nid = generateId('grp');
+        groupIdMap[g.id] = nid;
+        db.receiverGroups.push({ ...g, id: nid, branchId: targetBranchId });
+      }
+      for (const a of db.receiverGroupAliases.filter((x) => x.branchId === sourceBranchId)) {
+        db.receiverGroupAliases.push({ ...a, id: generateId('al'), branchId: targetBranchId, receiverGroupId: groupIdMap[a.receiverGroupId] || '' });
+      }
+      for (const r of db.conversionRules.filter((x) => x.branchId === sourceBranchId)) {
+        db.conversionRules.push({ ...r, id: generateId('rule'), branchId: targetBranchId, receiverGroupId: r.receiverGroupId ? (groupIdMap[r.receiverGroupId] || '') : '' });
+      }
+      for (const c of db.moneyCategories.filter((x) => x.branchId === sourceBranchId)) {
+        db.moneyCategories.push({ ...c, id: generateId('cat'), branchId: targetBranchId });
+      }
+      for (const m of db.manualBoxSenders.filter((x) => x.branchId === sourceBranchId)) {
+        db.manualBoxSenders.push({ ...m, id: generateId('mbs'), branchId: targetBranchId });
+      }
+
+      await saveDb(db);
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ===================== STATE =====================
   // ?branchId=xxx -> กรองข้อมูลเฉพาะสาขานั้น (ถ้าไม่ส่ง = HQ เห็นทุกสาขา)
   // ตัด password ของสาขาออกเสมอ
@@ -137,6 +185,11 @@ async function startServer() {
         tripDocuments: inBranch(db.tripDocuments),
         fuelEntries: inBranch(db.fuelEntries),
         deductions: inBranch(db.deductions),
+        receiverGroups: inBranch(db.receiverGroups),
+        receiverGroupAliases: inBranch(db.receiverGroupAliases),
+        conversionRules: inBranch(db.conversionRules),
+        manualBoxSenders: inBranch(db.manualBoxSenders),
+        moneyCategories: inBranch(db.moneyCategories),
       };
       res.json(safe);
     } catch (err: any) {

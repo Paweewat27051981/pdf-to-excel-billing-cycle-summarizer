@@ -187,7 +187,7 @@ export default function App() {
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} />}
             {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
-            {tab === 'rules' && <RulesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'branches' && <BranchesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
           </>
@@ -246,17 +246,41 @@ function BranchLogin({ branches, api, onLogin }: any) {
 // Tab: จัดการสาขา (เฉพาะ HQ)
 // ===========================================================================
 function BranchesTab({ db, api, reload, showToast }: any) {
-  const blank = { name: '', password: '1234' };
+  const realBranches = (db.branches as Branch[]).filter((b) => !b.isHQ);
+  const defaultSource = realBranches[0]?.id || '';
+  const blank = { name: '', password: '1234', cloneFrom: defaultSource };
   const [form, setForm] = useState(blank);
+
+  const countMaster = (bid: string) =>
+    db.conversionRules.filter((r: ProductConversionRule) => r.branchId === bid).length;
 
   const add = async () => {
     if (!form.name.trim()) return showToast('warning', 'กรอกชื่อสาขา');
     try {
-      await api('/api/branches', 'POST', { name: form.name.trim(), password: form.password || '1234', status: 'active' });
-      showToast('success', `เพิ่มสาขา "${form.name}" แล้ว`);
+      const b = await api('/api/branches', 'POST', { name: form.name.trim(), password: form.password || '1234', status: 'active' });
+      if (form.cloneFrom) {
+        await api('/api/branches/clone', 'POST', { sourceBranchId: form.cloneFrom, targetBranchId: b.id, replace: true });
+      }
+      showToast('success', `เพิ่มสาขา "${form.name}" แล้ว${form.cloneFrom ? ' (คัดลอกกฎ/กลุ่ม/ประเภทมาให้)' : ''}`);
       setForm(blank);
       reload();
     } catch (e: any) { showToast('error', e.message); }
+  };
+
+  const cloneInto = async (target: Branch) => {
+    const sources = realBranches.filter((b) => b.id !== target.id);
+    if (!sources.length) return showToast('warning', 'ไม่มีสาขาต้นแบบให้คัดลอก');
+    // เลือกสาขาต้นแบบที่มีกฎมากสุด (ปกติ = นครสวรรค์)
+    const src = sources.slice().sort((a, b) => countMaster(b.id) - countMaster(a.id))[0];
+    const ok = await confirmAction({
+      title: `คัดลอกกฎจาก "${src.name}" → "${target.name}"?`,
+      text: `จะแทนที่ กฎตัวหาร/กลุ่มผู้รับ/ประเภทรายได้-หัก/ผู้ส่งกล่อง ของ "${target.name}" ด้วยของ "${src.name}" (ไม่กระทบราคา/รถ)`,
+      confirmText: 'คัดลอก',
+    });
+    if (!ok) return;
+    await api('/api/branches/clone', 'POST', { sourceBranchId: src.id, targetBranchId: target.id, replace: true });
+    showToast('success', `คัดลอกจาก "${src.name}" แล้ว`);
+    reload();
   };
   const setPwd = async (b: Branch) => {
     const np = prompt(`ตั้งรหัสผ่านใหม่ของสาขา "${b.name}"`, '');
@@ -278,18 +302,26 @@ function BranchesTab({ db, api, reload, showToast }: any) {
         <h3 className="font-bold text-[#1B365D] mb-3 flex items-center gap-2"><Building2 className="w-4 h-4" />เพิ่มสาขาใหม่</h3>
         <div className="flex flex-wrap gap-2 items-end">
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ชื่อสาขา เช่น ตาก"
-            className="border border-natural-border rounded-lg px-3 py-2 text-sm flex-1 min-w-[160px]" />
+            className="border border-natural-border rounded-lg px-3 py-2 text-sm flex-1 min-w-[140px]" />
           <input value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="รหัสผ่าน"
-            className="border border-natural-border rounded-lg px-3 py-2 text-sm w-32" />
+            className="border border-natural-border rounded-lg px-3 py-2 text-sm w-28" />
+          <label className="flex items-center gap-1 text-[11px] text-natural-muted">
+            คัดลอกกฎจาก:
+            <select aria-label="สาขาต้นแบบ" value={form.cloneFrom} onChange={(e) => setForm({ ...form, cloneFrom: e.target.value })}
+              className="border border-natural-border rounded-lg px-2 py-2 text-xs">
+              <option value="">— ไม่คัดลอก (เริ่มว่าง) —</option>
+              {realBranches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>
           <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-1"><Plus className="w-4 h-4" />เพิ่ม</button>
         </div>
-        <p className="text-[11px] text-natural-muted mt-2">💡 สาขาใหม่เริ่มจากว่าง — เฟส 2 จะมีปุ่มคัดลอกกฎ/ราคาจากสาขาต้นแบบ</p>
+        <p className="text-[11px] text-natural-muted mt-2">💡 คัดลอกกฎตัวหาร/กลุ่มผู้รับ/ประเภทรายได้-หัก จากสาขาต้นแบบมาเป็นจุดเริ่ม (ราคา/รถ ตั้งใหม่แยกต่อสาขา)</p>
       </div>
 
       <div className="bg-white rounded-2xl border border-natural-border overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-natural-bg text-natural-dark-muted text-xs">
-            <tr><th className="text-left px-4 py-2">สาขา</th><th className="text-left px-4 py-2">รถ</th><th className="text-left px-4 py-2">ราคา</th><th className="px-4 py-2"></th></tr>
+            <tr><th className="text-left px-4 py-2">สาขา</th><th className="text-left px-4 py-2">รถ</th><th className="text-left px-4 py-2">ราคา</th><th className="text-left px-4 py-2">กฎตัวหาร</th><th className="px-4 py-2"></th></tr>
           </thead>
           <tbody>
             {(db.branches as Branch[]).map((b) => (
@@ -297,7 +329,9 @@ function BranchesTab({ db, api, reload, showToast }: any) {
                 <td className="px-4 py-2 font-semibold text-[#1B365D]">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.vehicles.filter((v: Vehicle) => v.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length}</td>
+                <td className="px-4 py-2 text-natural-muted">{countMaster(b.id)}</td>
                 <td className="px-4 py-2 text-right whitespace-nowrap">
+                  {!b.isHQ && <button type="button" onClick={() => cloneInto(b)} className="text-xs text-emerald-700 font-semibold mr-3">⬇ คัดลอกกฎ</button>}
                   <button onClick={() => setPwd(b)} className="text-xs text-[#1B365D] font-semibold mr-3">ตั้งรหัสผ่าน</button>
                   {!b.isHQ && <button type="button" title="ลบสาขา" onClick={() => del(b)} className="text-red-500"><Trash2 className="w-4 h-4 inline" /></button>}
                 </td>
@@ -837,7 +871,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
       </Section>
 
       {/* จัดการประเภท — เพิ่มชื่อใน dropdown ได้เองโดยไม่ต้องแก้โค้ด */}
-      <CategoryManager cats={cats} api={api} reload={reload} showToast={showToast} />
+      <CategoryManager cats={cats} api={api} branchId={branchId} reload={reload} showToast={showToast} />
 
       <datalist id="plates">{db.vehicles.map((v: Vehicle) => <option key={v.id} value={v.plateNo} />)}</datalist>
     </div>
@@ -845,11 +879,11 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
 }
 
 // จัดการ Master ประเภทรายได้เพิ่ม / รายการหัก (เติม dropdown)
-function CategoryManager({ cats, api, reload, showToast }: any) {
+function CategoryManager({ cats, api, branchId, reload, showToast }: any) {
   const [form, setForm] = useState<{ name: string; kind: 'income' | 'deduction' }>({ name: '', kind: 'deduction' });
   const add = async () => {
     if (!form.name.trim()) return showToast('warning', 'กรอกชื่อประเภท');
-    await api('/api/money-categories', 'POST', { name: form.name.trim(), kind: form.kind, status: 'active', builtin: false });
+    await api('/api/money-categories', 'POST', { name: form.name.trim(), kind: form.kind, status: 'active', builtin: false, branchId });
     setForm({ name: '', kind: 'deduction' }); reload(); showToast('success', 'เพิ่มประเภทแล้ว — ใช้ใน dropdown ได้เลย');
   };
   const del = async (c: MoneyCategory) => {
@@ -947,14 +981,14 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
 // ===========================================================================
 // Tab: เงื่อนไขตัวหาร + กลุ่มผู้รับ
 // ===========================================================================
-function RulesTab({ db, api, reload, showToast }: any) {
+function RulesTab({ db, api, branchId, reload, showToast }: any) {
   const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null };
   const [form, setForm] = useState<any>(blank);
   const [fSender, setFSender] = useState('');
   const [fGroup, setFGroup] = useState('');
   const add = async () => {
     if (!form.productKeyword) return showToast('warning', 'กรอกชื่อสินค้า');
-    await api('/api/conversion-rules', 'POST', { ...form, ruleName: form.ruleName || `${form.productKeyword} หาร ${form.divisor}` });
+    await api('/api/conversion-rules', 'POST', { ...form, branchId, ruleName: form.ruleName || `${form.productKeyword} หาร ${form.divisor}` });
     setForm(blank); reload(); showToast('success', 'เพิ่มกฎแล้ว');
   };
   const norm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, '');
@@ -1003,18 +1037,18 @@ function RulesTab({ db, api, reload, showToast }: any) {
           rows={filteredRules.map((r: ProductConversionRule) => [r.senderKeyword, db.receiverGroups.find((g: ReceiverGroup) => g.id === r.receiverGroupId)?.groupName || '-', r.productKeyword, r.productSizeKeyword, `÷${r.divisor}`, r.roundingMethod === 'half_up' ? '.5 ปัดขึ้น' : r.roundingMethod])}
           onDelete={async (i: number) => { await api(`/api/conversion-rules/${filteredRules[i].id}`, 'DELETE'); reload(); }} />
       </Section>
-      <GroupManager db={db} api={api} reload={reload} showToast={showToast} />
-      <ManualBoxSenderManager db={db} api={api} reload={reload} showToast={showToast} />
+      <GroupManager db={db} api={api} branchId={branchId} reload={reload} showToast={showToast} />
+      <ManualBoxSenderManager db={db} api={api} branchId={branchId} reload={reload} showToast={showToast} />
     </div>
   );
 }
 
 // จัดการผู้ส่งที่ส่งเป็นชิ้น (ต้องกรอกจำนวนกล่องเอง)
-function ManualBoxSenderManager({ db, api, reload, showToast }: any) {
+function ManualBoxSenderManager({ db, api, branchId, reload, showToast }: any) {
   const [form, setForm] = useState({ senderKeyword: '', note: '' });
   const add = async () => {
     if (!form.senderKeyword.trim()) return showToast('warning', 'กรอกคำในชื่อผู้ส่ง');
-    await api('/api/manual-box-senders', 'POST', { senderKeyword: form.senderKeyword.trim(), note: form.note.trim(), status: 'active' });
+    await api('/api/manual-box-senders', 'POST', { senderKeyword: form.senderKeyword.trim(), note: form.note.trim(), status: 'active', branchId });
     setForm({ senderKeyword: '', note: '' }); reload(); showToast('success', 'เพิ่มแล้ว');
   };
   return (
@@ -1033,13 +1067,13 @@ function ManualBoxSenderManager({ db, api, reload, showToast }: any) {
 }
 
 // จัดการกลุ่มผู้รับสินค้า + ชื่อพ้อง (alias) — เพิ่ม "ชื่อผู้รับใหม่" ได้เอง
-function GroupManager({ db, api, reload, showToast }: any) {
+function GroupManager({ db, api, branchId, reload, showToast }: any) {
   const [newGroup, setNewGroup] = useState('');
   const [aliasInputs, setAliasInputs] = useState<Record<string, string>>({});
 
   const addGroup = async () => {
     if (!newGroup.trim()) return showToast('warning', 'กรอกชื่อกลุ่ม');
-    await api('/api/receiver-groups', 'POST', { groupName: newGroup.trim(), status: 'active' });
+    await api('/api/receiver-groups', 'POST', { groupName: newGroup.trim(), status: 'active', branchId });
     setNewGroup(''); reload(); showToast('success', 'เพิ่มกลุ่มแล้ว — ใช้ใน dropdown ได้เลย');
   };
   const delGroup = async (g: ReceiverGroup) => {
@@ -1049,7 +1083,7 @@ function GroupManager({ db, api, reload, showToast }: any) {
   const addAlias = async (groupId: string) => {
     const name = (aliasInputs[groupId] || '').trim();
     if (!name) return showToast('warning', 'กรอกชื่อพ้อง (ชื่อผู้รับที่ปรากฏใน PDF)');
-    await api('/api/receiver-aliases', 'POST', { receiverGroupId: groupId, aliasName: name, status: 'active' });
+    await api('/api/receiver-aliases', 'POST', { receiverGroupId: groupId, aliasName: name, status: 'active', branchId });
     setAliasInputs({ ...aliasInputs, [groupId]: '' }); reload();
   };
   const delAlias = async (a: ReceiverGroupAlias) => {
