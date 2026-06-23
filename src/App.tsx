@@ -11,7 +11,16 @@ import { exportCycleToExcel } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName } from './calc';
 import { confirmDelete, confirmAction, notify } from './ui';
 
-const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-pro', 'gemini-2.5-pro', 'gemini-1.5-pro'];
+// โมเดลที่มีจริง (ตรวจจาก ListModels API) — flash=เร็ว/ฟรีกว่า, pro=แม่นกว่า
+const GEMINI_MODELS = [
+  'gemini-3.5-flash',
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-2.5-pro',
+  'gemini-3-pro-preview',
+  'gemini-3.1-pro-preview',
+  'gemini-pro-latest',
+];
 
 const EMPTY: DatabaseState = {
   settings: { geminiModel: 'gemini-3.5-flash' },
