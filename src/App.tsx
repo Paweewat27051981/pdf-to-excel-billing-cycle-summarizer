@@ -1034,17 +1034,28 @@ function HQDashboard({ db, cycle }: any) {
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
 function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
-  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, pieceThreshold: '', productCategory: 'normal', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
+  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, pieceThreshold: '', productCategory: 'normal', minQty: '', maxQty: '', receiverKeyword: '', senderKeyword: '', productKeyword: '', rateGroup: '', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<'base' | 'cycle'>('base');
+  const [adv, setAdv] = useState(false);
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     // เก็บคืน/Peat mass คิดเป็นชิ้นเสมอ
     const priceType = form.productCategory === 'normal' ? form.priceType : 'piece';
-    await api('/api/rate-masters', 'POST', { ...form, branchId, priceType, pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null });
+    await api('/api/rate-masters', 'POST', {
+      ...form, branchId, priceType,
+      pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null,
+      minQty: form.minQty ? +form.minQty : null,
+      maxQty: form.maxQty ? +form.maxQty : null,
+      receiverKeyword: form.receiverKeyword?.trim() || '',
+      senderKeyword: form.senderKeyword?.trim() || '',
+      productKeyword: form.productKeyword?.trim() || '',
+      rateGroup: form.rateGroup?.trim() || '',
+    });
     setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
   };
+  const branchGroups: string[] = ((db.branches as Branch[]).find((b) => b.id === branchId)?.rateGroups || []).map((g) => g.name);
   const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : 'งานปกติ';
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
@@ -1114,12 +1125,31 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         <input type="number" aria-label="ราคา" placeholder="ราคา" value={form.price || ''} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
         <input type="number" aria-label="จุดตัดชิ้น" placeholder="จุดตัดชิ้น" title="≤จุดตัด=เหมา, >จุดตัด=ชิ้น (เว้นว่าง=ไม่ใช้)" value={form.pieceThreshold} onChange={(e) => setForm({ ...form, pieceThreshold: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
         <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 py-1.5 font-semibold">เพิ่ม</button>
+        <button onClick={() => setAdv(!adv)} className="text-xs text-[#1B365D] font-semibold underline">{adv ? 'ซ่อน' : 'เงื่อนไขพิเศษ'}</button>
         {sel.size > 0 && (
           <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
             <Trash2 className="w-4 h-4" />ลบที่เลือก ({sel.size})
           </button>
         )}
       </div>
+      {adv && (
+        <div className="flex flex-wrap gap-2 mb-3 text-sm items-center bg-amber-50 border border-amber-200 rounded-lg p-2">
+          <span className="text-[11px] text-amber-800 font-semibold">เงื่อนไขพิเศษ (เว้นว่าง=ไม่ใช้):</span>
+          {branchGroups.length > 0 ? (
+            <select aria-label="กลุ่มราคา" value={form.rateGroup} onChange={(e) => setForm({ ...form, rateGroup: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">
+              <option value="">ทุกกลุ่ม</option>
+              {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
+            </select>
+          ) : (
+            <input aria-label="กลุ่มราคา" placeholder="กลุ่มราคา" value={form.rateGroup} onChange={(e) => setForm({ ...form, rateGroup: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
+          )}
+          <input aria-label="ผู้รับ" placeholder="เฉพาะผู้รับ" value={form.receiverKeyword} onChange={(e) => setForm({ ...form, receiverKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
+          <input aria-label="ผู้ส่ง" placeholder="เฉพาะผู้ส่ง" value={form.senderKeyword} onChange={(e) => setForm({ ...form, senderKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
+          <input aria-label="สินค้า" placeholder="เฉพาะสินค้า" value={form.productKeyword} onChange={(e) => setForm({ ...form, productKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
+          <input type="number" aria-label="กล่องต่ำสุด" placeholder="กล่อง≥" value={form.minQty} onChange={(e) => setForm({ ...form, minQty: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-20" />
+          <input type="number" aria-label="กล่องสูงสุด" placeholder="กล่อง≤" value={form.maxQty} onChange={(e) => setForm({ ...form, maxQty: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-20" />
+        </div>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
@@ -1321,12 +1351,15 @@ function GroupManager({ db, api, branchId, reload, showToast }: any) {
 // Tab: รถ & คนขับ
 // ===========================================================================
 function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
-  const [form, setForm] = useState({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' });
+  const blankV = { plateNo: '', driverName: '', vehicleType: '6 ล้อ', rateGroup: '', status: 'active' };
+  const [form, setForm] = useState<any>(blankV);
   const [sel, setSel] = useState<Set<string>>(new Set());
+  const branchGroups: string[] = ((db.branches as Branch[]).find((b) => b.id === branchId)?.rateGroups || []).map((g) => g.name);
   const add = async () => {
     if (!form.plateNo) return showToast('warning', 'กรอกทะเบียน');
-    await api('/api/vehicles', 'POST', { ...form, branchId }); setForm({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' }); reload();
+    await api('/api/vehicles', 'POST', { ...form, branchId }); setForm(blankV); reload();
   };
+  const setGroup = async (v: Vehicle, g: string) => { await api(`/api/vehicles/${v.id}`, 'PUT', { rateGroup: g }); reload(); };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
   const vehicles: Vehicle[] = db.vehicles;
@@ -1351,6 +1384,12 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
         <input aria-label="ทะเบียนรถ" placeholder="ทะเบียน" value={form.plateNo} onChange={(e) => setForm({ ...form, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
         <input aria-label="ชื่อคนขับ" placeholder="คนขับ" value={form.driverName} onChange={(e) => setForm({ ...form, driverName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-36" />
         <input aria-label="ประเภทรถ" placeholder="ประเภทรถ" value={form.vehicleType} onChange={(e) => setForm({ ...form, vehicleType: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
+        {branchGroups.length > 0 && (
+          <select aria-label="กลุ่มราคา" value={form.rateGroup} onChange={(e) => setForm({ ...form, rateGroup: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">
+            <option value="">กลุ่มราคา?</option>
+            {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
+          </select>
+        )}
         <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 py-1.5 font-semibold">เพิ่ม</button>
         {sel.size > 0 && (
           <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
@@ -1363,7 +1402,7 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
           <thead>
             <tr className="text-natural-muted text-left border-b border-natural-border">
               <th className="w-8 py-1.5 px-1"><input type="checkbox" aria-label="เลือกทั้งหมด" checked={allChecked} onChange={toggleAll} /></th>
-              <th className="py-1.5 px-1">ทะเบียน</th><th className="py-1.5 px-1">คนขับ</th><th className="py-1.5 px-1">ประเภท</th><th className="w-8"></th>
+              <th className="py-1.5 px-1">ทะเบียน</th><th className="py-1.5 px-1">คนขับ</th><th className="py-1.5 px-1">ประเภท</th>{branchGroups.length > 0 && <th className="py-1.5 px-1">กลุ่มราคา</th>}<th className="w-8"></th>
             </tr>
           </thead>
           <tbody>
@@ -1373,10 +1412,18 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
                 <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{v.plateNo}</td>
                 <td className="py-1.5 px-1">{v.driverName}</td>
                 <td className="py-1.5 px-1">{v.vehicleType}</td>
+                {branchGroups.length > 0 && (
+                  <td className="py-1.5 px-1">
+                    <select aria-label={`กลุ่ม ${v.plateNo}`} value={v.rateGroup || ''} onChange={(e) => setGroup(v, e.target.value)} className="border border-natural-border rounded px-1 py-0.5 text-xs">
+                      <option value="">—</option>
+                      {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
+                    </select>
+                  </td>
+                )}
                 <td className="py-1.5 px-1"><button type="button" title="ลบ" onClick={() => delOne(v)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
               </tr>
             ))}
-            {vehicles.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-natural-muted">ยังไม่มีรถในสาขานี้</td></tr>}
+            {vehicles.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-natural-muted">ยังไม่มีรถในสาขานี้</td></tr>}
           </tbody>
         </table>
       </div>

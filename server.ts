@@ -20,7 +20,7 @@ import {
   DeductionEntry,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument } from './src/calc.js';
+import { computeTripDocument, normPlate } from './src/calc.js';
 import { parseDistributionExcel } from './excel-import.js';
 
 dotenv.config(); // โหลด .env
@@ -67,19 +67,30 @@ function recomputeTrip(
     .filter((o) => o.branchId === branchId && o.cycleId === cycle.id)
     .forEach((o) => overrides.set(o.rateMasterId, { price: o.price, pieceThreshold: o.pieceThreshold ?? null }));
 
+  const branch = db.branches.find((b) => b.id === branchId);
+  const branchVehicles = db.vehicles.filter((v) => v.branchId === branchId);
+  // กลุ่มราคาของรถคันนี้ (จากทะเบียน) -> เลือกราคาของกลุ่มนั้น + ขั้นต่ำของกลุ่ม
+  const vehicle = branchVehicles.find((v) => normPlate(v.plateNo) === normPlate(extracted.plateNo) && v.status === 'active');
+  const group = vehicle?.rateGroup || '';
+  const groupMin = branch?.rateGroups?.find((g) => g.name === group)?.minBoxes;
+  const minBoxes = groupMin !== undefined ? groupMin : (branch?.minBoxes ?? null);
+  // ราคาที่ใช้: ของกลุ่มเดียวกัน หรือไม่ระบุกลุ่ม (ใช้ร่วมทุกกลุ่ม)
+  const branchRates = db.rateMasters.filter((r) => r.branchId === branchId && (!r.rateGroup || r.rateGroup === group));
+
   // ใช้รถ/ราคา/กฎของสาขานั้น + ราคาเฉพาะรอบ (ถ้ามี)
   const trip = computeTripDocument(
     extracted,
     {
       cycleId: cycle.id,
       cycle: cycleCtx(cycle),
-      vehicles: db.vehicles.filter((v) => v.branchId === branchId),
-      rates: db.rateMasters.filter((r) => r.branchId === branchId),
+      vehicles: branchVehicles,
+      rates: branchRates,
       rateOverrides: overrides,
       groups: db.receiverGroups.filter((g) => g.branchId === branchId),
       aliases: db.receiverGroupAliases.filter((a) => a.branchId === branchId),
       rules: db.conversionRules.filter((r) => r.branchId === branchId),
       manualBoxSenders: db.manualBoxSenders.filter((m) => m.branchId === branchId),
+      minBoxes,
       fileName,
     },
     () => generateId('rcp')

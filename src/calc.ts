@@ -248,6 +248,35 @@ export function matchCombinedFlat(
   return best;
 }
 
+// ราคาเหมาแบบมีเงื่อนไขพิเศษ: จำนวนกล่อง(ขั้นบันได) + ชื่อผู้รับ/ผู้ส่ง/สินค้า
+// เช่น CP All ลำพูน (1-150=500, 151+=1200) หรือ adidas (สินค้า AD จากคูห์เน่ = เหมาต่อจังหวัด)
+export function matchTieredFlat(
+  ctx: { province: string; totalBoxes: number; receiverNames: string[]; senderNames: string[]; productNames: string[] },
+  rates: RateMaster[],
+  refDate: string
+): number | null {
+  const anyContains = (arr: string[], kw: string) => arr.some((n) => textContains(n, kw));
+  for (const r of rates) {
+    if (r.status !== 'active' || r.priceType !== 'flat') continue;
+    if ((r.productCategory || 'normal') !== 'normal') continue;
+    // เป็นกฎพิเศษเท่านั้น (มีเงื่อนไขข้อใดข้อหนึ่ง)
+    if (r.minQty == null && r.maxQty == null && !r.receiverKeyword && !r.senderKeyword && !r.productKeyword) continue;
+    if (!isEffective(refDate, r.effectiveFrom, r.effectiveTo)) continue;
+    const provOk =
+      textContains(ctx.province, r.provinceName) ||
+      textContains(ctx.province, r.provinceShort) ||
+      textContains(r.provinceName, ctx.province);
+    if (!provOk) continue;
+    if (r.receiverKeyword && !anyContains(ctx.receiverNames, r.receiverKeyword)) continue;
+    if (r.senderKeyword && !anyContains(ctx.senderNames, r.senderKeyword)) continue;
+    if (r.productKeyword && !anyContains(ctx.productNames, r.productKeyword)) continue;
+    if (r.minQty != null && ctx.totalBoxes < r.minQty) continue;
+    if (r.maxQty != null && ctx.totalBoxes > r.maxQty) continue;
+    return r.price;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // คำนวณ 1 ใบรับสินค้า: ปรับจำนวนตามตัวหาร -> billingQty
 //   special_qty = จำนวนสินค้าที่เข้ากฎ
@@ -376,6 +405,7 @@ export function computeTripDocument(
     aliases: ReceiverGroupAlias[];
     rules: ProductConversionRule[];
     manualBoxSenders: ManualBoxSender[];
+    minBoxes?: number | null;
     fileName: string;
   },
   idFactory: () => string
@@ -449,9 +479,24 @@ export function computeTripDocument(
     ? matchCombinedFlat(docProvince, docDistricts, ctx.rates, refDate)
     : null;
 
-  // ยอดถ้าคิดเหมา (ชุดอำเภอ > เหมาสูงสุด) vs ยอดถ้าคิดชิ้น (รวมทุกจุด)
+  // ราคาเหมาแบบเงื่อนไขพิเศษ (จำนวนกล่อง/ผู้รับ/ผู้ส่ง/สินค้า) เช่น CP All ลำพูน, adidas
+  const totalBoxes = receipts.reduce((s, r) => s + r.totalQty, 0);
+  const tieredFlat = matchTieredFlat({
+    province: docProvince,
+    totalBoxes,
+    receiverNames: receipts.map((r) => r.receiverName),
+    senderNames: receipts.map((r) => r.senderName),
+    productNames: receipts.flatMap((r) => r.items.map((it) => it.productName)),
+  }, ctx.rates, refDate);
+
+  // เตือนจำนวนกล่องขั้นต่ำต่อเที่ยว (เช่น เชียงใหม่ ต้อง >=190) — ยกเว้นเที่ยวที่เข้าราคาขั้นบันได
+  if (ctx.minBoxes != null && tieredFlat == null && totalBoxes < ctx.minBoxes) {
+    warnings.push(`จำนวน ${totalBoxes} กล่อง ต่ำกว่าขั้นต่ำ ${ctx.minBoxes} กล่อง/เที่ยว — ต้องแก้ไขให้ถึง ${ctx.minBoxes}`);
+  }
+
+  // ยอดถ้าคิดเหมา (ขั้นบันได > ชุดอำเภอ > เหมาสูงสุด) vs ยอดถ้าคิดชิ้น (รวมทุกจุด)
   const maxFlat = anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : 0;
-  const flatTotal = combinedFlat ?? maxFlat;
+  const flatTotal = tieredFlat ?? combinedFlat ?? maxFlat;
   const pieceTotal = anyPiece ? receipts.reduce((s, r) => s + (r.piecePrice != null ? r.billingQty * r.piecePrice : 0), 0) : 0;
 
   // จุดตัดชิ้นของใบนี้ (ใช้ตัวแรกที่เจอ — ปกติทั้งใบเป็นจังหวัดเดียวกัน)
@@ -459,14 +504,14 @@ export function computeTripDocument(
   // อัตโนมัติ (เมื่อมีทั้งเหมา+ชิ้น):
   //  - มีจุดตัด -> จำนวนคิดค่าเที่ยว(หลังหาร) <=จุดตัด=เหมา, >จุดตัด=ชิ้น (กำแพงเพชร)
   //  - ไม่มีจุดตัด -> "สูงกว่า": เลือกอันที่ยอดเงินมากกว่า (พิษณุโลก/สุโขทัย/อุตรดิตถ์/เพชรบูรณ์)
-  const hasFlat = anyFlat || combinedFlat != null;
+  const hasFlat = anyFlat || combinedFlat != null || tieredFlat != null;
   let autoType: PriceType | null = null;
   if (hasFlat && anyPiece) {
     if (docThreshold != null) autoType = billingQty <= docThreshold ? 'flat' : 'piece';
     else autoType = pieceTotal > flatTotal ? 'piece' : 'flat';
   }
-  // ส่งหลายอำเภอตรงชุด -> คิดราคาเหมาของชุดเสมอ
-  if (combinedFlat != null) autoType = 'flat';
+  // ราคาขั้นบันได / ส่งหลายอำเภอตรงชุด -> คิดราคาเหมาเสมอ
+  if (combinedFlat != null || tieredFlat != null) autoType = 'flat';
 
   // เลือกแบบเดียวกันทั้งใบ: ผู้ใช้เลือกเอง > อัตโนมัติ > default (เหมาก่อน)
   let rateType: PriceType | null = extracted.rateChoice ?? null;

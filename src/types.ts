@@ -31,6 +31,9 @@ export interface Branch {
   name: string;          // ชื่อสาขา เช่น "นครสวรรค์"
   password: string;      // รหัสผ่านเข้าใช้งานสาขา (ไม่ส่งกลับใน /api/state)
   isHQ?: boolean;        // true = สำนักงานใหญ่ (เห็นทุกสาขา + จัดการสาขา)
+  minBoxes?: number | null; // จำนวนกล่องขั้นต่ำต่อเที่ยว (default ของสาขา) — ต่ำกว่านี้ขึ้นเตือน
+  // กลุ่มราคา (รถคนละกลุ่มใช้ราคาคนละชุด) + ขั้นต่ำต่อกลุ่ม เช่น เชียงใหม่ กลุ่ม 1=190, กลุ่ม 2=ไม่บังคับ
+  rateGroups?: { name: string; minBoxes?: number | null }[];
   status: RecordStatus;
 }
 
@@ -43,6 +46,7 @@ export interface Vehicle {
   plateNo: string;       // ทะเบียนรถ
   driverName: string;    // ชื่อคนขับ
   vehicleType: string;   // ประเภทรถ
+  rateGroup?: string;    // กลุ่มราคา (รถกลุ่มนี้ใช้ราคาชุดนี้) — ว่าง=ปกติ
   status: RecordStatus;
 }
 
@@ -61,6 +65,13 @@ export interface RateMaster {
   // ประเภทสินค้า: normal=งานปกติ, collect_back=เก็บสินค้าคืน(คิดชิ้น), peat_mass=Peat mass(คิดชิ้น)
   productCategory?: 'normal' | 'collect_back' | 'peat_mass';
   pieceThreshold?: number | null; // จุดตัดจำนวน: <=จุดตัด ใช้เหมา, >จุดตัด ใช้ชิ้น (เฉพาะปลายทางที่มีทั้ง 2 ราคา)
+  // ราคาขั้นบันไดตามจำนวนกล่อง (เช่น CP All ลำพูน 1-150=500, 151+=1200) + ผูกชื่อผู้รับ/ผู้ส่ง/สินค้า
+  minQty?: number | null;          // จำนวนกล่องขั้นต่ำที่ใช้ราคานี้
+  maxQty?: number | null;          // จำนวนกล่องสูงสุด (null=ไม่จำกัด)
+  receiverKeyword?: string;        // ใช้เฉพาะผู้รับที่มีคำนี้ (เช่น "ซีพี ออลล์")
+  senderKeyword?: string;          // ใช้เฉพาะผู้ส่งที่มีคำนี้ (เช่น "คูห์เน่")
+  productKeyword?: string;         // ใช้เฉพาะสินค้าที่มีคำนี้ (เช่น "สินค้า AD")
+  rateGroup?: string;              // กลุ่มราคา (ตามรถ) — ว่าง=ใช้ทุกกลุ่ม
   effectiveFrom: string;   // YYYY-MM-DD
   effectiveTo: string | null;
   status: RecordStatus;
