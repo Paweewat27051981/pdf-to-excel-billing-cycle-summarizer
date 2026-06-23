@@ -6,18 +6,40 @@
 import * as XLSX from 'xlsx';
 import { ExtractedTripDocument, ExtractedReceipt } from './src/types.js';
 
-// ช่วงคอลัมน์ของรูปแบบใบกระจาย (FM-OP01-05) — เผื่อ merge cell ใช้ช่วงกว้าง
-const COL = {
-  seq: [0, 2],        // ลำดับ
-  receiver: [3, 8],   // ผู้รับสินค้า
-  sender: [9, 18],    // ผู้ส่งสินค้า
-  qty: [18, 20],      // จำนวน
-  unit: [21, 23],     // หน่วย
-  product: [24, 32],  // รายการ
-  receipt: [33, 49],  // เลขที่ใบรับสินค้า
+type Cols = { seq: number[]; receiver: number[]; sender: number[]; qty: number[]; unit: number[]; product: number[]; receipt: number[] };
+
+// ค่าเริ่มต้น (รูปแบบ 11111.xls) — ใช้เมื่อหาหัวตารางไม่เจอ
+const COL: Cols = {
+  seq: [0, 2], receiver: [3, 8], sender: [9, 18], qty: [18, 20], unit: [21, 23], product: [24, 32], receipt: [33, 49],
 };
 
 type Row = any[];
+
+// จับตำแหน่งคอลัมน์จาก "หัวตาราง" อัตโนมัติ (รองรับ layout ที่คอลัมน์เลื่อน เช่น ใบปุ๋ย)
+function detectCols(rows: Row[]): Cols | null {
+  for (const row of rows) {
+    const find = (label: string) => row.findIndex((c) => String(c).includes(label));
+    const seqH = find('ลำดับ');
+    const qtyH = find('จำนวน');
+    const prodH = find('รายการ');
+    const recvH = find('ผู้รับ');
+    const sendH = find('ผู้ส่ง');
+    const unitH = find('หน่วย');
+    const receiptH = find('เลขที่ใบรับ');
+    if ([seqH, qtyH, prodH, recvH, sendH, unitH, receiptH].some((x) => x < 0)) continue;
+    // ช่วงข้อมูลอ้างอิงตำแหน่งหัวตาราง (ข้อมูลมักอยู่ซ้ายของ label เล็กน้อยเพราะ merge cell)
+    return {
+      seq: [seqH, Math.max(seqH, recvH - 1)],
+      receiver: [seqH + 1, sendH - 1],
+      sender: [recvH + 1, qtyH - 1],
+      qty: [qtyH, unitH - 1],
+      unit: [unitH, prodH - 1],
+      product: [prodH, receiptH - 1],
+      receipt: [receiptH - 1, receiptH + 18],
+    };
+  }
+  return null;
+}
 
 function txt(row: Row, range: number[]): string {
   for (let i = range[0]; i <= range[1] && i < row.length; i++) {
@@ -71,8 +93,8 @@ function excelDate(serial: number | null): string {
 }
 
 // เลขที่ใบรับ เช่น B0926159948 (ตัวอักษร 1 ตัว + ตัวเลขยาว)
-function findReceiptNo(row: Row): string {
-  const raw = txt(row, COL.receipt);
+function findReceiptNo(row: Row, cols: Cols): string {
+  const raw = txt(row, cols.receipt);
   if (/^[A-Za-z]\d{5,}/.test(raw)) return raw;
   // เผื่อ shift: สแกนทั้งแถว
   for (const v of row) {
@@ -97,6 +119,7 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
   for (const sheetName of wb.SheetNames) {
     const ws = wb.Sheets[sheetName];
     const rows: Row[] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: true });
+    const cols = detectCols(rows) || COL; // จับคอลัมน์จากหัวตาราง ไม่งั้นใช้ค่าเริ่มต้น
 
     let doc: ExtractedTripDocument | null = null;
     let curProvince = '';
@@ -150,17 +173,17 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
       if (joined.includes('ผู้รับสินค้า') && joined.includes('ผู้ส่งสินค้า')) continue;
 
       // --- แถวรายการสินค้า: ต้องมีจำนวน(ตัวเลข) + ชื่อสินค้า ---
-      const qty = num(row, COL.qty);
-      const product = txt(row, COL.product);
+      const qty = num(row, cols.qty);
+      const product = txt(row, cols.product);
       if (qty == null || !product) continue;
 
-      const seq = num(row, COL.seq);
+      const seq = num(row, cols.seq);
       if (seq != null && Number.isInteger(seq)) {
         // เริ่มใบรับใหม่
         curReceipt = {
-          receiptNo: findReceiptNo(row),
-          receiverName: txt(row, COL.receiver),
-          senderName: txt(row, COL.sender),
+          receiptNo: findReceiptNo(row, cols),
+          receiverName: txt(row, cols.receiver),
+          senderName: txt(row, cols.sender),
           provinceRaw: curProvince,
           districtRaw: curDistrict,
           items: [],
@@ -172,7 +195,7 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
         curReceipt = { receiptNo: '', receiverName: '', senderName: '', provinceRaw: curProvince, districtRaw: curDistrict, items: [] };
         doc.receipts.push(curReceipt);
       }
-      const unit = txt(row, COL.unit);
+      const unit = txt(row, cols.unit);
       curReceipt.items.push({ productName: product, quantity: qty, ...(unit ? { unit } : {}) });
     }
 
