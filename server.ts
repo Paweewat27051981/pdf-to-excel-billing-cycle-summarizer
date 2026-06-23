@@ -85,6 +85,18 @@ async function startServer() {
     res.json({ aiEnabled: isAiEnabled() });
   });
 
+  // ===================== SETTINGS =====================
+  app.put('/api/settings', async (req, res) => {
+    try {
+      const db = await getDb();
+      db.settings = { ...db.settings, ...req.body };
+      await saveDb(db);
+      res.json(db.settings);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ===================== STATE =====================
   app.get('/api/state', async (_req, res) => {
     try {
@@ -343,6 +355,9 @@ async function startServer() {
       }
 
       const ai = getGeminiClient();
+      // เลือกรุ่นโมเดล: จากการตั้งค่าในแอป -> env -> ค่าเริ่มต้น
+      const settingsDb = await getDb();
+      const geminiModel = settingsDb.settings?.geminiModel || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
       const rawBase64 = pdfBase64.replace(/^data:application\/pdf;base64,/, '');
       const docPart = { inlineData: { mimeType: 'application/pdf', data: rawBase64 } };
       const promptPart = {
@@ -360,7 +375,7 @@ async function startServer() {
       };
 
       const response = await ai.models.generateContent({
-        model: process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+        model: geminiModel,
         contents: [docPart, promptPart],
         config: {
           responseMimeType: 'application/json',

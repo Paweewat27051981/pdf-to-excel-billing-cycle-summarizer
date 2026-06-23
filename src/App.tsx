@@ -11,7 +11,10 @@ import { exportCycleToExcel } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName } from './calc';
 import { confirmDelete, confirmAction, notify } from './ui';
 
+const GEMINI_MODELS = ['gemini-3.5-flash', 'gemini-3.5-pro', 'gemini-2.5-pro', 'gemini-1.5-pro'];
+
 const EMPTY: DatabaseState = {
+  settings: { geminiModel: 'gemini-3.5-flash' },
   cycles: [], vehicles: [], rateMasters: [], rateMasterHistory: [], receiverGroups: [],
   receiverGroupAliases: [], conversionRules: [], manualBoxSenders: [], moneyCategories: [], tripDocuments: [], fuelEntries: [], deductions: [],
 };
@@ -314,10 +317,22 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, reload, showToast }: a
                 ⚠️ ยังไม่ได้ตั้งค่า GEMINI_API_KEY — อ่าน PDF จริงไม่ได้ ใช้ "กรอกเอง" เพื่อทดสอบ
               </p>
             )}
-            <div className="flex gap-2 mt-3">
+            <div className="flex gap-2 mt-3 items-center flex-wrap justify-center">
               <button onClick={() => fileRef.current?.click()} disabled={!aiEnabled}
                 className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-2 text-xs font-semibold">เลือกไฟล์ PDF</button>
               <button onClick={manual} className="border border-natural-border rounded-full px-4 py-2 text-xs font-semibold">กรอกเอง</button>
+              <label className="flex items-center gap-1 text-[11px] text-natural-muted ml-1">
+                โมเดล AI:
+                <select aria-label="เลือกโมเดล AI" value={db.settings?.geminiModel || 'gemini-3.5-flash'}
+                  onChange={async (e) => {
+                    await api('/api/settings', 'PUT', { geminiModel: e.target.value });
+                    showToast('success', `เปลี่ยนโมเดลเป็น ${e.target.value}`);
+                    reload();
+                  }}
+                  className="border border-natural-border rounded-lg px-2 py-1 text-[11px] font-semibold text-[#1B365D]">
+                  {GEMINI_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </label>
             </div>
           </>
         )}

@@ -80,6 +80,7 @@ function loadSeedMasters(): { vehicles: Vehicle[]; rateMasters: RateMaster[] } {
 function seedState(): DatabaseState {
   const { vehicles, rateMasters } = loadSeedMasters();
   return {
+    settings: { geminiModel: 'gemini-3.5-flash' },
     cycles: [],
     vehicles,
     rateMasters,
@@ -145,6 +146,7 @@ function migrateDeductions(list: any[]): any[] {
 export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   const seed = seedState();
   return {
+    settings: { ...seed.settings, ...(state.settings || {}) },
     cycles: state.cycles ?? [],
     vehicles: state.vehicles ?? seed.vehicles,
     rateMasters: state.rateMasters ?? seed.rateMasters,

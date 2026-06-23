@@ -268,9 +268,17 @@ export interface VehicleSummary {
 }
 
 // ---------------------------------------------------------------------------
+// การตั้งค่าระบบ (เลือกได้จากหน้าเว็บ)
+// ---------------------------------------------------------------------------
+export interface AppSettings {
+  geminiModel: string; // รุ่นโมเดล Gemini ที่ใช้อ่าน PDF
+}
+
+// ---------------------------------------------------------------------------
 // Database root
 // ---------------------------------------------------------------------------
 export interface DatabaseState {
+  settings: AppSettings;
   cycles: BillingCycle[];
   vehicles: Vehicle[];
   rateMasters: RateMaster[];
