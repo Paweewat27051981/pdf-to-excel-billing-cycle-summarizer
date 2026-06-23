@@ -359,6 +359,19 @@ async function startServer() {
     }
   });
 
+  app.post('/api/rate-masters/bulk-delete', async (req, res) => {
+    try {
+      const ids: string[] = req.body?.ids || [];
+      const idset = new Set(ids);
+      const db = await getDb();
+      db.rateMasters = db.rateMasters.filter((r) => !idset.has(r.id));
+      await saveDb(db);
+      res.json({ success: true, deleted: ids.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ===================== TRIP DOCUMENTS =====================
   // บันทึก trip ที่ผ่าน Review (รับ extracted + คำนวณใหม่ฝั่ง server)
   app.post('/api/trips', async (req, res) => {

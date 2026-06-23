@@ -215,18 +215,18 @@ export async function exportCycleToExcel(
   // ---------------- SHEET: รายการหัก ----------------
   {
     const ws = wb.addWorksheet('รายการหัก');
-    styleTitle(ws, `รายการหัก — ${cycle.name}`, 5);
+    styleTitle(ws, `รายการหัก — ${cycle.name}`, 6);
     ws.addRow([]);
-    styleHeaderRow(ws.addRow(['ทะเบียน', 'ทิศทาง', 'รายการ', 'จำนวนเงิน', 'หมายเหตุ']));
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'ทิศทาง', 'รายการ', 'จำนวนเงิน', 'ใบกระจาย', 'หมายเหตุ']));
     let zebra = false;
     cycleDed.forEach((d) => {
-      const r = ws.addRow([d.plateNo, d.kind === 'income' ? 'รายได้เพิ่ม (+)' : 'หักออก (-)', d.label, d.amount, d.note || '']);
+      const r = ws.addRow([d.plateNo, d.kind === 'income' ? 'รายได้เพิ่ม (+)' : 'หักออก (-)', d.label, d.amount, d.docNo || '', d.note || '']);
       r.eachCell((cell, col) => bodyCell(cell, { align: col === 4 ? 'right' : 'left', bg: zebra ? C.zebra : undefined }));
       r.getCell(4).numFmt = NUM;
       zebra = !zebra;
     });
     ws.columns.forEach((c) => (c.width = 16));
-    ws.getColumn(3).width = 22; ws.getColumn(5).width = 24;
+    ws.getColumn(3).width = 22; ws.getColumn(5).width = 18; ws.getColumn(6).width = 24;
   }
 
   // ---------------- SHEET: ราคาขนส่ง (Master ที่ใช้) ----------------

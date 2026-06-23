@@ -1036,14 +1036,32 @@ function HQDashboard({ db, cycle }: any) {
 function RatesTab({ db, api, branchId, reload, showToast }: any) {
   const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
+  const [sel, setSel] = useState<Set<string>>(new Set());
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     await api('/api/rate-masters', 'POST', { ...form, branchId }); setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
   };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
+
+  const rates: RateMaster[] = db.rateMasters;
+  const toggle = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allChecked = rates.length > 0 && rates.every((r) => sel.has(r.id));
+  const toggleAll = () => setSel(allChecked ? new Set() : new Set(rates.map((r) => r.id)));
+  const delOne = async (r: RateMaster) => {
+    if (!(await confirmDelete(`ราคา ${r.destinationName || r.provinceName}`))) return;
+    await api(`/api/rate-masters/${r.id}`, 'DELETE'); reload();
+  };
+  const bulkDel = async () => {
+    if (!sel.size) return;
+    if (!(await confirmDelete(`ราคา ${sel.size} รายการที่เลือก`))) return;
+    await api('/api/rate-masters/bulk-delete', 'POST', { ids: [...sel] });
+    showToast('success', `ลบ ${sel.size} รายการแล้ว`);
+    setSel(new Set()); reload();
+  };
+
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
-      <div className="flex flex-wrap gap-2 mb-3 text-sm">
+      <div className="flex flex-wrap gap-2 mb-3 text-sm items-center">
         <input aria-label="ปลายทาง" placeholder="ปลายทาง" value={form.destinationName} onChange={(e) => setForm({ ...form, destinationName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
         <input aria-label="จังหวัด" placeholder="จังหวัด" value={form.provinceName} onChange={(e) => setForm({ ...form, provinceName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
         <input aria-label="อำเภอ" placeholder="อำเภอ" value={form.districtName} onChange={(e) => setForm({ ...form, districtName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
@@ -1051,11 +1069,39 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
           <option value="flat">ราคาเหมา</option><option value="piece">ราคาชิ้น</option>
         </select>
         <input type="number" aria-label="ราคา" placeholder="ราคา" value={form.price || ''} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
-        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 font-semibold">เพิ่ม</button>
+        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 py-1.5 font-semibold">เพิ่ม</button>
+        {sel.size > 0 && (
+          <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
+            <Trash2 className="w-4 h-4" />ลบที่เลือก ({sel.size})
+          </button>
+        )}
       </div>
-      <SimpleTable cols={['ปลายทาง', 'จังหวัด', 'อำเภอ', 'ประเภท', 'ราคา', 'เริ่มใช้']}
-        rows={db.rateMasters.map((r: RateMaster) => [r.destinationName, r.provinceName, r.districtName, r.priceType === 'flat' ? 'เหมา' : 'ชิ้น', money(r.price), r.effectiveFrom])}
-        onDelete={async (i: number) => { await api(`/api/rate-masters/${db.rateMasters[i].id}`, 'DELETE'); reload(); }} />
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-natural-muted text-left border-b border-natural-border">
+              <th className="w-8 py-1.5 px-1"><input type="checkbox" aria-label="เลือกทั้งหมด" checked={allChecked} onChange={toggleAll} /></th>
+              {['ปลายทาง', 'จังหวัด', 'อำเภอ', 'ประเภท', 'ราคา', 'เริ่มใช้'].map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}
+              <th className="w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rates.map((r) => (
+              <tr key={r.id} className={`border-b border-natural-border/60 ${sel.has(r.id) ? 'bg-red-50' : ''}`}>
+                <td className="py-1.5 px-1"><input type="checkbox" aria-label={`เลือก ${r.destinationName}`} checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
+                <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{r.destinationName}</td>
+                <td className="py-1.5 px-1">{r.provinceName}</td>
+                <td className="py-1.5 px-1">{r.districtName}</td>
+                <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
+                <td className="py-1.5 px-1">{money(r.price)}</td>
+                <td className="py-1.5 px-1">{r.effectiveFrom}</td>
+                <td className="py-1.5 px-1"><button type="button" title="ลบ" onClick={() => delOne(r)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
+              </tr>
+            ))}
+            {rates.length === 0 && <tr><td colSpan={8} className="py-6 text-center text-natural-muted">ยังไม่มีราคาในสาขานี้</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </Section>
   );
 }
