@@ -178,6 +178,11 @@ function normalizeTrips(list: any[]): any[] {
       ...r,
       items: r.items ?? [],
       adjustments: r.adjustments ?? [],
+      normalQty: r.normalQty ?? r.totalQty ?? 0,
+      collectQty: r.collectQty ?? 0,
+      collectPrice: r.collectPrice ?? null,
+      peatQty: r.peatQty ?? 0,
+      peatPrice: r.peatPrice ?? null,
     })),
   }));
 }

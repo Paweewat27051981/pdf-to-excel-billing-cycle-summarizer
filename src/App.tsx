@@ -1034,15 +1034,18 @@ function HQDashboard({ db, cycle }: any) {
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
 function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
-  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, pieceThreshold: '', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
+  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, pieceThreshold: '', productCategory: 'normal', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<'base' | 'cycle'>('base');
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
-    await api('/api/rate-masters', 'POST', { ...form, branchId, pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null });
+    // เก็บคืน/Peat mass คิดเป็นชิ้นเสมอ
+    const priceType = form.productCategory === 'normal' ? form.priceType : 'piece';
+    await api('/api/rate-masters', 'POST', { ...form, branchId, priceType, pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null });
     setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
   };
+  const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : 'งานปกติ';
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
   const rates: RateMaster[] = db.rateMasters;
@@ -1102,7 +1105,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         <input aria-label="ปลายทาง" placeholder="ปลายทาง" value={form.destinationName} onChange={(e) => setForm({ ...form, destinationName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
         <input aria-label="จังหวัด" placeholder="จังหวัด" value={form.provinceName} onChange={(e) => setForm({ ...form, provinceName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
         <input aria-label="อำเภอ" placeholder="อำเภอ" value={form.districtName} onChange={(e) => setForm({ ...form, districtName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
-        <select aria-label="ประเภทราคา" value={form.priceType} onChange={(e) => setForm({ ...form, priceType: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">
+        <select aria-label="ประเภทสินค้า" value={form.productCategory} onChange={(e) => setForm({ ...form, productCategory: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">
+          <option value="normal">งานปกติ</option><option value="collect_back">เก็บคืน</option><option value="peat_mass">Peat mass</option>
+        </select>
+        <select aria-label="ประเภทราคา" value={form.priceType} onChange={(e) => setForm({ ...form, priceType: e.target.value })} disabled={form.productCategory !== 'normal'} className="border border-natural-border rounded-lg px-2 py-1.5 disabled:opacity-50">
           <option value="flat">ราคาเหมา</option><option value="piece">ราคาชิ้น</option>
         </select>
         <input type="number" aria-label="ราคา" placeholder="ราคา" value={form.price || ''} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
@@ -1119,7 +1125,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
           <thead>
             <tr className="text-natural-muted text-left border-b border-natural-border">
               <th className="w-8 py-1.5 px-1"><input type="checkbox" aria-label="เลือกทั้งหมด" checked={allChecked} onChange={toggleAll} /></th>
-              {['ปลายทาง', 'จังหวัด', 'อำเภอ', 'ประเภท', 'ราคา', 'จุดตัดชิ้น', 'เริ่มใช้'].map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}
+              {['ปลายทาง', 'จังหวัด', 'อำเภอ', 'หมวด', 'ประเภท', 'ราคา', 'จุดตัดชิ้น', 'เริ่มใช้'].map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}
               <th className="w-8"></th>
             </tr>
           </thead>
@@ -1130,6 +1136,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
                 <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{r.destinationName}</td>
                 <td className="py-1.5 px-1">{r.provinceName}</td>
                 <td className="py-1.5 px-1">{r.districtName}</td>
+                <td className="py-1.5 px-1">{(r.productCategory && r.productCategory !== 'normal') ? <span className="text-amber-700 font-semibold">{catLabel(r.productCategory)}</span> : <span className="text-natural-muted">ปกติ</span>}</td>
                 <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
                 <td className="py-1.5 px-1">
                   <input type="number" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}`} defaultValue={effPrice(r)} aria-label={`ราคา ${r.destinationName}`}
@@ -1149,7 +1156,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
                 </td>
               </tr>
             ))}
-            {rates.length === 0 && <tr><td colSpan={9} className="py-6 text-center text-natural-muted">ยังไม่มีราคาในสาขานี้</td></tr>}
+            {rates.length === 0 && <tr><td colSpan={10} className="py-6 text-center text-natural-muted">ยังไม่มีราคาในสาขานี้</td></tr>}
           </tbody>
         </table>
       </div>

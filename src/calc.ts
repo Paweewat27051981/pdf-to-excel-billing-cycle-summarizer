@@ -184,10 +184,12 @@ export interface RateMatch {
 export function matchRate(
   params: { provinceRaw: string; districtRaw: string; refDate: string },
   rates: RateMaster[],
-  overrides?: Map<string, { price: number; pieceThreshold: number | null }>
+  overrides?: Map<string, { price: number; pieceThreshold: number | null }>,
+  category: string = 'normal'
 ): { flat?: RateMatch; piece?: RateMatch } {
   const candidates = rates.filter((r) => {
     if (r.status !== 'active') return false;
+    if ((r.productCategory || 'normal') !== category) return false;
     if (!isEffective(params.refDate, r.effectiveFrom, r.effectiveTo)) return false;
     const provOk =
       textContains(params.provinceRaw, r.provinceName) ||
@@ -240,7 +242,26 @@ export function computeReceipt(
   const group = matchReceiverGroup(extracted.receiverName, ctx.groups, ctx.aliases);
   const groupId = group ? group.id : null;
 
-  // นับทุกบรรทัดที่มีจำนวน (รวมบรรทัดที่ชื่อยังไม่ระบุ "*** โปรดระบุ ***") ให้ตรงกับยอดรวมในใบกระจาย
+  // ปลายทางของจุดส่งนี้ (ถ้าใบรับไม่ระบุ ใช้ของใบกระจาย)
+  const provinceRaw = (extracted.provinceRaw || '').trim() || ctx.fallbackProvince;
+  const districtRaw = (extracted.districtRaw || '').trim() || ctx.fallbackDistrict;
+  const rateParams = { provinceRaw, districtRaw, refDate: ctx.refDate };
+  const rm = matchRate(rateParams, ctx.rates, ctx.rateOverrides, 'normal');
+  const flatPrice = rm.flat ? rm.flat.rateValue : null;
+  const piecePrice = rm.piece ? rm.piece.rateValue : null;
+  const pieceThreshold = rm.flat?.threshold ?? rm.piece?.threshold ?? null;
+  // ราคาสินค้าพิเศษของปลายทางนี้ (ถ้ามี)
+  const collectPrice = matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null;
+  const peatPrice = matchRate(rateParams, ctx.rates, undefined, 'peat_mass').piece?.rateValue ?? null;
+
+  // แยกประเภทสินค้า (เฉพาะเมื่อมีราคาประเภทนั้นของปลายทาง ไม่งั้นถือเป็นงานปกติ)
+  const isCollect = (it: ExtractedReceiptItem) => collectPrice != null && textContains(it.productName, 'เก็บสินค้าคืน');
+  const isPeat = (it: ExtractedReceiptItem) => peatPrice != null && textContains(it.productName, 'Peat mass');
+  const normalItems = extracted.items.filter((it) => !isCollect(it) && !isPeat(it));
+  const collectQty = extracted.items.filter(isCollect).reduce((s, it) => s + (it.quantity || 0), 0);
+  const peatQty = extracted.items.filter(isPeat).reduce((s, it) => s + (it.quantity || 0), 0);
+  const normalQty = normalItems.reduce((s, it) => s + (it.quantity || 0), 0);
+  // นับทุกบรรทัด (รวม "*** โปรดระบุ ***") ให้ยอดตรงกับใบกระจาย
   const totalQty = extracted.items.reduce((sum, it) => sum + (it.quantity || 0), 0);
 
   // ผู้ส่งนี้ส่งเป็นชิ้น ต้องกรอกจำนวนกล่องเอง?
@@ -250,15 +271,14 @@ export function computeReceipt(
   const manualBoxQty = typeof extracted.manualBoxQty === 'number' ? extracted.manualBoxQty : null;
 
   const adjustments: ReceiptAdjustment[] = [];
-  let billingQty = totalQty;
+  let billingQty = normalQty; // คิดค่าเที่ยวงานปกติเท่านั้น (เก็บคืน/Peat คิดแยก)
 
   // ถ้าผู้ส่งต้องกรอกกล่องเอง: ใช้จำนวนกล่อง เป็น billingQty (ไม่ใช้ตัวหาร)
   if (requiresManualBox) {
     billingQty = manualBoxQty ?? 0;
   } else {
-    // หารแยก "ทีละรายการ": แต่ละรายการที่เข้ากฎ -> qty ÷ divisor แล้วปัด (ROUND_HALF_UP)
-    // billing = total - Σ(qty ที่เข้ากฎ) + Σ(ผลหารที่ปัดแล้วของแต่ละรายการ)
-    for (const item of extracted.items) {
+    // หารแยก "ทีละรายการ" (เฉพาะงานปกติ): qty ÷ divisor แล้วปัด (ROUND_HALF_UP)
+    for (const item of normalItems) {
       const rule = findConversionRule(
         {
           senderName: extracted.senderName,
@@ -284,14 +304,6 @@ export function computeReceipt(
     }
   }
 
-  // ปลายทางของจุดส่งนี้ (ถ้าใบรับไม่ระบุ ใช้ของใบกระจาย)
-  const provinceRaw = (extracted.provinceRaw || '').trim() || ctx.fallbackProvince;
-  const districtRaw = (extracted.districtRaw || '').trim() || ctx.fallbackDistrict;
-  const rm = matchRate({ provinceRaw, districtRaw, refDate: ctx.refDate }, ctx.rates, ctx.rateOverrides);
-  const flatPrice = rm.flat ? rm.flat.rateValue : null;
-  const piecePrice = rm.piece ? rm.piece.rateValue : null;
-  const pieceThreshold = rm.flat?.threshold ?? rm.piece?.threshold ?? null;
-
   return {
     id: idFactory(),
     receiptNo: extracted.receiptNo,
@@ -300,6 +312,11 @@ export function computeReceipt(
     receiverGroupId: groupId,
     totalQty,
     billingQty,
+    normalQty,
+    collectQty,
+    collectPrice,
+    peatQty,
+    peatPrice,
     hasAdjustment: adjustments.length > 0,
     adjustments,
     items: extracted.items,
@@ -414,32 +431,58 @@ export function computeTripDocument(
   if (rateType === 'piece' && !anyPiece) rateType = null;
   if (!rateType) rateType = autoType ?? (anyFlat ? 'flat' : anyPiece ? 'piece' : null);
 
-  let tripAmount = 0;
+  // มีงานปกติในเที่ยวนี้ไหม (มีผลกับการคิด Peat mass: ผสม=ชิ้นละ 20, อย่างเดียว=ราคาอำเภอ)
+  const hasNormal = receipts.some((r) => r.normalQty > 0);
+  const PEAT_MIXED_PRICE = 20;
 
-  if (rateType === 'piece') {
-    // ชิ้น: แต่ละจุด = billingQty × ราคาชิ้นของจุดนั้น แล้วรวม
-    for (const r of receipts) {
-      if (r.piecePrice != null) {
-        r.receiptAmount = round2(r.billingQty * r.piecePrice);
-        tripAmount += r.receiptAmount;
-      } else {
-        warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}) ไม่เจอราคาชิ้น`);
+  // ----- งานปกติ (เหมา/ชิ้น) -----
+  let normalAmount = 0;
+  if (hasNormal) {
+    if (rateType === 'piece') {
+      for (const r of receipts) {
+        if (r.normalQty <= 0) continue;
+        if (r.piecePrice != null) { r.receiptAmount = round2(r.billingQty * r.piecePrice); normalAmount += r.receiptAmount; }
+        else warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}) ไม่เจอราคาชิ้น`);
       }
-    }
-  } else if (rateType === 'flat') {
-    // เหมา: คิดราคาเดียว = ราคาเหมา "สูงสุด" ในบรรดาปลายทางทั้งหมด
-    let maxFlat: number | null = null;
-    for (const r of receipts) {
-      if (r.flatPrice != null) {
-        r.receiptAmount = r.flatPrice;
-        if (maxFlat === null || r.flatPrice > maxFlat) maxFlat = r.flatPrice;
+    } else if (rateType === 'flat') {
+      let maxFlat: number | null = null;
+      for (const r of receipts) {
+        if (r.normalQty > 0 && r.flatPrice != null) {
+          r.receiptAmount = r.flatPrice;
+          if (maxFlat === null || r.flatPrice > maxFlat) maxFlat = r.flatPrice;
+        }
       }
+      if (maxFlat === null) warnings.push('ไม่เจอราคาเหมาของปลายทางใดเลย');
+      else normalAmount = maxFlat;
+    } else {
+      warnings.push('ไม่เจอ Master ราคาขนส่งของปลายทาง (งานปกติ)');
     }
-    if (maxFlat === null) warnings.push('ไม่เจอราคาเหมาของปลายทางใดเลย');
-    else tripAmount = maxFlat;
-  } else {
-    warnings.push('ไม่เจอ Master ราคาขนส่งของปลายทาง');
   }
+
+  // ----- เก็บสินค้าคืน (คิดชิ้นตามจังหวัด) -----
+  let collectAmount = 0;
+  for (const r of receipts) {
+    if (r.collectQty > 0 && r.collectPrice != null) {
+      const a = round2(r.collectQty * r.collectPrice);
+      r.receiptAmount = round2(r.receiptAmount + a);
+      collectAmount += a;
+    } else if (r.collectQty > 0) {
+      warnings.push(`เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาเก็บคืนของ "${r.provinceRaw}"`);
+    }
+  }
+
+  // ----- Peat mass (ผสมงานอื่น=ชิ้นละ 20, อย่างเดียว=ราคาอำเภอ 26-47) -----
+  let peatAmount = 0;
+  for (const r of receipts) {
+    if (r.peatQty <= 0) continue;
+    const rate = hasNormal ? PEAT_MIXED_PRICE : r.peatPrice;
+    if (rate == null) { warnings.push(`Peat mass ใบรับ ${r.receiptNo}: ไม่เจอราคา Peat mass ของ "${r.districtRaw}"`); continue; }
+    const a = round2(r.peatQty * rate);
+    r.receiptAmount = round2(r.receiptAmount + a);
+    peatAmount += a;
+  }
+
+  const tripAmount = round2(normalAmount + collectAmount + peatAmount);
 
   const rateOptions = {
     flat: anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : null,

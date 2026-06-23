@@ -58,6 +58,8 @@ export interface RateMaster {
   districtName: string;    // อำเภอ เช่น "เมือง"
   priceType: PriceType;    // เหมา / ชิ้น
   price: number;
+  // ประเภทสินค้า: normal=งานปกติ, collect_back=เก็บสินค้าคืน(คิดชิ้น), peat_mass=Peat mass(คิดชิ้น)
+  productCategory?: 'normal' | 'collect_back' | 'peat_mass';
   pieceThreshold?: number | null; // จุดตัดจำนวน: <=จุดตัด ใช้เหมา, >จุดตัด ใช้ชิ้น (เฉพาะปลายทางที่มีทั้ง 2 ราคา)
   effectiveFrom: string;   // YYYY-MM-DD
   effectiveTo: string | null;
@@ -190,8 +192,13 @@ export interface TripReceipt {
   receiverName: string;
   senderName: string;
   receiverGroupId: string | null;  // กลุ่มที่จับคู่ได้
-  totalQty: number;                // จำนวนรวมจริงทุกรายการในใบรับ
-  billingQty: number;              // จำนวนคิดค่าเที่ยว (หลังปรับตัวหาร)
+  totalQty: number;                // จำนวนรวมจริงทุกรายการในใบรับ (ทุกประเภท)
+  billingQty: number;              // จำนวนคิดค่าเที่ยว "งานปกติ" (หลังปรับตัวหาร)
+  normalQty: number;               // จำนวนงานปกติ (ก่อนหาร)
+  collectQty: number;              // จำนวน "เก็บสินค้าคืน"
+  collectPrice: number | null;     // ราคาเก็บคืน/ชิ้น (ตามจังหวัด)
+  peatQty: number;                 // จำนวน "Peat mass"
+  peatPrice: number | null;        // ราคา Peat mass/ชิ้น (ตามอำเภอ, เมื่อ Peat อย่างเดียว)
   hasAdjustment: boolean;          // มีรายการตัวหารหรือไม่
   adjustments: ReceiptAdjustment[];
   items: ExtractedReceiptItem[];   // รายการดิบทั้งหมด
