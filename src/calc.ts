@@ -393,12 +393,19 @@ export function computeTripDocument(
   const anyFlat = receipts.some((r) => r.flatPrice != null);
   const anyPiece = receipts.some((r) => r.piecePrice != null);
 
+  // ยอดถ้าคิดเหมา (ราคาเหมาสูงสุด) vs ยอดถ้าคิดชิ้น (รวมทุกจุด)
+  const flatTotal = anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : 0;
+  const pieceTotal = anyPiece ? receipts.reduce((s, r) => s + (r.piecePrice != null ? r.billingQty * r.piecePrice : 0), 0) : 0;
+
   // จุดตัดชิ้นของใบนี้ (ใช้ตัวแรกที่เจอ — ปกติทั้งใบเป็นจังหวัดเดียวกัน)
   const docThreshold = receipts.map((r) => r.pieceThreshold).find((t) => t != null) ?? null;
-  // อัตโนมัติ: ถ้ามีทั้งเหมา+ชิ้น และมีจุดตัด -> จำนวนคิดค่าเที่ยว(หลังหาร) <=จุดตัด=เหมา, >จุดตัด=ชิ้น (ตัดสินทั้งใบ)
+  // อัตโนมัติ (เมื่อมีทั้งเหมา+ชิ้น):
+  //  - มีจุดตัด -> จำนวนคิดค่าเที่ยว(หลังหาร) <=จุดตัด=เหมา, >จุดตัด=ชิ้น (กำแพงเพชร)
+  //  - ไม่มีจุดตัด -> "สูงกว่า": เลือกอันที่ยอดเงินมากกว่า (พิษณุโลก/สุโขทัย/อุตรดิตถ์/เพชรบูรณ์)
   let autoType: PriceType | null = null;
-  if (anyFlat && anyPiece && docThreshold != null) {
-    autoType = billingQty <= docThreshold ? 'flat' : 'piece';
+  if (anyFlat && anyPiece) {
+    if (docThreshold != null) autoType = billingQty <= docThreshold ? 'flat' : 'piece';
+    else autoType = pieceTotal > flatTotal ? 'piece' : 'flat';
   }
 
   // เลือกแบบเดียวกันทั้งใบ: ผู้ใช้เลือกเอง > อัตโนมัติตามจุดตัด > default (เหมาก่อน)
