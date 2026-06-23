@@ -10,7 +10,7 @@ import {
 } from './types';
 import { exportCycleToExcel } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName } from './calc';
-import { confirmDelete, confirmAction, notify } from './ui';
+import { confirmDelete, confirmAction, confirmPassword, notify } from './ui';
 
 // โมเดลที่มีจริง (ตรวจจาก ListModels API) — flash=เร็ว/ฟรีกว่า, pro=แม่นกว่า
 const GEMINI_MODELS = [
@@ -1040,11 +1040,12 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const [mode, setMode] = useState<'base' | 'cycle'>('base');
   const [adv, setAdv] = useState(false);
   const [filterGroup, setFilterGroup] = useState('__all__');
+  const [editId, setEditId] = useState<string | null>(null);
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     // เก็บคืน/Peat mass คิดเป็นชิ้นเสมอ
     const priceType = form.productCategory === 'normal' ? form.priceType : 'piece';
-    await api('/api/rate-masters', 'POST', {
+    const payload = {
       ...form, branchId, priceType,
       pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null,
       minQty: form.minQty ? +form.minQty : null,
@@ -1053,9 +1054,29 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
       senderKeyword: form.senderKeyword?.trim() || '',
       productKeyword: form.productKeyword?.trim() || '',
       rateGroup: form.rateGroup?.trim() || '',
-    });
-    setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
+    };
+    if (editId) {
+      await api(`/api/rate-masters/${editId}`, 'PUT', payload);
+      showToast('success', 'บันทึกการแก้ไขแล้ว');
+    } else {
+      await api('/api/rate-masters', 'POST', payload);
+      showToast('success', 'เพิ่มราคาแล้ว');
+    }
+    setForm(blank); setEditId(null); reload();
   };
+  const startEdit = async (r: RateMaster) => {
+    if (!(await confirmPassword('แก้ไขราคา'))) return;
+    setForm({
+      destinationName: r.destinationName || '', provinceName: r.provinceName || '', provinceShort: r.provinceShort || '',
+      districtName: r.districtName || '', priceType: r.priceType, price: r.price, pieceThreshold: r.pieceThreshold ?? '',
+      productCategory: r.productCategory || 'normal', minQty: r.minQty ?? '', maxQty: r.maxQty ?? '',
+      receiverKeyword: r.receiverKeyword || '', senderKeyword: r.senderKeyword || '', productKeyword: r.productKeyword || '',
+      rateGroup: r.rateGroup || '', effectiveFrom: r.effectiveFrom, effectiveTo: r.effectiveTo, status: r.status,
+    });
+    setEditId(r.id); setAdv(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const cancelEdit = () => { setForm(blank); setEditId(null); };
   const branchGroups: string[] = ((db.branches as Branch[]).find((b) => b.id === branchId)?.rateGroups || []).map((g) => g.name);
   const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : 'งานปกติ';
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
@@ -1136,7 +1157,8 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         </select>
         <input type="number" aria-label="ราคา" placeholder="ราคา" value={form.price || ''} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
         <input type="number" aria-label="จุดตัดชิ้น" placeholder="จุดตัดชิ้น" title="≤จุดตัด=เหมา, >จุดตัด=ชิ้น (เว้นว่าง=ไม่ใช้)" value={form.pieceThreshold} onChange={(e) => setForm({ ...form, pieceThreshold: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
-        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 py-1.5 font-semibold">เพิ่ม</button>
+        <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-[#1B365D]'} text-white rounded-lg px-3 py-1.5 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
+        {editId && <button onClick={cancelEdit} className="border border-natural-border rounded-lg px-3 py-1.5 text-sm font-semibold">ยกเลิก</button>}
         <button onClick={() => setAdv(!adv)} className="text-xs text-[#1B365D] font-semibold underline">{adv ? 'ซ่อน' : 'เงื่อนไขพิเศษ'}</button>
         {sel.size > 0 && (
           <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
@@ -1196,6 +1218,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
                 <td className="py-1.5 px-1">{r.effectiveFrom}</td>
                 <td className="py-1.5 px-1 whitespace-nowrap">
                   {cycleMode && ovFor(r) && <button type="button" title="กลับไปใช้ราคาหลัก" onClick={() => removeOverride(r)} className="text-amber-600 hover:text-amber-800 mr-1"><RefreshCw className="w-3.5 h-3.5 inline" /></button>}
+                  <button type="button" title="แก้ไข (ใส่รหัส)" onClick={() => startEdit(r)} className="text-[#1B365D] hover:text-amber-700 font-semibold mr-2">✎</button>
                   <button type="button" title="ลบ" onClick={() => delOne(r)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5 inline" /></button>
                 </td>
               </tr>

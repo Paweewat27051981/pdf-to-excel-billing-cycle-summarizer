@@ -45,6 +45,24 @@ export async function confirmDelete(itemLabel?: string): Promise<boolean> {
   return res.isConfirmed;
 }
 
+// ยืนยันด้วยรหัสผ่าน (สำหรับการแก้ไข) — คืน true ถ้ารหัสถูก
+export async function confirmPassword(actionLabel = 'แก้ไข'): Promise<boolean> {
+  const res = await Themed.fire({
+    title: `ยืนยันการ${actionLabel}`,
+    html: `กรอกรหัสผ่านเพื่อ${actionLabel}`,
+    icon: 'warning',
+    iconColor: NAVY,
+    input: 'password',
+    inputPlaceholder: 'รหัสผ่าน',
+    inputAttributes: { autocapitalize: 'off', autocorrect: 'off', autocomplete: 'off' },
+    showCancelButton: true,
+    confirmButtonText: `✎ ${actionLabel}`,
+    cancelButtonText: 'ยกเลิก',
+    inputValidator: (v) => (v === DELETE_PASSWORD ? undefined : 'รหัสผ่านไม่ถูกต้อง'),
+  });
+  return res.isConfirmed;
+}
+
 // ยืนยันทั่วไป (ใช่/ไม่ใช่) — คืน true ถ้ากดยืนยัน
 export async function confirmAction(opts: {
   title: string; text?: string; html?: string; confirmText?: string; danger?: boolean;
