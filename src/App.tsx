@@ -215,7 +215,9 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, reload, showToast }: a
   const [extracting, setExtracting] = useState(false);
   const [pending, setPending] = useState<{ extracted: ExtractedTripDocument; fileName: string; preview: TripDocument } | null>(null);
   const [filter, setFilter] = useState<'all' | 'divider' | 'warning'>('all');
+  const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const excelRef = useRef<HTMLInputElement>(null);
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกหรือเปิดรอบคำนวณก่อน" />;
 
@@ -243,6 +245,26 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, reload, showToast }: a
         showToast('success', `อ่าน ${file.name} สำเร็จ — ตรวจสอบด้านล่าง`);
       } catch (e: any) { showToast('error', e.message); }
       finally { setExtracting(false); }
+    }
+  };
+
+  const onExcelFiles = async (files: FileList) => {
+    for (const file of Array.from(files)) {
+      const name = file.name.toLowerCase();
+      if (!name.endsWith('.xls') && !name.endsWith('.xlsx')) { showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)'); continue; }
+      const b64 = await new Promise<string>((resolve) => {
+        const r = new FileReader();
+        r.onload = () => resolve((r.result as string).split(',')[1]);
+        r.readAsDataURL(file);
+      });
+      setImporting(true);
+      try {
+        const data = await api('/api/import-excel', 'POST', { fileBase64: b64 });
+        const docs: ExtractedTripDocument[] = data.results || [];
+        for (const doc of docs) await preview(doc, file.name);
+        showToast('success', `นำเข้า ${file.name} สำเร็จ — พบ ${docs.length} ใบกระจาย ตรวจสอบด้านล่าง`);
+      } catch (e: any) { showToast('error', e.message); }
+      finally { setImporting(false); }
     }
   };
 
@@ -312,21 +334,35 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, reload, showToast }: a
       </div>
 
       {/* upload */}
-      <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); onFiles(e.dataTransfer.files); }}
+      <div onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          const all = Array.from(e.dataTransfer.files) as File[];
+          const xls = all.filter((f: File) => /\.xlsx?$/i.test(f.name));
+          const pdfs = all.filter((f: File) => !/\.xlsx?$/i.test(f.name));
+          if (xls.length) onExcelFiles(xls as unknown as FileList);
+          if (pdfs.length) onFiles(pdfs as unknown as FileList);
+        }}
         className="bg-white rounded-2xl border-2 border-dashed border-natural-border p-6 text-center flex flex-col items-center">
         <input ref={fileRef} type="file" aria-label="เลือกไฟล์ PDF ใบกระจาย" accept="application/pdf" multiple className="hidden" onChange={(e) => e.target.files && onFiles(e.target.files)} />
-        {extracting ? (
-          <div className="flex flex-col items-center gap-2 py-2"><RefreshCw className="w-8 h-8 text-[#1B365D] animate-spin" /><p className="text-sm font-semibold text-[#1B365D]">AI กำลังอ่าน PDF ใบกระจาย...</p></div>
+        <input ref={excelRef} type="file" aria-label="นำเข้า Excel ใบกระจาย" accept=".xls,.xlsx" multiple className="hidden" onChange={(e) => e.target.files && onExcelFiles(e.target.files)} />
+        {extracting || importing ? (
+          <div className="flex flex-col items-center gap-2 py-2"><RefreshCw className="w-8 h-8 text-[#1B365D] animate-spin" /><p className="text-sm font-semibold text-[#1B365D]">{importing ? 'กำลังอ่าน Excel ใบกระจาย...' : 'AI กำลังอ่าน PDF ใบกระจาย...'}</p></div>
         ) : (
           <>
             <UploadCloud className="w-8 h-8 text-[#1B365D] mb-2" />
-            <p className="font-semibold text-sm text-[#1B365D]">ลากวางไฟล์ PDF ใบกระจาย (หลายไฟล์ได้)</p>
+            <p className="font-semibold text-sm text-[#1B365D]">ลากวางไฟล์ใบกระจาย — Excel (.xls/.xlsx) หรือ PDF (หลายไฟล์ได้)</p>
+            <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1 mt-2">
+              💡 แนะนำ Excel — ฟรี ไม่ใช้ AI ชื่อสินค้าเป๊ะ 100% ตัวหารจับอัตโนมัติ
+            </p>
             {!aiEnabled && (
               <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1 mt-2">
-                ⚠️ ยังไม่ได้ตั้งค่า GEMINI_API_KEY — อ่าน PDF จริงไม่ได้ ใช้ "กรอกเอง" เพื่อทดสอบ
+                ⚠️ ยังไม่ได้ตั้งค่า GEMINI_API_KEY — อ่าน PDF จริงไม่ได้ (Excel ยังใช้ได้ปกติ)
               </p>
             )}
             <div className="flex gap-2 mt-3 items-center flex-wrap justify-center">
+              <button onClick={() => excelRef.current?.click()}
+                className="bg-emerald-600 text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-4 h-4" />นำเข้า Excel</button>
               <button onClick={() => fileRef.current?.click()} disabled={!aiEnabled}
                 className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-2 text-xs font-semibold">เลือกไฟล์ PDF</button>
               <button onClick={manual} className="border border-natural-border rounded-full px-4 py-2 text-xs font-semibold">กรอกเอง</button>

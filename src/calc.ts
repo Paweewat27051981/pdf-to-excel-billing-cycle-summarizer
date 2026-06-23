@@ -249,29 +249,44 @@ export function computeReceipt(
   // ถ้าผู้ส่งต้องกรอกกล่องเอง: ใช้จำนวนกล่อง เป็น billingQty (ไม่ใช้ตัวหาร)
   if (requiresManualBox) {
     billingQty = manualBoxQty ?? 0;
-  } else
-  for (const item of extracted.items) {
-    const rule = findConversionRule(
-      {
-        senderName: extracted.senderName,
-        receiverGroupId: groupId,
-        productName: item.productName,
-        refDate: ctx.refDate,
-      },
-      ctx.rules
-    );
-    if (rule) {
-      const specialQty = item.quantity || 0;
-      const convertedQty = applyRounding(specialQty / rule.divisor, rule.roundingMethod);
+  } else {
+    // applyLevel: 'receipt' -> รวมจำนวนสินค้าที่เข้ากฎ "ทั้งใบรับ" ก่อน แล้วหารทีเดียว
+    // (ไม่หารแยกทีละรายการ) จัดกลุ่มตามตัวหาร เผื่อมีหลายตัวหารในใบเดียว
+    const buckets = new Map<
+      string,
+      { divisor: number; rounding: RoundingMethod; ruleId: string; qty: number; products: string[] }
+    >();
+    for (const item of extracted.items) {
+      const rule = findConversionRule(
+        {
+          senderName: extracted.senderName,
+          receiverGroupId: groupId,
+          productName: item.productName,
+          refDate: ctx.refDate,
+        },
+        ctx.rules
+      );
+      if (!rule) continue;
+      const key = `${rule.divisor}|${rule.roundingMethod}`;
+      const b = buckets.get(key) || {
+        divisor: rule.divisor, rounding: rule.roundingMethod, ruleId: rule.id, qty: 0, products: [],
+      };
+      b.qty += item.quantity || 0;
+      b.products.push(item.productName);
+      buckets.set(key, b);
+    }
+    for (const b of buckets.values()) {
+      const specialQty = b.qty; // จำนวนรวมของสินค้าที่เข้ากฎในใบรับนี้
+      const convertedQty = applyRounding(specialQty / b.divisor, b.rounding);
       billingQty = billingQty - specialQty + convertedQty;
       adjustments.push({
-        productName: item.productName,
+        productName: b.products.join(' + '),
         originalQty: specialQty,
         specialQty,
-        divisor: rule.divisor,
+        divisor: b.divisor,
         convertedQty,
-        ruleId: rule.id,
-        note: `${totalQty}-${specialQty}+${convertedQty} = ${totalQty - specialQty + convertedQty}`,
+        ruleId: b.ruleId,
+        note: `รวม ${specialQty} ÷${b.divisor} = ${convertedQty} (${b.products.length} รายการ)`,
       });
     }
   }

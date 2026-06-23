@@ -19,6 +19,7 @@ import {
   ExtractedTripDocument,
 } from './src/types.js';
 import { computeTripDocument } from './src/calc.js';
+import { parseDistributionExcel } from './excel-import.js';
 
 dotenv.config(); // โหลด .env
 dotenv.config({ path: '.env.local', override: true }); // และ .env.local (ทับค่าเดิม)
@@ -425,6 +426,24 @@ async function startServer() {
     } catch (err: any) {
       console.error('Gemini extraction error:', err);
       res.status(500).json({ error: `อ่าน PDF ไม่สำเร็จ: ${err.message}` });
+    }
+  });
+
+  // ===================== IMPORT EXCEL ใบกระจาย (ไม่ใช้ AI) =====================
+  app.post('/api/import-excel', async (req, res) => {
+    try {
+      const { fileBase64 } = req.body as { fileBase64: string };
+      if (!fileBase64) return res.status(400).json({ error: 'ต้องส่ง fileBase64' });
+      const raw = fileBase64.replace(/^data:[^;]+;base64,/, '');
+      const buffer = Buffer.from(raw, 'base64');
+      const results = parseDistributionExcel(buffer);
+      if (!results.length) {
+        return res.status(422).json({ error: 'อ่านไฟล์ Excel ไม่พบใบกระจาย — ตรวจสอบว่าเป็นไฟล์ใบกระจายที่ถูกต้อง' });
+      }
+      res.json({ results });
+    } catch (err: any) {
+      console.error('Excel import error:', err);
+      res.status(500).json({ error: `อ่าน Excel ไม่สำเร็จ: ${err.message}` });
     }
   });
 
