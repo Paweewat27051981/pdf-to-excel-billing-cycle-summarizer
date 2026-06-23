@@ -9,6 +9,7 @@ import {
   Branch,
   Vehicle,
   RateMaster,
+  RateOverride,
   ReceiverGroup,
   ReceiverGroupAlias,
   ProductConversionRule,
@@ -60,7 +61,13 @@ function recomputeTrip(
   fileName: string,
   branchId: string
 ): TripDocument {
-  // ใช้รถ/ราคาของสาขานั้นเท่านั้น (กฎ/กลุ่มยังใช้ร่วมในเฟส 1)
+  // ราคาเฉพาะรอบ -> map (rateMasterId -> {price, threshold}) ของรอบ+สาขานี้
+  const overrides = new Map<string, { price: number; pieceThreshold: number | null }>();
+  db.rateOverrides
+    .filter((o) => o.branchId === branchId && o.cycleId === cycle.id)
+    .forEach((o) => overrides.set(o.rateMasterId, { price: o.price, pieceThreshold: o.pieceThreshold ?? null }));
+
+  // ใช้รถ/ราคา/กฎของสาขานั้น + ราคาเฉพาะรอบ (ถ้ามี)
   const trip = computeTripDocument(
     extracted,
     {
@@ -68,6 +75,7 @@ function recomputeTrip(
       cycle: cycleCtx(cycle),
       vehicles: db.vehicles.filter((v) => v.branchId === branchId),
       rates: db.rateMasters.filter((r) => r.branchId === branchId),
+      rateOverrides: overrides,
       groups: db.receiverGroups.filter((g) => g.branchId === branchId),
       aliases: db.receiverGroupAliases.filter((a) => a.branchId === branchId),
       rules: db.conversionRules.filter((r) => r.branchId === branchId),
@@ -182,6 +190,7 @@ async function startServer() {
         branches: db.branches.map((b) => ({ ...b, password: '' })),
         vehicles: inBranch(db.vehicles),
         rateMasters: inBranch(db.rateMasters),
+        rateOverrides: inBranch(db.rateOverrides),
         tripDocuments: inBranch(db.tripDocuments),
         fuelEntries: inBranch(db.fuelEntries),
         deductions: inBranch(db.deductions),
@@ -295,6 +304,7 @@ async function startServer() {
   }
 
   masterRoutes<Branch>('branches', 'branches', 'br');
+  masterRoutes<RateOverride>('rate-overrides', 'rateOverrides', 'rov');
   masterRoutes<MoneyCategory>('money-categories', 'moneyCategories', 'cat');
   masterRoutes<ManualBoxSender>('manual-box-senders', 'manualBoxSenders', 'mbs');
   masterRoutes<Vehicle>('vehicles', 'vehicles', 'veh');
@@ -367,6 +377,25 @@ async function startServer() {
       db.rateMasters = db.rateMasters.filter((r) => !idset.has(r.id));
       await saveDb(db);
       res.json({ success: true, deleted: ids.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ราคาเฉพาะรอบ: สร้างหรืออัปเดต (1 รอบ + 1 ราคาหลัก = 1 override)
+  app.post('/api/rate-overrides/upsert', async (req, res) => {
+    try {
+      const { branchId, cycleId, rateMasterId, price, pieceThreshold } = req.body as RateOverride;
+      if (!branchId || !cycleId || !rateMasterId) return res.status(400).json({ error: 'ข้อมูลไม่ครบ' });
+      const db = await getDb();
+      let o = db.rateOverrides.find((x) => x.branchId === branchId && x.cycleId === cycleId && x.rateMasterId === rateMasterId);
+      if (o) { o.price = price; o.pieceThreshold = pieceThreshold ?? null; }
+      else {
+        o = { id: generateId('rov'), branchId, cycleId, rateMasterId, price, pieceThreshold: pieceThreshold ?? null };
+        db.rateOverrides.push(o);
+      }
+      await saveDb(db);
+      res.json(o);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

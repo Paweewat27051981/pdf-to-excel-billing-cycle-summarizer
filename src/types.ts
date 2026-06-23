@@ -69,6 +69,16 @@ export interface RateMaster {
   updatedAt?: string;
 }
 
+// ราคาเฉพาะรอบ (ทับราคาหลักเฉพาะรอบที่ระบุ) — รอบอื่นใช้ราคาหลัก
+export interface RateOverride {
+  id: string;
+  branchId: string;
+  cycleId: string;
+  rateMasterId: string;          // อ้างอิงราคาหลัก (RateMaster) ที่ถูกทับ
+  price: number;
+  pieceThreshold?: number | null;
+}
+
 export interface RateMasterHistory {
   id: string;
   rateMasterId: string;
@@ -307,6 +317,7 @@ export interface DatabaseState {
   cycles: BillingCycle[];
   vehicles: Vehicle[];
   rateMasters: RateMaster[];
+  rateOverrides: RateOverride[];
   rateMasterHistory: RateMasterHistory[];
   receiverGroups: ReceiverGroup[];
   receiverGroupAliases: ReceiverGroupAlias[];

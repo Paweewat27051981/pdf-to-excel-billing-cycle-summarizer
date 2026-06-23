@@ -183,7 +183,8 @@ export interface RateMatch {
 
 export function matchRate(
   params: { provinceRaw: string; districtRaw: string; refDate: string },
-  rates: RateMaster[]
+  rates: RateMaster[],
+  overrides?: Map<string, { price: number; pieceThreshold: number | null }>
 ): { flat?: RateMatch; piece?: RateMatch } {
   const candidates = rates.filter((r) => {
     if (r.status !== 'active') return false;
@@ -201,11 +202,13 @@ export function matchRate(
 
   const result: { flat?: RateMatch; piece?: RateMatch } = {};
   for (const r of candidates) {
+    // ราคาเฉพาะรอบ (ถ้ามี) ทับราคาหลักของ rate row นี้
+    const ov = overrides?.get(r.id);
     const match: RateMatch = {
       rateMasterId: r.id,
       rateType: r.priceType,
-      rateValue: r.price,
-      threshold: r.pieceThreshold ?? null,
+      rateValue: ov ? ov.price : r.price,
+      threshold: ov ? ov.pieceThreshold : (r.pieceThreshold ?? null),
     };
     if (r.priceType === 'flat' && !result.flat) result.flat = match;
     if (r.priceType === 'piece' && !result.piece) result.piece = match;
@@ -226,6 +229,7 @@ export function computeReceipt(
     aliases: ReceiverGroupAlias[];
     rules: ProductConversionRule[];
     rates: RateMaster[];
+    rateOverrides?: Map<string, { price: number; pieceThreshold: number | null }>;
     manualBoxSenders: ManualBoxSender[];
     refDate: string;
     fallbackProvince: string;
@@ -283,7 +287,7 @@ export function computeReceipt(
   // ปลายทางของจุดส่งนี้ (ถ้าใบรับไม่ระบุ ใช้ของใบกระจาย)
   const provinceRaw = (extracted.provinceRaw || '').trim() || ctx.fallbackProvince;
   const districtRaw = (extracted.districtRaw || '').trim() || ctx.fallbackDistrict;
-  const rm = matchRate({ provinceRaw, districtRaw, refDate: ctx.refDate }, ctx.rates);
+  const rm = matchRate({ provinceRaw, districtRaw, refDate: ctx.refDate }, ctx.rates, ctx.rateOverrides);
   const flatPrice = rm.flat ? rm.flat.rateValue : null;
   const piecePrice = rm.piece ? rm.piece.rateValue : null;
   const pieceThreshold = rm.flat?.threshold ?? rm.piece?.threshold ?? null;
@@ -320,6 +324,7 @@ export function computeTripDocument(
     cycle: { year: number; month: number; half: CycleHalf };
     vehicles: Vehicle[];
     rates: RateMaster[];
+    rateOverrides?: Map<string, { price: number; pieceThreshold: number | null }>;
     groups: ReceiverGroup[];
     aliases: ReceiverGroupAlias[];
     rules: ProductConversionRule[];
@@ -352,6 +357,7 @@ export function computeTripDocument(
       r,
       {
         groups: ctx.groups, aliases: ctx.aliases, rules: ctx.rules, rates: ctx.rates,
+        rateOverrides: ctx.rateOverrides,
         manualBoxSenders: ctx.manualBoxSenders, refDate,
         fallbackProvince: extracted.provinceRaw, fallbackDistrict: extracted.districtRaw,
       },

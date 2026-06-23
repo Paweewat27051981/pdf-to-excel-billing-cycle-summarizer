@@ -5,7 +5,7 @@ import {
   Building2, LogOut,
 } from 'lucide-react';
 import {
-  DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, ReceiverGroup, ReceiverGroupAlias,
+  DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
 import { exportCycleToExcel } from './excel-export';
@@ -26,7 +26,7 @@ const GEMINI_MODELS = [
 const EMPTY: DatabaseState = {
   settings: { geminiModel: 'gemini-3.5-flash' },
   branches: [],
-  cycles: [], vehicles: [], rateMasters: [], rateMasterHistory: [], receiverGroups: [],
+  cycles: [], vehicles: [], rateMasters: [], rateOverrides: [], rateMasterHistory: [], receiverGroups: [],
   receiverGroupAliases: [], conversionRules: [], manualBoxSenders: [], moneyCategories: [], tripDocuments: [], fuelEntries: [], deductions: [],
 };
 
@@ -179,7 +179,7 @@ export default function App() {
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={auth.isHQ} />}
-            {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'branches' && <BranchesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -1033,10 +1033,11 @@ function HQDashboard({ db, cycle }: any) {
 // ===========================================================================
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
-function RatesTab({ db, api, branchId, reload, showToast }: any) {
+function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, pieceThreshold: '', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
   const [sel, setSel] = useState<Set<string>>(new Set());
+  const [mode, setMode] = useState<'base' | 'cycle'>('base');
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     await api('/api/rate-masters', 'POST', { ...form, branchId, pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null });
@@ -1052,10 +1053,6 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
     if (!(await confirmDelete(`ราคา ${r.destinationName || r.provinceName}`))) return;
     await api(`/api/rate-masters/${r.id}`, 'DELETE'); reload();
   };
-  const updateRate = async (r: RateMaster, patch: any) => {
-    try { await api(`/api/rate-masters/${r.id}`, 'PUT', patch); showToast('success', 'บันทึกแล้ว'); reload(); }
-    catch (e: any) { showToast('error', e.message); }
-  };
   const bulkDel = async () => {
     if (!sel.size) return;
     if (!(await confirmDelete(`ราคา ${sel.size} รายการที่เลือก`))) return;
@@ -1064,8 +1061,43 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
     setSel(new Set()); reload();
   };
 
+  // ---- ราคาเฉพาะรอบ ----
+  const cycleMode = mode === 'cycle' && cycle;
+  const ovFor = (r: RateMaster): RateOverride | null =>
+    (db.rateOverrides || []).find((o: RateOverride) => o.cycleId === cycle?.id && o.rateMasterId === r.id) || null;
+  const effPrice = (r: RateMaster) => { const o = cycleMode ? ovFor(r) : null; return o ? o.price : r.price; };
+  const effTh = (r: RateMaster) => { const o = cycleMode ? ovFor(r) : null; return o ? (o.pieceThreshold ?? null) : (r.pieceThreshold ?? null); };
+  // บันทึกช่อง: โหมดหลัก -> แก้ราคาหลัก; โหมดเฉพาะรอบ -> upsert override (เก็บราคา+จุดตัดคู่กัน)
+  const saveCell = async (r: RateMaster, field: 'price' | 'pieceThreshold', value: number | null) => {
+    try {
+      if (cycleMode) {
+        const price = field === 'price' ? (value as number) : effPrice(r);
+        const pieceThreshold = field === 'pieceThreshold' ? value : effTh(r);
+        await api('/api/rate-overrides/upsert', 'POST', { branchId, cycleId: cycle.id, rateMasterId: r.id, price, pieceThreshold });
+        showToast('success', `บันทึกราคาเฉพาะรอบ ${cycle.name}`);
+      } else {
+        await api(`/api/rate-masters/${r.id}`, 'PUT', { [field]: value });
+        showToast('success', 'บันทึกราคาหลักแล้ว');
+      }
+      reload();
+    } catch (e: any) { showToast('error', e.message); }
+  };
+  const removeOverride = async (r: RateMaster) => {
+    const o = ovFor(r); if (!o) return;
+    await api(`/api/rate-overrides/${o.id}`, 'DELETE');
+    showToast('success', 'กลับไปใช้ราคาหลักแล้ว'); reload();
+  };
+
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
+      {/* สวิตช์ ราคาหลัก / ราคาเฉพาะรอบ */}
+      <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
+        <button onClick={() => setMode('base')} className={`px-3 py-1.5 rounded-full font-semibold border ${mode === 'base' ? 'bg-[#1B365D] text-white border-[#1B365D]' : 'border-natural-border text-natural-muted'}`}>ราคาหลัก (ทุกรอบ)</button>
+        <button onClick={() => setMode('cycle')} disabled={!cycle} className={`px-3 py-1.5 rounded-full font-semibold border disabled:opacity-40 ${mode === 'cycle' ? 'bg-amber-500 text-white border-amber-500' : 'border-natural-border text-natural-muted'}`}>
+          🏷️ ราคาเฉพาะรอบ{cycle ? `: ${cycle.name}` : ' (เลือกรอบก่อน)'}
+        </button>
+        {cycleMode && <span className="text-amber-700">แก้ราคา/จุดตัด = ทับเฉพาะรอบนี้ · รอบอื่นใช้ราคาหลัก</span>}
+      </div>
       <div className="flex flex-wrap gap-2 mb-3 text-sm items-center">
         <input aria-label="ปลายทาง" placeholder="ปลายทาง" value={form.destinationName} onChange={(e) => setForm({ ...form, destinationName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
         <input aria-label="จังหวัด" placeholder="จังหวัด" value={form.provinceName} onChange={(e) => setForm({ ...form, provinceName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
@@ -1100,17 +1132,21 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
                 <td className="py-1.5 px-1">{r.districtName}</td>
                 <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
                 <td className="py-1.5 px-1">
-                  <input type="number" key={`p-${r.id}-${r.price}`} defaultValue={r.price} aria-label={`ราคา ${r.destinationName}`}
-                    onBlur={(e) => { const v = +e.target.value; if (v !== r.price) updateRate(r, { price: v }); }}
-                    className="w-20 border border-natural-border rounded px-1 py-0.5 text-xs text-right focus:border-[#1B365D] outline-none" />
+                  <input type="number" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}`} defaultValue={effPrice(r)} aria-label={`ราคา ${r.destinationName}`}
+                    onBlur={(e) => { const v = +e.target.value; if (v !== effPrice(r)) saveCell(r, 'price', v); }}
+                    className={`w-20 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-[#1B365D]`} />
+                  {cycleMode && ovFor(r) && <span className="text-[9px] text-amber-700 ml-0.5">เฉพาะรอบ</span>}
                 </td>
                 <td className="py-1.5 px-1">
-                  <input type="number" key={`t-${r.id}-${r.pieceThreshold ?? ''}`} defaultValue={r.pieceThreshold ?? ''} placeholder="-" aria-label={`จุดตัด ${r.destinationName}`}
-                    onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v !== (r.pieceThreshold ?? null)) updateRate(r, { pieceThreshold: v }); }}
-                    className="w-16 border border-natural-border rounded px-1 py-0.5 text-xs text-right focus:border-[#1B365D] outline-none" />
+                  <input type="number" key={`t-${r.id}-${cycleMode ? 'c' : 'b'}-${effTh(r) ?? ''}`} defaultValue={effTh(r) ?? ''} placeholder="-" aria-label={`จุดตัด ${r.destinationName}`}
+                    onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v !== effTh(r)) saveCell(r, 'pieceThreshold', v); }}
+                    className={`w-16 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-[#1B365D]`} />
                 </td>
                 <td className="py-1.5 px-1">{r.effectiveFrom}</td>
-                <td className="py-1.5 px-1"><button type="button" title="ลบ" onClick={() => delOne(r)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
+                <td className="py-1.5 px-1 whitespace-nowrap">
+                  {cycleMode && ovFor(r) && <button type="button" title="กลับไปใช้ราคาหลัก" onClick={() => removeOverride(r)} className="text-amber-600 hover:text-amber-800 mr-1"><RefreshCw className="w-3.5 h-3.5 inline" /></button>}
+                  <button type="button" title="ลบ" onClick={() => delOne(r)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5 inline" /></button>
+                </td>
               </tr>
             ))}
             {rates.length === 0 && <tr><td colSpan={9} className="py-6 text-center text-natural-muted">ยังไม่มีราคาในสาขานี้</td></tr>}

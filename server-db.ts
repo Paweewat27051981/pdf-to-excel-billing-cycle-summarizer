@@ -103,6 +103,7 @@ function seedState(): DatabaseState {
     cycles: [],
     vehicles,
     rateMasters,
+    rateOverrides: [],
     rateMasterHistory: [],
     receiverGroups: [
       { id: 'grp-macro', branchId: DEFAULT_BRANCH_ID, groupName: 'แม็คโคร/เซลส์', status: 'active' },
@@ -190,6 +191,7 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     cycles: state.cycles ?? [],
     vehicles: withBranch(state.vehicles, seed.vehicles),
     rateMasters: withBranch(state.rateMasters, seed.rateMasters),
+    rateOverrides: state.rateOverrides ?? [],
     rateMasterHistory: state.rateMasterHistory ?? [],
     receiverGroups: withBranch(state.receiverGroups, seed.receiverGroups),
     receiverGroupAliases: withBranch(state.receiverGroupAliases, seed.receiverGroupAliases),
