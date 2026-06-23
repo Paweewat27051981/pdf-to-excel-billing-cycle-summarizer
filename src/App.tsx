@@ -1216,22 +1216,64 @@ function GroupManager({ db, api, branchId, reload, showToast }: any) {
 // ===========================================================================
 function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
   const [form, setForm] = useState({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' });
+  const [sel, setSel] = useState<Set<string>>(new Set());
   const add = async () => {
     if (!form.plateNo) return showToast('warning', 'กรอกทะเบียน');
     await api('/api/vehicles', 'POST', { ...form, branchId }); setForm({ plateNo: '', driverName: '', vehicleType: '6 ล้อ', status: 'active' }); reload();
   };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
+
+  const vehicles: Vehicle[] = db.vehicles;
+  const toggle = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allChecked = vehicles.length > 0 && vehicles.every((v) => sel.has(v.id));
+  const toggleAll = () => setSel(allChecked ? new Set() : new Set(vehicles.map((v) => v.id)));
+  const delOne = async (v: Vehicle) => {
+    if (!(await confirmDelete(`รถ ${v.plateNo}`))) return;
+    await api(`/api/vehicles/${v.id}`, 'DELETE'); reload();
+  };
+  const bulkDel = async () => {
+    if (!sel.size) return;
+    if (!(await confirmDelete(`รถ ${sel.size} คันที่เลือก`))) return;
+    await api('/api/vehicles/bulk-delete', 'POST', { ids: [...sel] });
+    showToast('success', `ลบ ${sel.size} รายการแล้ว`);
+    setSel(new Set()); reload();
+  };
+
   return (
     <Section title="Master รถร่วม & คนขับ" icon={Truck}>
-      <div className="flex flex-wrap gap-2 mb-3 text-sm">
+      <div className="flex flex-wrap gap-2 mb-3 text-sm items-center">
         <input aria-label="ทะเบียนรถ" placeholder="ทะเบียน" value={form.plateNo} onChange={(e) => setForm({ ...form, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
         <input aria-label="ชื่อคนขับ" placeholder="คนขับ" value={form.driverName} onChange={(e) => setForm({ ...form, driverName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-36" />
         <input aria-label="ประเภทรถ" placeholder="ประเภทรถ" value={form.vehicleType} onChange={(e) => setForm({ ...form, vehicleType: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
-        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 font-semibold">เพิ่ม</button>
+        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 py-1.5 font-semibold">เพิ่ม</button>
+        {sel.size > 0 && (
+          <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
+            <Trash2 className="w-4 h-4" />ลบที่เลือก ({sel.size})
+          </button>
+        )}
       </div>
-      <SimpleTable cols={['ทะเบียน', 'คนขับ', 'ประเภท']}
-        rows={db.vehicles.map((v: Vehicle) => [v.plateNo, v.driverName, v.vehicleType])}
-        onDelete={async (i: number) => { await api(`/api/vehicles/${db.vehicles[i].id}`, 'DELETE'); reload(); }} />
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="text-natural-muted text-left border-b border-natural-border">
+              <th className="w-8 py-1.5 px-1"><input type="checkbox" aria-label="เลือกทั้งหมด" checked={allChecked} onChange={toggleAll} /></th>
+              <th className="py-1.5 px-1">ทะเบียน</th><th className="py-1.5 px-1">คนขับ</th><th className="py-1.5 px-1">ประเภท</th><th className="w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {vehicles.map((v) => (
+              <tr key={v.id} className={`border-b border-natural-border/60 ${sel.has(v.id) ? 'bg-red-50' : ''}`}>
+                <td className="py-1.5 px-1"><input type="checkbox" aria-label={`เลือก ${v.plateNo}`} checked={sel.has(v.id)} onChange={() => toggle(v.id)} /></td>
+                <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{v.plateNo}</td>
+                <td className="py-1.5 px-1">{v.driverName}</td>
+                <td className="py-1.5 px-1">{v.vehicleType}</td>
+                <td className="py-1.5 px-1"><button type="button" title="ลบ" onClick={() => delOne(v)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
+              </tr>
+            ))}
+            {vehicles.length === 0 && <tr><td colSpan={5} className="py-6 text-center text-natural-muted">ยังไม่มีรถในสาขานี้</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </Section>
   );
 }

@@ -279,6 +279,19 @@ async function startServer() {
         res.status(500).json({ error: err.message });
       }
     });
+    // ลบเป็นกลุ่ม (ติ๊กหลายรายการแล้วลบทีเดียว)
+    app.post(`/api/${name}/bulk-delete`, async (req, res) => {
+      try {
+        const ids: string[] = req.body?.ids || [];
+        const db = await getDb();
+        const idset = new Set(ids);
+        (db[key] as unknown as T[]) = (db[key] as unknown as T[]).filter((x) => !idset.has(x.id)) as any;
+        await saveDb(db);
+        res.json({ success: true, deleted: ids.length });
+      } catch (err: any) {
+        res.status(500).json({ error: err.message });
+      }
+    });
   }
 
   masterRoutes<Branch>('branches', 'branches', 'br');
