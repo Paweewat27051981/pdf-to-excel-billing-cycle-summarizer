@@ -161,8 +161,8 @@ export function findConversionRule(
     if (rule.status !== 'active') continue;
     if (!isEffective(params.refDate, rule.effectiveFrom, rule.effectiveTo)) continue;
     if (!textContains(params.senderName, rule.senderKeyword)) continue;
-    if (!params.receiverGroupId || params.receiverGroupId !== rule.receiverGroupId)
-      continue;
+    // ถ้ากฎไม่ระบุกลุ่มผู้รับ (ว่าง) = ใช้กับทุกผู้รับ; ถ้าระบุ ต้องตรงกลุ่ม
+    if (rule.receiverGroupId && params.receiverGroupId !== rule.receiverGroupId) continue;
     if (!textContains(params.productName, rule.productKeyword)) continue;
     if (!sizeMatches(params.productName, rule.productSizeKeyword)) continue;
     return rule;
@@ -250,12 +250,8 @@ export function computeReceipt(
   if (requiresManualBox) {
     billingQty = manualBoxQty ?? 0;
   } else {
-    // applyLevel: 'receipt' -> รวมจำนวนสินค้าที่เข้ากฎ "ทั้งใบรับ" ก่อน แล้วหารทีเดียว
-    // (ไม่หารแยกทีละรายการ) จัดกลุ่มตามตัวหาร เผื่อมีหลายตัวหารในใบเดียว
-    const buckets = new Map<
-      string,
-      { divisor: number; rounding: RoundingMethod; ruleId: string; qty: number; products: string[] }
-    >();
+    // หารแยก "ทีละรายการ": แต่ละรายการที่เข้ากฎ -> qty ÷ divisor แล้วปัด (ROUND_HALF_UP)
+    // billing = total - Σ(qty ที่เข้ากฎ) + Σ(ผลหารที่ปัดแล้วของแต่ละรายการ)
     for (const item of extracted.items) {
       const rule = findConversionRule(
         {
@@ -267,26 +263,17 @@ export function computeReceipt(
         ctx.rules
       );
       if (!rule) continue;
-      const key = `${rule.divisor}|${rule.roundingMethod}`;
-      const b = buckets.get(key) || {
-        divisor: rule.divisor, rounding: rule.roundingMethod, ruleId: rule.id, qty: 0, products: [],
-      };
-      b.qty += item.quantity || 0;
-      b.products.push(item.productName);
-      buckets.set(key, b);
-    }
-    for (const b of buckets.values()) {
-      const specialQty = b.qty; // จำนวนรวมของสินค้าที่เข้ากฎในใบรับนี้
-      const convertedQty = applyRounding(specialQty / b.divisor, b.rounding);
+      const specialQty = item.quantity || 0;
+      const convertedQty = applyRounding(specialQty / rule.divisor, rule.roundingMethod);
       billingQty = billingQty - specialQty + convertedQty;
       adjustments.push({
-        productName: b.products.join(' + '),
+        productName: item.productName,
         originalQty: specialQty,
         specialQty,
-        divisor: b.divisor,
+        divisor: rule.divisor,
         convertedQty,
-        ruleId: b.ruleId,
-        note: `รวม ${specialQty} ÷${b.divisor} = ${convertedQty} (${b.products.length} รายการ)`,
+        ruleId: rule.id,
+        note: `${specialQty} ÷${rule.divisor} = ${convertedQty}`,
       });
     }
   }
