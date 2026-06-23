@@ -804,8 +804,8 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const incomes = allDed.filter((d: DeductionEntry) => d.kind === 'income');
 
   const [fForm, setFForm] = useState({ plateNo: '', refNo: '', date: cycle?.startDate || '', amount: 0 });
-  const [dForm, setDForm] = useState({ plateNo: '', categoryId: '', amount: 0 });
-  const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0 });
+  const [dForm, setDForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
+  const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
@@ -815,10 +815,10 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
     await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id, branchId });
     setFForm({ plateNo: '', refNo: '', date: cycle.startDate, amount: 0 }); reload();
   };
-  const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', reset: () => void) => {
+  const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', docNo: string, reset: () => void) => {
     const cat = cats.find((c) => c.id === categoryId) || (kind === 'income' ? incomeCats[0] : dedCats[0]);
     if (!plateNo || !amount || !cat) return showToast('warning', 'กรอกทะเบียน/จำนวนเงิน และเลือกประเภท');
-    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, cycleId: cycle.id, branchId });
+    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, docNo: docNo.trim(), cycleId: cycle.id, branchId });
     reset(); reload();
   };
 
@@ -845,9 +845,10 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
             {incomeCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <input type="number" aria-label="จำนวนเงินรายได้เพิ่ม" placeholder="จำนวนเงิน" value={bForm.amount || ''} onChange={(e) => setBForm({ ...bForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
-          <button onClick={() => addEntry(bForm.plateNo, bForm.categoryId, bForm.amount, 'income', () => setBForm({ plateNo: '', categoryId: '', amount: 0 }))} className="bg-emerald-600 text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+          <input aria-label="ใบกระจายเลขที่" placeholder="ใบกระจายเลขที่" value={bForm.docNo} onChange={(e) => setBForm({ ...bForm, docNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-36" />
+          <button onClick={() => addEntry(bForm.plateNo, bForm.categoryId, bForm.amount, 'income', bForm.docNo, () => setBForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-emerald-600 text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={incomes.map((d: DeductionEntry) => [d.plateNo, d.label, `+${money(d.amount)}`])} cols={['ทะเบียน', 'รายการ', 'จำนวนเพิ่ม']}
+        <SimpleTable rows={incomes.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', `+${money(d.amount)}`])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวนเพิ่ม']}
           onDelete={async (i: number) => { await api(`/api/deductions/${incomes[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 
@@ -859,9 +860,10 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
             {dedCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <input type="number" aria-label="จำนวนเงินรายการหัก" placeholder="จำนวนเงิน" value={dForm.amount || ''} onChange={(e) => setDForm({ ...dForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
-          <button onClick={() => addEntry(dForm.plateNo, dForm.categoryId, dForm.amount, 'deduction', () => setDForm({ plateNo: '', categoryId: '', amount: 0 }))} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+          <input aria-label="ใบกระจายเลขที่" placeholder="ใบกระจายเลขที่" value={dForm.docNo} onChange={(e) => setDForm({ ...dForm, docNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-36" />
+          <button onClick={() => addEntry(dForm.plateNo, dForm.categoryId, dForm.amount, 'deduction', dForm.docNo, () => setDForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={ded.map((d: DeductionEntry) => [d.plateNo, d.label, money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'จำนวน']}
+        <SimpleTable rows={ded.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวน']}
           onDelete={async (i: number) => { await api(`/api/deductions/${ded[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 

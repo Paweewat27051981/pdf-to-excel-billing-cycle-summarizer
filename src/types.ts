@@ -262,6 +262,7 @@ export interface DeductionEntry {
   kind: MoneyKind;     // สำเนา kind ไว้คำนวณเร็ว
   label: string;       // ชื่อแสดง (สำเนาจาก category ตอนบันทึก)
   amount: number;      // จำนวนเงิน (บวกเสมอ, sign กำหนดโดย kind)
+  docNo?: string;      // เลขที่ใบกระจายอ้างอิง (เช่น JB0626075363)
   note?: string;
   type?: DeductionType; // legacy
 }
