@@ -178,6 +178,7 @@ export interface RateMatch {
   rateMasterId: string;
   rateType: PriceType;
   rateValue: number;
+  threshold?: number | null;
 }
 
 export function matchRate(
@@ -204,6 +205,7 @@ export function matchRate(
       rateMasterId: r.id,
       rateType: r.priceType,
       rateValue: r.price,
+      threshold: r.pieceThreshold ?? null,
     };
     if (r.priceType === 'flat' && !result.flat) result.flat = match;
     if (r.priceType === 'piece' && !result.piece) result.piece = match;
@@ -284,6 +286,7 @@ export function computeReceipt(
   const rm = matchRate({ provinceRaw, districtRaw, refDate: ctx.refDate }, ctx.rates);
   const flatPrice = rm.flat ? rm.flat.rateValue : null;
   const piecePrice = rm.piece ? rm.piece.rateValue : null;
+  const pieceThreshold = rm.flat?.threshold ?? rm.piece?.threshold ?? null;
 
   return {
     id: idFactory(),
@@ -300,6 +303,7 @@ export function computeReceipt(
     districtRaw,
     flatPrice,
     piecePrice,
+    pieceThreshold,
     receiptAmount: 0, // คำนวณจริงในระดับใบกระจาย (หลังรู้ว่าเลือกเหมา/ชิ้น)
     requiresManualBox,
     manualBoxQty,
@@ -383,11 +387,22 @@ export function computeTripDocument(
   const anyFlat = receipts.some((r) => r.flatPrice != null);
   const anyPiece = receipts.some((r) => r.piecePrice != null);
 
-  // เลือกแบบเดียวกันทั้งใบ: ตามที่ผู้ใช้เลือก ไม่งั้น default = เหมาก่อน
+  // จุดตัดชิ้นของใบนี้ (ใช้ตัวแรกที่เจอ — ปกติทั้งใบเป็นจังหวัดเดียวกัน)
+  const docThreshold = receipts.map((r) => r.pieceThreshold).find((t) => t != null) ?? null;
+  // อัตโนมัติ: ถ้ามีทั้งเหมา+ชิ้น และมีจุดตัด -> จำนวนคิดค่าเที่ยว(หลังหาร) <=จุดตัด=เหมา, >จุดตัด=ชิ้น (ตัดสินทั้งใบ)
+  let autoType: PriceType | null = null;
+  if (anyFlat && anyPiece && docThreshold != null) {
+    autoType = billingQty <= docThreshold ? 'flat' : 'piece';
+  }
+
+  // เลือกแบบเดียวกันทั้งใบ: ผู้ใช้เลือกเอง > อัตโนมัติตามจุดตัด > default (เหมาก่อน)
   let rateType: PriceType | null = extracted.rateChoice ?? null;
   if (rateType === 'flat' && !anyFlat) rateType = null;
   if (rateType === 'piece' && !anyPiece) rateType = null;
-  if (!rateType) rateType = anyFlat ? 'flat' : anyPiece ? 'piece' : null;
+  if (!rateType) rateType = autoType ?? (anyFlat ? 'flat' : anyPiece ? 'piece' : null);
+  if (autoType && rateType === autoType && !extracted.rateChoice) {
+    warnings.push(`เลือก "${autoType === 'flat' ? 'ราคาเหมา' : 'ราคาชิ้น'}" อัตโนมัติ (จำนวน ${billingQty} ${autoType === 'flat' ? '≤' : '>'} จุดตัด ${docThreshold})`);
+  }
 
   let tripAmount = 0;
 

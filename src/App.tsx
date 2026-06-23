@@ -1034,12 +1034,13 @@ function HQDashboard({ db, cycle }: any) {
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
 function RatesTab({ db, api, branchId, reload, showToast }: any) {
-  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
+  const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, pieceThreshold: '', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
-    await api('/api/rate-masters', 'POST', { ...form, branchId }); setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
+    await api('/api/rate-masters', 'POST', { ...form, branchId, pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null });
+    setForm(blank); reload(); showToast('success', 'เพิ่มราคาแล้ว');
   };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
@@ -1069,6 +1070,7 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
           <option value="flat">ราคาเหมา</option><option value="piece">ราคาชิ้น</option>
         </select>
         <input type="number" aria-label="ราคา" placeholder="ราคา" value={form.price || ''} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
+        <input type="number" aria-label="จุดตัดชิ้น" placeholder="จุดตัดชิ้น" title="≤จุดตัด=เหมา, >จุดตัด=ชิ้น (เว้นว่าง=ไม่ใช้)" value={form.pieceThreshold} onChange={(e) => setForm({ ...form, pieceThreshold: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
         <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 py-1.5 font-semibold">เพิ่ม</button>
         {sel.size > 0 && (
           <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
@@ -1081,7 +1083,7 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
           <thead>
             <tr className="text-natural-muted text-left border-b border-natural-border">
               <th className="w-8 py-1.5 px-1"><input type="checkbox" aria-label="เลือกทั้งหมด" checked={allChecked} onChange={toggleAll} /></th>
-              {['ปลายทาง', 'จังหวัด', 'อำเภอ', 'ประเภท', 'ราคา', 'เริ่มใช้'].map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}
+              {['ปลายทาง', 'จังหวัด', 'อำเภอ', 'ประเภท', 'ราคา', 'จุดตัดชิ้น', 'เริ่มใช้'].map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}
               <th className="w-8"></th>
             </tr>
           </thead>
@@ -1094,11 +1096,12 @@ function RatesTab({ db, api, branchId, reload, showToast }: any) {
                 <td className="py-1.5 px-1">{r.districtName}</td>
                 <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
                 <td className="py-1.5 px-1">{money(r.price)}</td>
+                <td className="py-1.5 px-1">{r.pieceThreshold != null ? r.pieceThreshold : '-'}</td>
                 <td className="py-1.5 px-1">{r.effectiveFrom}</td>
                 <td className="py-1.5 px-1"><button type="button" title="ลบ" onClick={() => delOne(r)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
               </tr>
             ))}
-            {rates.length === 0 && <tr><td colSpan={8} className="py-6 text-center text-natural-muted">ยังไม่มีราคาในสาขานี้</td></tr>}
+            {rates.length === 0 && <tr><td colSpan={9} className="py-6 text-center text-natural-muted">ยังไม่มีราคาในสาขานี้</td></tr>}
           </tbody>
         </table>
       </div>

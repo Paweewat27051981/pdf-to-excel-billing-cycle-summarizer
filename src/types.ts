@@ -58,6 +58,7 @@ export interface RateMaster {
   districtName: string;    // อำเภอ เช่น "เมือง"
   priceType: PriceType;    // เหมา / ชิ้น
   price: number;
+  pieceThreshold?: number | null; // จุดตัดจำนวน: <=จุดตัด ใช้เหมา, >จุดตัด ใช้ชิ้น (เฉพาะปลายทางที่มีทั้ง 2 ราคา)
   effectiveFrom: string;   // YYYY-MM-DD
   effectiveTo: string | null;
   status: RecordStatus;
@@ -188,6 +189,7 @@ export interface TripReceipt {
   districtRaw: string;
   flatPrice: number | null;        // ราคาเหมาของปลายทางนี้
   piecePrice: number | null;       // ราคาชิ้นของปลายทางนี้
+  pieceThreshold: number | null;   // จุดตัดจำนวน (ถ้ามี) ของปลายทางนี้
   receiptAmount: number;           // ค่าเที่ยวของจุดนี้ (ตามแบบที่เลือกทั้งใบ)
   requiresManualBox: boolean;      // ผู้ส่งนี้ส่งเป็นชิ้น ต้องกรอกจำนวนกล่องเอง
   manualBoxQty: number | null;     // จำนวนกล่องที่กรอก (ใช้เป็น billingQty)
