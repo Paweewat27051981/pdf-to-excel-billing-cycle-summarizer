@@ -1077,6 +1077,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   const cancelEdit = () => { setForm(blank); setEditId(null); };
+  const updateGroup = async (r: RateMaster, g: string) => {
+    try { await api(`/api/rate-masters/${r.id}`, 'PUT', { rateGroup: g }); showToast('success', 'เปลี่ยนกลุ่มแล้ว'); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
   const branchGroups: string[] = ((db.branches as Branch[]).find((b) => b.id === branchId)?.rateGroups || []).map((g) => g.name);
   const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : 'งานปกติ';
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
@@ -1198,7 +1202,15 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
             {rates.map((r) => (
               <tr key={r.id} className={`border-b border-natural-border/60 ${sel.has(r.id) ? 'bg-red-50' : ''}`}>
                 <td className="py-1.5 px-1"><input type="checkbox" aria-label={`เลือก ${r.destinationName}`} checked={sel.has(r.id)} onChange={() => toggle(r.id)} /></td>
-                {branchGroups.length > 0 && <td className="py-1.5 px-1">{r.rateGroup ? <span className="text-[#1B365D] font-semibold">{r.rateGroup}</span> : <span className="text-natural-muted text-[10px]">ใช้ร่วม</span>}</td>}
+                {branchGroups.length > 0 && (
+                  <td className="py-1.5 px-1">
+                    <select aria-label={`กลุ่ม ${r.destinationName}`} value={r.rateGroup || ''} onChange={(e) => updateGroup(r, e.target.value)}
+                      className="border border-natural-border rounded px-1 py-0.5 text-xs font-semibold text-[#1B365D]">
+                      <option value="">ใช้ร่วม</option>
+                      {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
+                    </select>
+                  </td>
+                )}
                 <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{r.destinationName}</td>
                 <td className="py-1.5 px-1">{r.provinceName}</td>
                 <td className="py-1.5 px-1">{r.districtName}</td>
