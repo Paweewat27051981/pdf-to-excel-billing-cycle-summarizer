@@ -400,9 +400,6 @@ export function computeTripDocument(
   if (rateType === 'flat' && !anyFlat) rateType = null;
   if (rateType === 'piece' && !anyPiece) rateType = null;
   if (!rateType) rateType = autoType ?? (anyFlat ? 'flat' : anyPiece ? 'piece' : null);
-  if (autoType && rateType === autoType && !extracted.rateChoice) {
-    warnings.push(`เลือก "${autoType === 'flat' ? 'ราคาเหมา' : 'ราคาชิ้น'}" อัตโนมัติ (จำนวน ${billingQty} ${autoType === 'flat' ? '≤' : '>'} จุดตัด ${docThreshold})`);
-  }
 
   let tripAmount = 0;
 
