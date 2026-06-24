@@ -375,7 +375,7 @@ export async function exportPerVehicleReport(
     styleTitle(wf, `สรุปใบสั่งเติมน้ำมัน — สาขา${branchName}`, 4,
       `รอบ ${cycle.name}  ·  ทะเบียน ${plate}  ·  ${s.driverName || '-'}`);
     wf.addRow([]);
-    styleHeaderRow(wf.addRow(['ลำดับ', 'ว.ด.ป.', 'ใบสั่งเติมน้ำมัน', 'จำนวนเงิน (บาท)']));
+    styleHeaderRow(wf.addRow(['ลำดับ', 'วัน/เดือน/ปี', 'ใบสั่งเติมน้ำมัน', 'จำนวนเงิน (บาท)']));
     let fz = false, fSum = 0;
     vFuel.forEach((f, i) => {
       const r = wf.addRow([i + 1, fmtDate(f.date), f.refNo, f.amount]);
