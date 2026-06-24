@@ -8,7 +8,7 @@ import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
-import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
@@ -881,14 +881,35 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const [fForm, setFForm] = useState({ plateNo: '', refNo: '', date: cycle?.startDate || '', amount: 0 });
   const [dForm, setDForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
   const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
+  const fuelFileRef = useRef<HTMLInputElement>(null);
+  const [impFuel, setImpFuel] = useState(false);
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
+  const branchName = (db.branches as Branch[]).find((b) => b.id === branchId)?.name || '';
   const addFuel = async () => {
     if (!fForm.plateNo || !fForm.amount) return showToast('warning', 'กรอกทะเบียนและจำนวนเงิน');
     await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id, branchId });
     setFForm({ plateNo: '', refNo: '', date: cycle.startDate, amount: 0 }); reload();
+  };
+  const dlFuelTemplate = () => {
+    const vs = (db.vehicles as Vehicle[]).filter((v) => v.status === 'active').map((v) => ({ plateNo: v.plateNo, driverName: v.driverName }));
+    downloadFuelTemplate(branchName, vs);
+  };
+  const onImportFuel = async (files: FileList) => {
+    const file = files[0];
+    if (!file) return;
+    if (!/\.xlsx?$/i.test(file.name)) return showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)');
+    const b64 = await new Promise<string>((resolve) => { const r = new FileReader(); r.onload = () => resolve((r.result as string).split(',')[1]); r.readAsDataURL(file); });
+    setImpFuel(true);
+    try {
+      const res = await api('/api/import-fuel', 'POST', { branchId, fileBase64: b64 });
+      showToast('success', `นำเข้าค่าน้ำมันสำเร็จ — บันทึก ${res.created} รายการ`);
+      if (res.summary?.length) alertBox('สรุปการนำเข้าค่าน้ำมัน', res.summary.join('\n'));
+      reload();
+    } catch (e: any) { showToast('error', e.message); }
+    finally { setImpFuel(false); if (fuelFileRef.current) fuelFileRef.current.value = ''; }
   };
   const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', docNo: string, reset: () => void) => {
     const cat = cats.find((c) => c.id === categoryId) || (kind === 'income' ? incomeCats[0] : dedCats[0]);
@@ -900,6 +921,13 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   return (
     <div className="grid md:grid-cols-2 gap-5">
       <Section title="ค่าน้ำมัน (แยกตามทะเบียน)" icon={Fuel}>
+        {/* นำเข้า/เทมเพลตค่าน้ำมันจาก Excel */}
+        <div className="flex flex-wrap items-center gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded-xl p-2">
+          <span className="text-xs font-semibold text-emerald-800">📥 นำเข้า Excel:</span>
+          <button type="button" onClick={dlFuelTemplate} className="bg-white border border-emerald-400 text-emerald-700 rounded-lg px-2.5 py-1 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />เทมเพลต (แยก sheet ต่อทะเบียน)</button>
+          <input ref={fuelFileRef} type="file" aria-label="นำเข้าค่าน้ำมัน Excel" accept=".xls,.xlsx" className="hidden" onChange={(e) => e.target.files && onImportFuel(e.target.files)} />
+          <button type="button" disabled={impFuel} onClick={() => fuelFileRef.current?.click()} className="bg-emerald-600 disabled:bg-natural-muted text-white rounded-lg px-2.5 py-1 text-xs font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />{impFuel ? 'กำลังนำเข้า...' : 'นำเข้าค่าน้ำมัน'}</button>
+        </div>
         <div className="flex flex-wrap gap-2 mb-3">
           <input list="plates" aria-label="ทะเบียนรถ" placeholder="ทะเบียน" value={fForm.plateNo} onChange={(e) => setFForm({ ...fForm, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
           <input aria-label="เลขใบสั่งเติม" placeholder="เลขใบสั่งเติม" value={fForm.refNo} onChange={(e) => setFForm({ ...fForm, refNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-32" />

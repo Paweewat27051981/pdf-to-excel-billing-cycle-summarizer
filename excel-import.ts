@@ -327,3 +327,69 @@ export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: 
   if (provNoPiece.size) summary.push(`จังหวัดที่ไม่มีราคาชิ้น (คิดเหมาล้วน): ${[...provNoPiece].join(', ')}`);
   return { rates, summary };
 }
+
+// ============================================================================
+// Import "ค่าน้ำมัน" (ใบสั่งเติมน้ำมัน) จาก Excel -> FuelEntry
+// คอลัมน์: ทะเบียน | วัน/เดือน/ปี | ใบสั่งเติมน้ำมัน | จำนวนเงิน
+// ============================================================================
+export interface ParsedFuel { plateNo: string; date: string; refNo: string; amount: number; }
+
+const THAI_MON = ['มค', 'กพ', 'มีค', 'เมย', 'พค', 'มิย', 'กค', 'สค', 'กย', 'ตค', 'พย', 'ธค'];
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const normYear = (y: number) => (y >= 2400 ? y - 543 : y < 100 ? 2000 + y : y); // พ.ศ.->ค.ศ., 2หลัก->20xx
+
+// แปลงค่าวันที่หลายรูปแบบ -> YYYY-MM-DD (เลข Excel, ค.ศ./พ.ศ., ไทย "2 มิ.ย. 2569")
+function parseAnyDate(v: any): string {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number') return excelDate(v);
+  const s = String(v).trim();
+  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+  if (m) return `${m[1]}-${pad2(+m[2])}-${pad2(+m[3])}`;
+  m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/.exec(s); // D/M/Y
+  if (m) return `${normYear(+m[3])}-${pad2(+m[2])}-${pad2(+m[1])}`;
+  const tm = /^(\d{1,2})\s*([฀-๿.]+)\s*(\d{2,4})$/.exec(s); // ไทย: 2 มิ.ย. 2569
+  if (tm) {
+    const monKey = tm[2].replace(/[.\s]/g, ''); // คงสระไว้ (มิ.ย. -> มิย)
+    const mi = THAI_MON.findIndex((mn) => mn === monKey);
+    if (mi >= 0) return `${normYear(+tm[3])}-${pad2(mi + 1)}-${pad2(+tm[1])}`;
+  }
+  return '';
+}
+
+// รองรับ 2 รูปแบบ:
+//  (1) ตารางแบน 1 ชีต: มีคอลัมน์ "ทะเบียน" ในแต่ละแถว
+//  (2) แยก sheet ต่อทะเบียน: ชื่อ sheet = ทะเบียน (ไม่มีคอลัมน์ทะเบียนในแถว)
+export function parseFuelExcel(buffer: Buffer): { fuel: ParsedFuel[]; summary: string[] } {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+  const fuel: ParsedFuel[] = [];
+  const badDates: string[] = [];
+  let usedSheets = 0;
+
+  for (const sheetName of wb.SheetNames) {
+    if (sheetName.includes('วิธีใช้')) continue;
+    const rows: Row[] = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '' });
+    // หาหัวตาราง: ต้องมี "วัน" และ ("จำนวนเงิน/เงิน/บาท")
+    const h = rows.findIndex((r) => r.some((c) => String(c).includes('วัน')) && r.some((c) => /จำนวน|เงิน|บาท/.test(String(c))));
+    if (h < 0) continue;
+    const header = rows[h];
+    const pc = colOf(header, 'ทะเบียน'); // -1 = ไม่มีคอลัมน์ทะเบียน -> ใช้ชื่อ sheet
+    const dc = colOf(header, 'วัน', 'เดือน'), rc = colOf(header, 'ใบสั่ง', 'เลข'), ac = colOf(header, 'จำนวนเงิน', 'จำนวน', 'เงิน', 'บาท');
+    if (dc < 0 || ac < 0) continue;
+    const sheetPlate = sheetName.trim();
+    let added = 0;
+    for (const row of rows.slice(h + 1)) {
+      const plate = (pc >= 0 ? String(row[pc] ?? '').trim() : sheetPlate);
+      const amount = Number(row[ac]);
+      if (!plate || !(amount > 0)) continue;
+      const date = parseAnyDate(row[dc]);
+      if (!date) { badDates.push(`${plate} (${String(row[dc] ?? '').trim() || 'ว่าง'})`); continue; }
+      fuel.push({ plateNo: plate, date, refNo: rc >= 0 ? String(row[rc] ?? '').trim() : '', amount });
+      added++;
+    }
+    if (added > 0) usedSheets++;
+  }
+  if (!fuel.length && !badDates.length) throw new Error('ไม่พบใบสั่งเติมน้ำมัน — ตรวจสอบหัวคอลัมน์ วันที่/จำนวนเงิน');
+  const summary: string[] = [`อ่านได้ ${fuel.length} ใบสั่งเติมน้ำมัน จาก ${usedSheets} ทะเบียน/ชีต`];
+  if (badDates.length) summary.push(`ข้ามแถววันที่อ่านไม่ได้ ${badDates.length} แถว: ${badDates.slice(0, 5).join(', ')}${badDates.length > 5 ? ' ...' : ''}`);
+  return { fuel, summary };
+}

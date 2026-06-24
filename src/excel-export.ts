@@ -512,3 +512,60 @@ export async function downloadRateTemplate() {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ===========================================================================
+// เทมเพลตนำเข้าค่าน้ำมัน — แยก sheet ต่อทะเบียน (ตามรถของสาขา) + ชีตวิธีใช้
+// ===========================================================================
+export async function downloadFuelTemplate(
+  branchName: string,
+  vehicles: { plateNo: string; driverName?: string }[]
+) {
+  const wb = new ExcelJS.Workbook();
+  const used = new Set<string>();
+  const sheetName = (p: string) => {
+    let n = (p || 'รถ').replace(/[\/?*[\]:]/g, '-').slice(0, 28).trim();
+    let base = n, i = 2;
+    while (used.has(n)) n = `${base} (${i++})`;
+    used.add(n);
+    return n;
+  };
+
+  const list = vehicles.length ? vehicles : [{ plateNo: 'ตัวอย่าง', driverName: '' }];
+  for (const v of list) {
+    const ws = wb.addWorksheet(sheetName(v.plateNo));
+    styleTitle(ws, `ใบสั่งเติมน้ำมัน — ${v.plateNo}${v.driverName ? ' · ' + v.driverName : ''}`, 4, `สาขา ${branchName}`);
+    ws.addRow([]);
+    styleHeaderRow(ws.addRow(['ลำดับที่', 'วัน/เดือน/ปี', 'ใบสั่งเติมน้ำมัน', 'เป็นจำนวนเงิน (บาท)']));
+    // แถวตัวอย่าง 3 แถว (ลบออก/พิมพ์ทับได้)
+    ([[1, '2/6/2026', '3633', 2000], [2, '5/6/2026', '3634', 2000], [3, '', '', '']] as any[][]).forEach((r) => {
+      const row = ws.addRow(r);
+      row.eachCell((c, col) => bodyCell(c, { align: col === 1 || col === 4 ? 'right' : 'left' }));
+      row.getCell(4).numFmt = NUM;
+    });
+    [10, 18, 22, 18].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  }
+
+  const g = wb.addWorksheet('วิธีใช้');
+  ['วิธีกรอกเทมเพลตค่าน้ำมัน',
+    '',
+    '• แต่ละ sheet = 1 ทะเบียนรถ (ระบบสร้างให้ตามรถของสาขาแล้ว)',
+    '• กรอกแต่ละแถว: วัน/เดือน/ปี · เลขใบสั่งเติมน้ำมัน · จำนวนเงิน',
+    '• วันที่ใส่ได้หลายแบบ: 2/6/2026 · 2026-06-01 · 2 มิ.ย. 2569 · 2 มิ.ย. 26',
+    '• ระบบจะจัดเข้ารอบ (1-15 / 16-31) ตามวันที่อัตโนมัติ — ใส่ได้หลายรอบในไฟล์เดียว',
+    '• แถวตัวอย่างลบทิ้งหรือพิมพ์ทับได้',
+    '• เพิ่มทะเบียนใหม่: เพิ่ม sheet แล้วตั้งชื่อ sheet เป็นทะเบียนรถ',
+  ].forEach((t, i) => {
+    const r = g.addRow([t]);
+    r.getCell(1).font = i === 0 ? { name: FONT, size: 16, bold: true, color: { argb: C.title } } : { name: FONT, size: 13 };
+  });
+  g.getColumn(1).width = 80;
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `เทมเพลตค่าน้ำมัน_${branchName}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}

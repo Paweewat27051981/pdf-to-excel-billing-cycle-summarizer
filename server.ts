@@ -21,7 +21,7 @@ import {
   ExtractedTripDocument,
 } from './src/types.js';
 import { computeTripDocument, normPlate } from './src/calc.js';
-import { parseDistributionExcel, parseRateExcel } from './excel-import.js';
+import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 
 dotenv.config(); // โหลด .env
 dotenv.config({ path: '.env.local', override: true }); // และ .env.local (ทับค่าเดิม)
@@ -372,6 +372,37 @@ async function startServer() {
       res.status(201).json(item);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // นำเข้า "ค่าน้ำมัน" จาก Excel -> FuelEntry (จัดเข้ารอบตามวันที่อัตโนมัติ)
+  app.post('/api/import-fuel', async (req, res) => {
+    try {
+      const { branchId, fileBase64 } = req.body as { branchId: string; fileBase64: string };
+      if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
+      if (!fileBase64) return res.status(400).json({ error: 'ต้องส่งไฟล์ Excel' });
+      const buffer = Buffer.from(fileBase64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+      const { fuel, summary } = parseFuelExcel(buffer);
+      if (!fuel.length) return res.status(422).json({ error: 'อ่านไฟล์ไม่พบใบสั่งเติมน้ำมัน — ตรวจสอบหัวคอลัมน์ ทะเบียน/วันที่/จำนวนเงิน' });
+      const db = await getDb();
+      let created = 0;
+      const closedCycles = new Set<string>();
+      const createdCycles = new Set<string>();
+      for (const f of fuel) {
+        const rv = resolveCycleForDate(db, f.date, true);
+        if (rv.invalid || !rv.cycle) continue;
+        if (rv.closed) { closedCycles.add(rv.cycle.name); continue; }
+        if (rv.created) createdCycles.add(rv.cycle.name);
+        db.fuelEntries.push({ id: generateId('fuel'), branchId, cycleId: rv.cycle.id, plateNo: f.plateNo, refNo: f.refNo, date: f.date, amount: f.amount });
+        created++;
+      }
+      await saveDb(db);
+      if (createdCycles.size) summary.push(`เปิดรอบใหม่อัตโนมัติ: ${[...createdCycles].join(', ')}`);
+      if (closedCycles.size) summary.push(`⚠️ ข้ามรายการของรอบที่ปิดอยู่: ${[...closedCycles].join(', ')} (ให้ HQ เปิดรอบก่อน)`);
+      res.status(201).json({ success: true, created, summary });
+    } catch (err: any) {
+      console.error('import-fuel error:', err);
+      res.status(500).json({ error: `นำเข้าค่าน้ำมันไม่สำเร็จ: ${err.message}` });
     }
   });
 
