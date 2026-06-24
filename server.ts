@@ -21,7 +21,7 @@ import {
   ExtractedTripDocument,
 } from './src/types.js';
 import { computeTripDocument, normPlate } from './src/calc.js';
-import { parseDistributionExcel } from './excel-import.js';
+import { parseDistributionExcel, parseRateExcel } from './excel-import.js';
 
 dotenv.config(); // โหลด .env
 dotenv.config({ path: '.env.local', override: true }); // และ .env.local (ทับค่าเดิม)
@@ -372,6 +372,32 @@ async function startServer() {
       res.status(201).json(item);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // นำเข้า "ตารางราคา" จาก Excel (2 ชีต เหมาคัน/รายชิ้น) -> สร้าง rate masters
+  app.post('/api/import-rates', async (req, res) => {
+    try {
+      const { branchId, fileBase64, replaceExisting } = req.body as { branchId: string; fileBase64: string; replaceExisting?: boolean };
+      if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
+      if (!fileBase64) return res.status(400).json({ error: 'ต้องส่งไฟล์ Excel' });
+      const buffer = Buffer.from(fileBase64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+      const { rates, summary } = parseRateExcel(buffer);
+      if (!rates.length) return res.status(422).json({ error: 'อ่านไฟล์ไม่พบราคา — ตรวจสอบหัวคอลัมน์ จังหวัด/อำเภอ/ราคา' });
+      const db = await getDb();
+      let removed = 0;
+      if (replaceExisting) {
+        const before = db.rateMasters.length;
+        db.rateMasters = db.rateMasters.filter((r) => !(r.branchId === branchId && (r.productCategory || 'normal') === 'normal'));
+        removed = before - db.rateMasters.length;
+      }
+      const now = new Date().toISOString();
+      for (const r of rates) db.rateMasters.push({ ...r, branchId, id: generateId('rate'), createdBy: 'import', createdAt: now } as RateMaster);
+      await saveDb(db);
+      res.status(201).json({ success: true, created: rates.length, removed, summary });
+    } catch (err: any) {
+      console.error('import-rates error:', err);
+      res.status(500).json({ error: `นำเข้าราคาไม่สำเร็จ: ${err.message}` });
     }
   });
 

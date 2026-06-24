@@ -204,3 +204,88 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
 
   return docs;
 }
+
+// ============================================================================
+// Import "ตารางราคาขนส่ง" จาก Excel -> rate masters (เหมาต่ออำเภอ + ชิ้นต่อจังหวัด/อำเภอ)
+// 2 ชีต: "เหมาคัน" (จังหวัด/อำเภอ/ราคาเหมา) + "รายชิ้น" (จังหวัด/อำเภอ-เว้นว่าง=ทั้งจังหวัด/ราคาชิ้น)
+// ตรรกะ max mode: ระบบเทียบ (จำนวน×ชิ้น) กับ เหมา จ่ายอันสูงกว่า (ไม่ต้องตั้ง threshold)
+// ============================================================================
+export interface ParsedRate {
+  provinceName: string; provinceShort: string; districtName: string; destinationName: string;
+  priceType: 'flat' | 'piece'; price: number; productCategory: 'normal'; status: 'active';
+  effectiveFrom: string; effectiveTo: null;
+}
+const normTxt = (s: any) => String(s ?? '').toLowerCase().replace(/\s+/g, '').trim();
+const stripAmphoe = (s: any) => String(s ?? '').replace(/^\s*อำเภอ\s*/, '').trim();
+function findHeaderRow(rows: Row[], kw: string): number {
+  return rows.findIndex((r) => r.some((c) => String(c).includes(kw)));
+}
+function colOf(header: Row, ...kws: string[]): number {
+  return header.findIndex((c) => kws.some((k) => String(c).includes(k)));
+}
+
+export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: string[] } {
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+  const findSheet = (kw: string) => wb.SheetNames.find((n) => n.includes(kw));
+  const flatName = findSheet('เหมา') || wb.SheetNames[0];
+  const pieceName = findSheet('ชิ้น');
+  const summary: string[] = [];
+
+  // ---- ราคาชิ้น: default ต่อจังหวัด + override ต่ออำเภอ ----
+  const pieceDefault: Record<string, number> = {};
+  const pieceOverride: { prov: string; distKw: string; price: number }[] = [];
+  if (pieceName) {
+    const rows: Row[] = XLSX.utils.sheet_to_json(wb.Sheets[pieceName], { header: 1, defval: '' });
+    const h = findHeaderRow(rows, 'จังหวัด');
+    if (h >= 0) {
+      const header = rows[h];
+      const pc = colOf(header, 'จังหวัด'), dc = colOf(header, 'อำเภอ'), rc = colOf(header, 'ราคา', 'ชิ้น');
+      for (const row of rows.slice(h + 1)) {
+        const prov = String(row[pc] ?? '').trim();
+        const dist = dc >= 0 ? stripAmphoe(row[dc]) : '';
+        const price = Number(row[rc]);
+        if (!prov || !(price > 0)) continue;
+        if (dist) pieceOverride.push({ prov: normTxt(prov), distKw: dist, price });
+        else pieceDefault[normTxt(prov)] = price;
+      }
+    }
+  }
+  const pieceFor = (prov: string, dist: string): number | null => {
+    const np = normTxt(prov);
+    for (const o of pieceOverride) if (o.prov === np && dist.includes(o.distKw)) return o.price;
+    return pieceDefault[np] ?? null;
+  };
+
+  // ---- ราคาเหมา ต่ออำเภอ (+ สร้างราคาชิ้นคู่กัน ถ้าหาเจอ) ----
+  const flatRows: Row[] = XLSX.utils.sheet_to_json(wb.Sheets[flatName], { header: 1, defval: '' });
+  const fh = findHeaderRow(flatRows, 'จังหวัด');
+  if (fh < 0) throw new Error('ชีตราคาเหมาไม่พบหัวคอลัมน์ "จังหวัด"');
+  const fheader = flatRows[fh];
+  const fp = colOf(fheader, 'จังหวัด'), fd = colOf(fheader, 'อำเภอ'), fr = colOf(fheader, 'ราคา', 'เหมา');
+  if (fp < 0 || fd < 0 || fr < 0) throw new Error('ชีตราคาเหมาต้องมีคอลัมน์ จังหวัด / อำเภอ / ราคา');
+
+  const rates: ParsedRate[] = [];
+  let nFlat = 0, nPiece = 0, nCombined = 0;
+  const provNoPiece = new Set<string>();
+  for (const row of flatRows.slice(fh + 1)) {
+    const prov = String(row[fp] ?? '').trim();
+    const dist = stripAmphoe(row[fd]);
+    const flatPrice = Number(row[fr]);
+    if (!prov || !dist || !(flatPrice > 0)) continue;
+    const base = {
+      provinceName: prov, provinceShort: '', districtName: dist, destinationName: `${dist} จ.${prov}`,
+      productCategory: 'normal' as const, status: 'active' as const, effectiveFrom: '2020-01-01', effectiveTo: null,
+    };
+    rates.push({ ...base, priceType: 'flat', price: flatPrice });
+    nFlat++;
+    // ส่งหลายอำเภอ (มี +) = ราคาเหมารวม ไม่มีราคาชิ้น
+    if (dist.includes('+')) { nCombined++; continue; }
+    const pc = pieceFor(prov, dist);
+    if (pc != null) { rates.push({ ...base, priceType: 'piece', price: pc }); nPiece++; }
+    else provNoPiece.add(prov);
+  }
+  summary.push(`ราคาเหมา ${nFlat} อำเภอ (ในนี้เป็นราคาชุดส่งหลายอำเภอ ${nCombined})`);
+  summary.push(`ราคาชิ้น ${nPiece} อำเภอ`);
+  if (provNoPiece.size) summary.push(`จังหวัดที่ไม่มีราคาชิ้น (คิดเหมาล้วน): ${[...provNoPiece].join(', ')}`);
+  return { rates, summary };
+}

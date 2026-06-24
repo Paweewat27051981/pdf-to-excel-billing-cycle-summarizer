@@ -453,3 +453,62 @@ export async function exportPerVehicleReport(
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ===========================================================================
+// เทมเพลตนำเข้าราคาขนส่ง — 2 ชีต (เหมาคัน / รายชิ้น) พร้อมตัวอย่าง
+// ===========================================================================
+export async function downloadRateTemplate() {
+  const wb = new ExcelJS.Workbook();
+  // ชีต เหมาคัน
+  const f = wb.addWorksheet('เหมาคัน');
+  styleHeaderRow(f.addRow(['ลำดับ', 'จังหวัด', 'อำเภอ', 'ราคา เหมา']));
+  ([[1, 'สมุทรสาคร', 'อำเภอเมืองสมุทรสาคร', 1000],
+    [2, 'สมุทรสาคร', 'อำเภอกระทุ่มแบน', 950],
+    [3, 'ชลบุรี', 'อำเภอบางละมุง', 1500],
+    [4, 'สุโขทัย', 'เมือง+กงไกรลาศ', 1400]] as any[][]).forEach((r) => {
+    const row = f.addRow(r);
+    row.eachCell((c, col) => bodyCell(c, { align: col >= 1 ? (col === 1 || col === 4 ? 'right' : 'left') : 'left' }));
+  });
+  [8, 18, 26, 12].forEach((w, i) => (f.getColumn(i + 1).width = w));
+
+  // ชีต รายชิ้น
+  const p = wb.addWorksheet('รายชิ้น');
+  styleHeaderRow(p.addRow(['จังหวัด', 'อำเภอ', 'ราคา รายชิ้น']));
+  ([['สมุทรสาคร', '', 7.5],
+    ['ชลบุรี', '', 9.6],
+    ['ชลบุรี', 'บางละมุง', 11.7],
+    ['ชลบุรี', 'สัตหีบ', 11.7]] as any[][]).forEach((r) => {
+    const row = p.addRow(r);
+    row.eachCell((c, col) => bodyCell(c, { align: col === 3 ? 'right' : 'left' }));
+  });
+  [18, 20, 14].forEach((w, i) => (p.getColumn(i + 1).width = w));
+
+  // ชีต คำอธิบาย
+  const g = wb.addWorksheet('วิธีใช้');
+  ['วิธีกรอกเทมเพลตราคาขนส่ง',
+    '',
+    'ชีต "เหมาคัน": จังหวัด | อำเภอ | ราคาเหมา (1 แถวต่อ 1 อำเภอ)',
+    '  - ส่งหลายอำเภอ ใช้เครื่องหมาย + เช่น "เมือง+กงไกรลาศ" (เป็นราคาเหมารวม ไม่มีราคาชิ้น)',
+    '',
+    'ชีต "รายชิ้น": จังหวัด | อำเภอ | ราคาชิ้น',
+    '  - อำเภอเว้นว่าง = ใช้ทั้งจังหวัด (default)',
+    '  - ใส่อำเภอ = ราคาเฉพาะอำเภอนั้น (override default) เช่น ชลบุรี/บางละมุง = 11.7',
+    '',
+    'ระบบจะเทียบอัตโนมัติ (max mode): จำนวน×ราคาชิ้น สูงกว่าเหมา → จ่ายชิ้น, ไม่งั้น → จ่ายเหมา',
+    'ไม่ต้องตั้งจุดตัด/threshold เอง',
+  ].forEach((t, i) => {
+    const r = g.addRow([t]);
+    if (i === 0) r.getCell(1).font = { name: FONT, size: 16, bold: true, color: { argb: C.title } };
+    else r.getCell(1).font = { name: FONT, size: 13 };
+  });
+  g.getColumn(1).width = 90;
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'เทมเพลตราคาขนส่ง.xlsx';
+  a.click();
+  URL.revokeObjectURL(url);
+}

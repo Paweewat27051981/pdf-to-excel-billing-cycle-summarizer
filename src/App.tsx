@@ -8,9 +8,9 @@ import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
-import { exportCycleToExcel, exportPerVehicleReport } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate } from './calc';
-import { confirmDelete, confirmAction, confirmPassword, notify } from './ui';
+import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
 // โมเดลที่มีจริง (ตรวจจาก ListModels API) — flash=เร็ว/ฟรีกว่า, pro=แม่นกว่า
 const GEMINI_MODELS = [
@@ -1239,6 +1239,28 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const [adv, setAdv] = useState(false);
   const [filterGroup, setFilterGroup] = useState('__all__');
   const [editId, setEditId] = useState<string | null>(null);
+  const rateFileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const onImportRates = async (files: FileList) => {
+    const file = files[0];
+    if (!file) return;
+    if (!/\.xlsx?$/i.test(file.name)) return showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)');
+    const existing = (db.rateMasters as RateMaster[]).filter((r) => (r.productCategory || 'normal') === 'normal').length;
+    if (existing > 0) {
+      const ok = await confirmAction({ title: 'นำเข้าราคาจาก Excel', text: `จะลบราคาเดิม ${existing} แถวของสาขานี้ แล้วแทนที่ด้วยไฟล์นี้ (เฉพาะราคางานปกติ)`, confirmText: 'ลบของเดิม + นำเข้า', danger: true });
+      if (!ok) return;
+    }
+    const replaceExisting = existing > 0;
+    const b64 = await new Promise<string>((resolve) => { const r = new FileReader(); r.onload = () => resolve((r.result as string).split(',')[1]); r.readAsDataURL(file); });
+    setImporting(true);
+    try {
+      const res = await api('/api/import-rates', 'POST', { branchId, fileBase64: b64, replaceExisting });
+      showToast('success', `นำเข้าราคาสำเร็จ — สร้าง ${res.created} แถว${res.removed ? ` (ลบเดิม ${res.removed})` : ''}`);
+      if (res.summary?.length) alertBox('สรุปการนำเข้าราคา', res.summary.join('\n'));
+      reload();
+    } catch (e: any) { showToast('error', e.message); }
+    finally { setImporting(false); if (rateFileRef.current) rateFileRef.current.value = ''; }
+  };
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     // เก็บคืน/Peat mass คิดเป็นชิ้นเสมอ
@@ -1329,6 +1351,15 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
 
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
+      {/* นำเข้า/เทมเพลตราคาจาก Excel */}
+      <div className="flex flex-wrap items-center gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5">
+        <span className="text-xs font-semibold text-emerald-800">📥 นำเข้าราคาทั้งสาขาจาก Excel:</span>
+        <button type="button" onClick={() => downloadRateTemplate()} className="bg-white border border-emerald-400 text-emerald-700 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />ดาวน์โหลดเทมเพลต</button>
+        <input ref={rateFileRef} type="file" aria-label="นำเข้าราคา Excel" accept=".xls,.xlsx" className="hidden" onChange={(e) => e.target.files && onImportRates(e.target.files)} />
+        <button type="button" disabled={importing || !branchId} onClick={() => rateFileRef.current?.click()} className="bg-emerald-600 disabled:bg-natural-muted text-white rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />{importing ? 'กำลังนำเข้า...' : 'นำเข้าราคา (.xlsx)'}</button>
+        <span className="text-[11px] text-emerald-700/80">เหมาต่ออำเภอ + ชิ้นต่อจังหวัด/อำเภอ · ระบบเทียบ max ให้อัตโนมัติ</span>
+      </div>
+
       {/* สวิตช์ ราคาหลัก / ราคาเฉพาะรอบ */}
       <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
         <button onClick={() => setMode('base')} className={`px-3 py-1.5 rounded-full font-semibold border ${mode === 'base' ? 'bg-[#1B365D] text-white border-[#1B365D]' : 'border-natural-border text-natural-muted'}`}>ราคาหลัก (ทุกรอบ)</button>
