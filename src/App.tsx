@@ -1161,8 +1161,8 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
         {/* รายละเอียดต่อทะเบียน */}
         {shownSums.map((s: any) => {
           const np = normPlate(s.plateNo);
-          const vTrips = cycleTrips.filter((t: TripDocument) => normPlate(t.plateNo) === np);
-          const vFuel = db.fuelEntries.filter((f: FuelEntry) => f.cycleId === cycle.id && normPlate(f.plateNo) === np);
+          const vTrips = cycleTrips.filter((t: TripDocument) => normPlate(t.plateNo) === np).sort((a: TripDocument, b: TripDocument) => (a.documentDate || '').localeCompare(b.documentDate || '') || (a.documentNo || '').localeCompare(b.documentNo || ''));
+          const vFuel = db.fuelEntries.filter((f: FuelEntry) => f.cycleId === cycle.id && normPlate(f.plateNo) === np).sort((a: FuelEntry, b: FuelEntry) => (a.date || '').localeCompare(b.date || ''));
           const vIncome = db.deductions.filter((d: DeductionEntry) => d.cycleId === cycle.id && d.kind === 'income' && normPlate(d.plateNo) === np);
           const inDocIncome = vIncome.filter((d: DeductionEntry) => (d.docNo || '').trim()).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
           const perCycleInc: { label: string; amount: number }[] = Object.values(

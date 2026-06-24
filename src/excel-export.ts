@@ -355,8 +355,8 @@ export async function exportPerVehicleReport(
   for (const s of summaries) {
     const plate = s.plateNo;
     const np = normPlate(plate);
-    const vTrips = cycleTrips.filter((t) => normPlate(t.plateNo) === np);
-    const vFuel = fuel.filter((f) => f.cycleId === cycle.id && normPlate(f.plateNo) === np);
+    const vTrips = cycleTrips.filter((t) => normPlate(t.plateNo) === np).sort((a, b) => (a.documentDate || '').localeCompare(b.documentDate || '') || (a.documentNo || '').localeCompare(b.documentNo || ''));
+    const vFuel = fuel.filter((f) => f.cycleId === cycle.id && normPlate(f.plateNo) === np).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     const vIncome = deductions.filter((d) => d.cycleId === cycle.id && d.kind === 'income' && normPlate(d.plateNo) === np);
 
     const ws = wb.addWorksheet(safeSheetName(plate, usedNames));
