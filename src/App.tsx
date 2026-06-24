@@ -8,7 +8,7 @@ import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
-import { exportCycleToExcel } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify } from './ui';
 
@@ -31,7 +31,7 @@ const EMPTY: DatabaseState = {
 };
 
 type BranchAuth = { id: string; name: string; isHQ: boolean };
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches';
+type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -114,6 +114,7 @@ export default function App() {
     ['calc', 'คำนวณค่าเที่ยว', Calculator],
     ['fuel', 'ค่าน้ำมัน & รายการหัก', Fuel],
     ['dashboard', 'Dashboard', Database],
+    ['reports', 'รายงานต่อทะเบียน', FileSpreadsheet],
     ['rates', 'Master ราคาขนส่ง', Tag],
     ['rules', 'เงื่อนไขตัวหาร', Filter],
     ['vehicles', 'รถ & คนขับ', Truck],
@@ -179,6 +180,7 @@ export default function App() {
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={auth.isHQ} />}
+            {tab === 'reports' && <ReportsTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
             {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -1036,6 +1038,33 @@ function HQDashboard({ db, cycle }: any) {
       </div>
       <p className="text-[11px] text-natural-muted">💡 เลือกสาขาที่มุมบนเพื่อดู/แก้ไขรายละเอียดของแต่ละสาขา</p>
     </div>
+  );
+}
+
+// ===========================================================================
+// Tab: รายงานต่อทะเบียน (Export Excel)
+// ===========================================================================
+function ReportsTab({ db, cycle, branchId, showToast }: any) {
+  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
+  if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
+  const branchName = (db.branches as Branch[]).find((b) => b.id === branchId)?.name || '';
+  const cycleTrips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id);
+  const exp = async () => {
+    if (!cycleTrips.length) return showToast('warning', 'ยังไม่มีใบกระจายในรอบนี้');
+    try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+  return (
+    <Section title="รายงานต่อทะเบียน (Export Excel)" icon={FileSpreadsheet}>
+      <p className="text-sm text-natural-muted mb-3">รอบ <b className="text-[#1B365D]">{cycle.name}</b> · สาขา {branchName} — ไฟล์เดียว แยก sheet ต่อทะเบียน</p>
+      <button onClick={exp} className="bg-emerald-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold flex items-center gap-2"><FileSpreadsheet className="w-4 h-4" />Export รายงานต่อทะเบียน (.xlsx)</button>
+      <div className="mt-3 text-[12px] text-natural-muted bg-natural-bg rounded-lg p-3 leading-relaxed">
+        แต่ละทะเบียน = 1 sheet ประกอบด้วย:<br />
+        • <b>ตารางค่าบรรทุก</b> — วันที่ · ปลายทาง · เลขใบกระจาย · จำนวนชิ้น · แบบ(เหมา/ชิ้น) · ราคา · เป็นเงิน · พิเศษ(รายได้เพิ่ม) · ราคารวม · หมายเหตุ<br />
+        • <b>สรุป</b> — รายได้ทั้งหมด → หัก 1% → หักน้ำมัน → +รายได้เพิ่ม → หักรายการต่าง ๆ → รวมรับสุทธิ<br />
+        • <b>ใบสั่งเติมน้ำมัน</b> — ลำดับ · ว.ด.ป. · เลขใบสั่ง · จำนวนเงิน · ผลรวม
+      </div>
+    </Section>
   );
 }
 
