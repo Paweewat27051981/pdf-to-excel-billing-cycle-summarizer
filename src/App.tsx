@@ -1441,11 +1441,21 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
   const blankV = { plateNo: '', driverName: '', vehicleType: '6 ล้อ', rateGroup: '', status: 'active' };
   const [form, setForm] = useState<any>(blankV);
   const [sel, setSel] = useState<Set<string>>(new Set());
+  const [editId, setEditId] = useState<string | null>(null);
   const branchGroups: string[] = ((db.branches as Branch[]).find((b) => b.id === branchId)?.rateGroups || []).map((g) => g.name);
   const add = async () => {
     if (!form.plateNo) return showToast('warning', 'กรอกทะเบียน');
-    await api('/api/vehicles', 'POST', { ...form, branchId }); setForm(blankV); reload();
+    if (editId) { await api(`/api/vehicles/${editId}`, 'PUT', form); showToast('success', 'บันทึกการแก้ไขแล้ว'); }
+    else { await api('/api/vehicles', 'POST', { ...form, branchId }); showToast('success', 'เพิ่มรถแล้ว'); }
+    setForm(blankV); setEditId(null); reload();
   };
+  const startEdit = async (v: Vehicle) => {
+    if (!(await confirmPassword('แก้ไขรถ'))) return;
+    setForm({ plateNo: v.plateNo, driverName: v.driverName, vehicleType: v.vehicleType, rateGroup: v.rateGroup || '', status: v.status });
+    setEditId(v.id);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const cancelEdit = () => { setForm(blankV); setEditId(null); };
   const setGroup = async (v: Vehicle, g: string) => { await api(`/api/vehicles/${v.id}`, 'PUT', { rateGroup: g }); reload(); };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
@@ -1477,7 +1487,8 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
             {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
           </select>
         )}
-        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 py-1.5 font-semibold">เพิ่ม</button>
+        <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-[#1B365D]'} text-white rounded-lg px-3 py-1.5 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
+        {editId && <button onClick={cancelEdit} className="border border-natural-border rounded-lg px-3 py-1.5 font-semibold">ยกเลิก</button>}
         {sel.size > 0 && (
           <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
             <Trash2 className="w-4 h-4" />ลบที่เลือก ({sel.size})
@@ -1507,7 +1518,10 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
                     </select>
                   </td>
                 )}
-                <td className="py-1.5 px-1"><button type="button" title="ลบ" onClick={() => delOne(v)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
+                <td className="py-1.5 px-1 whitespace-nowrap">
+                  <button type="button" title="แก้ไข (ใส่รหัส)" onClick={() => startEdit(v)} className="text-[#1B365D] hover:text-amber-700 font-semibold mr-2">✎</button>
+                  <button type="button" title="ลบ" onClick={() => delOne(v)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5 inline" /></button>
+                </td>
               </tr>
             ))}
             {vehicles.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-natural-muted">ยังไม่มีรถในสาขานี้</td></tr>}
