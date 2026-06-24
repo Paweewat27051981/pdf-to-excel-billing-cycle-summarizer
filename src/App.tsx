@@ -1089,6 +1089,8 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
   const branchName = (db.branches as Branch[]).find((b) => b.id === branchId)?.name || '';
   const cycleTrips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id);
   const sums = summarizeByVehicle(cycle.id, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles);
+  const [selPlate, setSelPlate] = useState('');
+  const shownSums = selPlate ? sums.filter((s: any) => s.plateNo === selPlate) : sums;
   const exp = async () => {
     if (!cycleTrips.length) return showToast('warning', 'ยังไม่มีใบกระจายในรอบนี้');
     try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
@@ -1102,7 +1104,14 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
       {/* action */}
       <div className="bg-white rounded-2xl border border-natural-border p-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm"><span className="font-bold text-[#1B365D]">รายงานต่อทะเบียน</span> <span className="text-natural-muted ml-2">รอบ {cycle.name} · สาขา {branchName} · {sums.length} ทะเบียน</span></div>
-        <button onClick={exp} className="bg-emerald-600 text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" />Export Excel (.xlsx)</button>
+        <div className="flex items-center gap-2 ml-auto">
+          <label className="text-xs text-natural-muted font-semibold">เลือกทะเบียน:</label>
+          <select aria-label="เลือกทะเบียนรถ" value={selPlate} onChange={(e) => setSelPlate(e.target.value)} className="border border-natural-border rounded-full px-3 py-1.5 text-xs focus:outline-none focus:border-[#1B365D]">
+            <option value="">🚚 ทุกคัน ({sums.length})</option>
+            {sums.map((s: any) => <option key={s.plateNo} value={s.plateNo}>{s.plateNo} — {s.driverName}</option>)}
+          </select>
+          <button onClick={exp} className="bg-emerald-600 text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" />Export Excel (.xlsx)</button>
+        </div>
       </div>
 
       {sums.length === 0 ? <EmptyHint text="ยังไม่มีข้อมูลในรอบนี้" /> : (<>
@@ -1113,7 +1122,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
             <thead className="bg-[#1B365D] text-white"><tr><TH>ทะเบียน</TH><TH>คนขับ</TH><TH r>รายได้</TH><TH r>หัก 1%</TH><TH r>ค่าน้ำมัน</TH><TH r>+รายได้เพิ่ม</TH><TH r>รวมหัก</TH><TH r>รับสุทธิ</TH></tr></thead>
             <tbody>
               {sums.map((s: any, i: number) => (
-                <tr key={s.plateNo} className={i % 2 ? 'bg-[#F9FAFC]' : ''}>
+                <tr key={s.plateNo} onClick={() => setSelPlate(selPlate === s.plateNo ? '' : s.plateNo)} className={`cursor-pointer ${selPlate === s.plateNo ? 'bg-[#FFF2CC] ring-1 ring-[#1B365D]' : i % 2 ? 'bg-[#F9FAFC]' : ''} hover:bg-[#EAF2F8]`}>
                   <TD b>{s.plateNo}</TD><TD>{s.driverName}</TD><TD r>{money(s.totalTripAmount)}</TD><TD r>{money(s.deduction1Percent)}</TD><TD r>{money(s.fuelTotal)}</TD><TD r>{money(s.incomeAdd)}</TD><TD r>{money(s.deductionTotal)}</TD>
                   <td className="px-2 py-1 text-right font-bold text-[#C00000]">{money(s.netReceive)}</td>
                 </tr>
@@ -1123,7 +1132,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
         </div>
 
         {/* รายละเอียดต่อทะเบียน */}
-        {sums.map((s: any) => {
+        {shownSums.map((s: any) => {
           const np = normPlate(s.plateNo);
           const vTrips = cycleTrips.filter((t: TripDocument) => normPlate(t.plateNo) === np);
           const vFuel = db.fuelEntries.filter((f: FuelEntry) => f.cycleId === cycle.id && normPlate(f.plateNo) === np);
