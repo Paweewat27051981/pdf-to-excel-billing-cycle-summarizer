@@ -761,16 +761,21 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
               <tbody>
                 {r.items.map((it, ii) => {
                   const unspecified = isUnspecifiedName(it.productName);
+                  const adj = (pr?.adjustments || []).find((a: any) => a.productName === it.productName);
                   return (
-                  <tr key={ii} title={unspecified ? 'ชื่อสินค้ายังไม่ระบุ — นับเข้ายอดตามเอกสาร' : ''}>
+                  <tr key={ii} title={adj ? `หาร ${adj.divisor}: ${adj.note}` : unspecified ? 'ชื่อสินค้ายังไม่ระบุ — นับเข้ายอดตามเอกสาร' : ''}
+                    className={adj ? 'bg-[#FFE0B2] outline outline-1 outline-[#C65911]' : ''}>
                     <td className="py-0.5">
                       <div className="flex items-center gap-1">
-                        <input value={it.productName} aria-label="ชื่อสินค้า" onChange={(e) => updItem(ri, ii, { productName: e.target.value })} className={`w-full border-b border-dashed border-natural-border bg-transparent p-1 ${unspecified ? 'text-amber-700' : ''}`} placeholder="ชื่อสินค้า" />
+                        {adj && <span className="shrink-0 text-[10px] font-extrabold bg-[#C65911] text-white rounded px-1.5 py-0.5">÷{adj.divisor}</span>}
+                        <input value={it.productName} aria-label="ชื่อสินค้า" onChange={(e) => updItem(ri, ii, { productName: e.target.value })} className={`w-full border-b border-dashed border-natural-border bg-transparent p-1 ${adj ? 'text-[#7a3a00] font-bold' : unspecified ? 'text-amber-700' : ''}`} placeholder="ชื่อสินค้า" />
                         {unspecified && <span className="shrink-0 text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-300 rounded px-1 py-0.5">ระบุชื่อ?</span>}
                       </div>
                     </td>
-                    <td><input type="number" aria-label="จำนวนสินค้า" value={it.quantity || ''} onChange={(e) => updItem(ri, ii, { quantity: +e.target.value || 0 })} className="w-full text-center border-b border-dashed border-natural-border bg-transparent p-1 font-bold" /></td>
-                    <td><input list="units" aria-label="หน่วยนับ" value={it.unit || ''} onChange={(e) => updItem(ri, ii, { unit: e.target.value })} placeholder="หน่วย" className="w-full text-center border-b border-dashed border-natural-border bg-transparent p-1 text-natural-muted" /></td>
+                    <td><input type="number" aria-label="จำนวนสินค้า" value={it.quantity || ''} onChange={(e) => updItem(ri, ii, { quantity: +e.target.value || 0 })} className={`w-full text-center border-b border-dashed border-natural-border bg-transparent p-1 font-bold ${adj ? 'text-[#7a3a00]' : ''}`} /></td>
+                    <td className="text-center">{adj
+                      ? <span className="text-[11px] font-bold text-[#C65911]">→ {adj.convertedQty}</span>
+                      : <input list="units" aria-label="หน่วยนับ" value={it.unit || ''} onChange={(e) => updItem(ri, ii, { unit: e.target.value })} placeholder="หน่วย" className="w-full text-center border-b border-dashed border-natural-border bg-transparent p-1 text-natural-muted" />}</td>
                     <td className="text-center"><button type="button" aria-label="ลบรายการสินค้า" title="ลบรายการสินค้า" onClick={() => updReceipt(ri, { items: r.items.filter((_, j) => j !== ii) })} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
                   </tr>
                   );
