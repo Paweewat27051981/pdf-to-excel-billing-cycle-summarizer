@@ -36,6 +36,8 @@ type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 const money = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// จำนวน: จำนวนเต็มไม่ใส่ทศนิยม, มีเศษแสดงไม่เกิน 2 ตำแหน่ง (กัน float error 1.9999 -> 2)
+const qtyFmt = (n: number) => String(Math.round(((n ?? 0) + Number.EPSILON) * 100) / 100);
 
 export default function App() {
   const [db, setDb] = useState<DatabaseState>(EMPTY);
@@ -751,7 +753,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
                 <span className="text-natural-muted text-[10px] font-bold uppercase">ราคา/ค่าเที่ยวจุดนี้</span>
                 <span className="font-semibold text-[#1B365D]">
                   {prev.rateType === 'piece'
-                    ? (pr?.piecePrice != null ? `ชิ้น ฿${money(pr.piecePrice)} × ${pr.billingQty} = ฿${money(pr.receiptAmount)}` : '⚠️ ไม่เจอราคาชิ้น')
+                    ? (pr?.piecePrice != null ? `ชิ้น ฿${money(pr.piecePrice)} × ${qtyFmt(pr.billingQty)} = ฿${money(pr.receiptAmount)}` : '⚠️ ไม่เจอราคาชิ้น')
                     : (pr?.flatPrice != null ? `เหมา ฿${money(pr.flatPrice)}` : '⚠️ ไม่เจอราคาเหมา')}
                 </span>
               </div>
@@ -798,8 +800,8 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
               </div>
             )}
             <div className="mt-2 text-xs font-semibold flex gap-4">
-              <span>จำนวนจริง: <b>{pr?.totalQty}</b>{pr?.requiresManualBox ? ' ชิ้น' : ''}</span>
-              <span className="text-[#C00000]">คิดค่าเที่ยว: <b>{pr?.billingQty}</b>{pr?.requiresManualBox ? ' กล่อง' : ''}</span>
+              <span>จำนวนจริง: <b>{qtyFmt(pr?.totalQty)}</b>{pr?.requiresManualBox ? ' ชิ้น' : ''}</span>
+              <span className="text-[#C00000]">คิดค่าเที่ยว: <b>{qtyFmt(pr?.billingQty)}</b>{pr?.requiresManualBox ? ' กล่อง' : ''}</span>
             </div>
           </div>
         );
@@ -809,7 +811,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
 
       {/* totals + save */}
       <div className="flex items-center justify-between border-t border-natural-border pt-3">
-        <div className="text-sm font-bold text-[#1B365D]">ค่าเที่ยวรวม: ฿{money(prev.tripAmount)} <span className="text-natural-muted font-normal">(คิด {prev.billingQty}/{prev.totalQty} ลัง)</span>
+        <div className="text-sm font-bold text-[#1B365D]">ค่าเที่ยวรวม: ฿{money(prev.tripAmount)} <span className="text-natural-muted font-normal">(คิด {qtyFmt(prev.billingQty)}/{qtyFmt(prev.totalQty)} ลัง)</span>
           {prev.breakdown && ((prev.breakdown.collect || 0) > 0 || (prev.breakdown.peat || 0) > 0) && (
             <span className="block text-[11px] text-natural-muted font-normal mt-0.5">
               งานปกติ ฿{money(prev.breakdown.normal)}
@@ -850,8 +852,8 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
                 <td className="py-1">{r.hasAdjustment && r.adjustments?.[0] && <span className="text-[#C65911] font-bold">🟧÷{r.adjustments[0].divisor} </span>}{r.receiptNo}</td>
                 <td>{r.receiverName}</td>
                 <td>{r.districtRaw} {r.provinceRaw}</td>
-                <td className="text-center">{r.totalQty}</td>
-                <td className="text-center font-bold text-[#C00000]" title={(r.adjustments || []).map((a) => a.note).join(' | ')}>{r.billingQty}</td>
+                <td className="text-center">{qtyFmt(r.totalQty)}</td>
+                <td className="text-center font-bold text-[#C00000]" title={(r.adjustments || []).map((a) => a.note).join(' | ')}>{qtyFmt(r.billingQty)}</td>
                 <td className="text-right">{trip.rateType === 'piece' ? money(r.receiptAmount) : (r.flatPrice != null ? money(r.flatPrice) : '-')}</td>
               </tr>
             ))}
@@ -1184,7 +1186,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                       return (
                         <tr key={t.id} className={hasDiv ? 'bg-[#FFF2CC]' : ''}>
                           <TD>{fmtD(t.documentDate)}</TD><TD>{t.districtRaw ? 'อ.' + t.districtRaw : ''} {t.provinceRaw ? 'จ.' + t.provinceRaw : ''}</TD><TD>{t.documentNo}</TD>
-                          <TD r>{t.billingQty}</TD><TD>{t.rateType === 'piece' ? 'ชิ้น' : t.rateType === 'flat' ? 'เหมา' : '-'}</TD>
+                          <TD r>{qtyFmt(t.billingQty)}</TD><TD>{t.rateType === 'piece' ? 'ชิ้น' : t.rateType === 'flat' ? 'เหมา' : '-'}</TD>
                           <TD r>{unitRate != null ? money(unitRate) : '-'}</TD><TD r>{money(t.tripAmount)}</TD><TD r>{extra ? money(extra) : '-'}</TD>
                           <td className="px-2 py-1 text-right font-bold text-[#1B365D]">{money(t.tripAmount + extra)}</td>
                           <TD>{hasDiv ? <span className="text-[#C65911] font-semibold">มีหาร</span> : ''}</TD>

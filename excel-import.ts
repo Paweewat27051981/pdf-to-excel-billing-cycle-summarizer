@@ -211,7 +211,8 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
       // --- แถวรายการสินค้า: ต้องมีจำนวน(ตัวเลข) + ชื่อสินค้า ---
       // จับ "จำนวน" จากตำแหน่งเลขจริง แล้วอ่าน หน่วย/ชื่อสินค้า ตามเนื้อหา (กันคอลัมน์เลื่อนจากหัวตาราง)
       const qtyCol = numCol(row, cols.qty);
-      const qty = qtyCol >= 0 ? Number(row[qtyCol]) : null;
+      // ปัดทศนิยม 2 ตำแหน่ง กัน float error จาก Excel (เช่น 1.9999999999 -> 2)
+      const qty = qtyCol >= 0 ? Math.round((Number(row[qtyCol]) + Number.EPSILON) * 100) / 100 : null;
       const { unit, product } = extractUnitProduct(row, qtyCol, cols.receipt[0]);
       if (qty == null || !product) continue;
 

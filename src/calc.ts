@@ -330,9 +330,9 @@ export function computeReceipt(
   const normalItems = extracted.items.filter((it) => !isCollect(it) && !isPeat(it));
   const collectQty = extracted.items.filter(isCollect).reduce((s, it) => s + (it.quantity || 0), 0);
   const peatQty = extracted.items.filter(isPeat).reduce((s, it) => s + (it.quantity || 0), 0);
-  const normalQty = normalItems.reduce((s, it) => s + (it.quantity || 0), 0);
+  const normalQty = round2(normalItems.reduce((s, it) => s + (it.quantity || 0), 0));
   // นับทุกบรรทัด (รวม "*** โปรดระบุ ***") ให้ยอดตรงกับใบกระจาย
-  const totalQty = extracted.items.reduce((sum, it) => sum + (it.quantity || 0), 0);
+  const totalQty = round2(extracted.items.reduce((sum, it) => sum + (it.quantity || 0), 0));
 
   // ผู้ส่งนี้ส่งเป็นชิ้น ต้องกรอกจำนวนกล่องเอง?
   const requiresManualBox = ctx.manualBoxSenders.some(
@@ -362,7 +362,7 @@ export function computeReceipt(
       if (!rule) continue;
       const specialQty = item.quantity || 0;
       const convertedQty = applyRounding(specialQty / rule.divisor, rule.roundingMethod);
-      billingQty = billingQty - specialQty + convertedQty;
+      billingQty = round2(billingQty - specialQty + convertedQty);
       adjustments.push({
         productName: item.productName,
         originalQty: specialQty,
@@ -461,8 +461,8 @@ export function computeTripDocument(
     }
   }
 
-  const totalQty = receipts.reduce((s, r) => s + r.totalQty, 0);
-  const billingQty = receipts.reduce((s, r) => s + r.billingQty, 0);
+  const totalQty = round2(receipts.reduce((s, r) => s + r.totalQty, 0));
+  const billingQty = round2(receipts.reduce((s, r) => s + r.billingQty, 0));
 
   if (totalQty <= 0) warnings.push('จำนวนสินค้าเป็น 0 หรืออ่านไม่ได้');
 
@@ -492,7 +492,7 @@ export function computeTripDocument(
     : null;
 
   // ราคาเหมาแบบเงื่อนไขพิเศษ (จำนวนกล่อง/ผู้รับ/ผู้ส่ง/สินค้า) เช่น CP All ลำพูน, adidas
-  const totalBoxes = receipts.reduce((s, r) => s + r.totalQty, 0);
+  const totalBoxes = round2(receipts.reduce((s, r) => s + r.totalQty, 0));
   const tieredFlat = matchTieredFlat({
     province: docProvince,
     totalBoxes,
