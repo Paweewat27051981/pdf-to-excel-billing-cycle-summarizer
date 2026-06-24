@@ -1447,13 +1447,27 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
 function RulesTab({ db, api, branchId, reload, showToast }: any) {
   const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverKeyword: '', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null };
   const [form, setForm] = useState<any>(blank);
+  const [editId, setEditId] = useState<string | null>(null);
   const [fSender, setFSender] = useState('');
   const [fGroup, setFGroup] = useState('');
   const add = async () => {
     if (!form.productKeyword) return showToast('warning', 'กรอกชื่อสินค้า');
-    await api('/api/conversion-rules', 'POST', { ...form, branchId, ruleName: form.ruleName || `${form.productKeyword} หาร ${form.divisor}` });
-    setForm(blank); reload(); showToast('success', 'เพิ่มกฎแล้ว');
+    if (editId) {
+      await api(`/api/conversion-rules/${editId}`, 'PUT', { ...form, ruleName: form.ruleName || `${form.productKeyword} หาร ${form.divisor}` });
+      showToast('success', 'บันทึกการแก้ไขแล้ว');
+    } else {
+      await api('/api/conversion-rules', 'POST', { ...form, branchId, ruleName: form.ruleName || `${form.productKeyword} หาร ${form.divisor}` });
+      showToast('success', 'เพิ่มกฎแล้ว');
+    }
+    setForm(blank); setEditId(null); reload();
   };
+  const startEdit = async (r: ProductConversionRule) => {
+    if (!(await confirmPassword('แก้ไขกฎตัวหาร'))) return;
+    setForm({ ruleName: r.ruleName, senderKeyword: r.senderKeyword, receiverKeyword: r.receiverKeyword || '', receiverGroupId: r.receiverGroupId, productKeyword: r.productKeyword, productSizeKeyword: r.productSizeKeyword, divisor: r.divisor, roundingMethod: r.roundingMethod, applyLevel: r.applyLevel, status: r.status, effectiveFrom: r.effectiveFrom, effectiveTo: r.effectiveTo });
+    setEditId(r.id);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  const cancelEdit = () => { setForm(blank); setEditId(null); };
   const norm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, '');
   const filteredRules: ProductConversionRule[] = db.conversionRules.filter((r: ProductConversionRule) =>
     (!fSender || norm(r.senderKeyword).includes(norm(fSender))) &&
@@ -1479,7 +1493,8 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
           <input list="rule-products" aria-label="ชื่อสินค้า" placeholder="สินค้า (พิมพ์ใหม่ได้)" value={form.productKeyword} onChange={(e) => setForm({ ...form, productKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
           <input list="rule-sizes" aria-label="ขนาดสินค้า" placeholder="ขนาด เช่น 14 กรัม" value={form.productSizeKeyword} onChange={(e) => setForm({ ...form, productSizeKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
           <input type="number" aria-label="ตัวหาร" placeholder="ตัวหาร" value={form.divisor} onChange={(e) => setForm({ ...form, divisor: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-20" />
-          <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 font-semibold">เพิ่ม</button>
+          <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-[#1B365D]'} text-white rounded-lg px-3 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
+          {editId && <button onClick={cancelEdit} className="border border-natural-border rounded-lg px-3 font-semibold">ยกเลิก</button>}
           <datalist id="rule-senders">{senderOpts.map((s) => <option key={s} value={s} />)}</datalist>
           <datalist id="rule-receivers">{receiverOpts.map((s) => <option key={s} value={s} />)}</datalist>
           <datalist id="rule-products">{productOpts.map((s) => <option key={s} value={s} />)}</datalist>
@@ -1502,6 +1517,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
 
         <SimpleTable cols={['ผู้ส่ง', 'ผู้รับ', 'กลุ่มผู้รับ', 'สินค้า', 'ขนาด', 'หาร', 'ปัดเศษ']}
           rows={filteredRules.map((r: ProductConversionRule) => [r.senderKeyword, r.receiverKeyword || 'ทุกผู้รับ', db.receiverGroups.find((g: ReceiverGroup) => g.id === r.receiverGroupId)?.groupName || '-', r.productKeyword, r.productSizeKeyword, `÷${r.divisor}`, r.roundingMethod === 'half_up' ? '.5 ปัดขึ้น' : r.roundingMethod])}
+          onEdit={(i: number) => startEdit(filteredRules[i])}
           onDelete={async (i: number) => { await api(`/api/conversion-rules/${filteredRules[i].id}`, 'DELETE'); reload(); }} />
       </Section>
       <GroupManager db={db} api={api} branchId={branchId} reload={reload} showToast={showToast} />
@@ -1722,16 +1738,20 @@ function Stat({ label, value, highlight }: { label: string; value: string; highl
     </div>
   );
 }
-function SimpleTable({ cols, rows, onDelete }: { cols: string[]; rows: any[][]; onDelete?: (i: number) => void }) {
+function SimpleTable({ cols, rows, onDelete, onEdit }: { cols: string[]; rows: any[][]; onDelete?: (i: number) => void; onEdit?: (i: number) => void }) {
+  const hasAction = !!(onDelete || onEdit);
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
-        <thead><tr className="text-natural-muted text-left border-b border-natural-border">{cols.map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}{onDelete && <th className="w-8"></th>}</tr></thead>
+        <thead><tr className="text-natural-muted text-left border-b border-natural-border">{cols.map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}{hasAction && <th className="w-16"></th>}</tr></thead>
         <tbody>
           {rows.map((row, i) => (
             <tr key={i} className={i % 2 ? 'bg-[#F9FAFC]' : ''}>
               {row.map((cell, j) => <td key={j} className="py-1.5 px-1">{cell}</td>)}
-              {onDelete && <td className="text-center"><button type="button" aria-label="ลบรายการ" title="ลบรายการ" onClick={async () => { if (await confirmDelete()) onDelete(i); }} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-3.5 h-3.5" /></button></td>}
+              {hasAction && <td className="text-center whitespace-nowrap">
+                {onEdit && <button type="button" aria-label="แก้ไขรายการ" title="แก้ไข (ใส่รหัส)" onClick={() => onEdit(i)} className="text-[#1B365D] hover:text-amber-700 font-semibold mr-2">✎</button>}
+                {onDelete && <button type="button" aria-label="ลบรายการ" title="ลบรายการ" onClick={async () => { if (await confirmDelete()) onDelete(i); }} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-3.5 h-3.5 inline" /></button>}
+              </td>}
             </tr>
           ))}
           {rows.length === 0 && <tr><td colSpan={cols.length + 1} className="py-4 text-center text-natural-muted">ยังไม่มีข้อมูล</td></tr>}
