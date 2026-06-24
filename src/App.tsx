@@ -9,7 +9,7 @@ import {
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport } from './excel-export';
-import { summarizeByVehicle, isUnspecifiedName } from './calc';
+import { summarizeByVehicle, isUnspecifiedName, normPlate } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify } from './ui';
 
 // โมเดลที่มีจริง (ตรวจจาก ListModels API) — flash=เร็ว/ฟรีกว่า, pro=แม่นกว่า
@@ -1044,27 +1044,107 @@ function HQDashboard({ db, cycle }: any) {
 // ===========================================================================
 // Tab: รายงานต่อทะเบียน (Export Excel)
 // ===========================================================================
+const fmtD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
+
 function ReportsTab({ db, cycle, branchId, showToast }: any) {
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
   const branchName = (db.branches as Branch[]).find((b) => b.id === branchId)?.name || '';
   const cycleTrips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id);
+  const sums = summarizeByVehicle(cycle.id, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles);
   const exp = async () => {
     if (!cycleTrips.length) return showToast('warning', 'ยังไม่มีใบกระจายในรอบนี้');
     try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
     catch (e: any) { showToast('error', e.message); }
   };
+  const TH = ({ children, r }: any) => <th className={`px-2 py-1.5 font-semibold ${r ? 'text-right' : 'text-left'}`}>{children}</th>;
+  const TD = ({ children, r, b }: any) => <td className={`px-2 py-1 ${r ? 'text-right' : 'text-left'} ${b ? 'font-bold' : ''}`}>{children}</td>;
+
   return (
-    <Section title="รายงานต่อทะเบียน (Export Excel)" icon={FileSpreadsheet}>
-      <p className="text-sm text-natural-muted mb-3">รอบ <b className="text-[#1B365D]">{cycle.name}</b> · สาขา {branchName} — ไฟล์เดียว แยก sheet ต่อทะเบียน</p>
-      <button onClick={exp} className="bg-emerald-600 text-white rounded-lg px-5 py-2.5 text-sm font-semibold flex items-center gap-2"><FileSpreadsheet className="w-4 h-4" />Export รายงานต่อทะเบียน (.xlsx)</button>
-      <div className="mt-3 text-[12px] text-natural-muted bg-natural-bg rounded-lg p-3 leading-relaxed">
-        แต่ละทะเบียน = 1 sheet ประกอบด้วย:<br />
-        • <b>ตารางค่าบรรทุก</b> — วันที่ · ปลายทาง · เลขใบกระจาย · จำนวนชิ้น · แบบ(เหมา/ชิ้น) · ราคา · เป็นเงิน · พิเศษ(รายได้เพิ่ม) · ราคารวม · หมายเหตุ<br />
-        • <b>สรุป</b> — รายได้ทั้งหมด → หัก 1% → หักน้ำมัน → +รายได้เพิ่ม → หักรายการต่าง ๆ → รวมรับสุทธิ<br />
-        • <b>ใบสั่งเติมน้ำมัน</b> — ลำดับ · ว.ด.ป. · เลขใบสั่ง · จำนวนเงิน · ผลรวม
+    <div className="flex flex-col gap-4">
+      {/* action */}
+      <div className="bg-white rounded-2xl border border-natural-border p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm"><span className="font-bold text-[#1B365D]">รายงานต่อทะเบียน</span> <span className="text-natural-muted ml-2">รอบ {cycle.name} · สาขา {branchName} · {sums.length} ทะเบียน</span></div>
+        <button onClick={exp} className="bg-emerald-600 text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" />Export Excel (.xlsx)</button>
       </div>
-    </Section>
+
+      {sums.length === 0 ? <EmptyHint text="ยังไม่มีข้อมูลในรอบนี้" /> : (<>
+        {/* สรุปรวม */}
+        <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
+          <div className="px-4 pt-3 font-bold text-[#1B365D] text-sm">📊 สรุปรวมต่อทะเบียน</div>
+          <table className="w-full text-xs min-w-[760px] mt-2">
+            <thead className="bg-[#1B365D] text-white"><tr><TH>ทะเบียน</TH><TH>คนขับ</TH><TH r>รายได้</TH><TH r>หัก 1%</TH><TH r>ค่าน้ำมัน</TH><TH r>+รายได้เพิ่ม</TH><TH r>รวมหัก</TH><TH r>รับสุทธิ</TH></tr></thead>
+            <tbody>
+              {sums.map((s: any, i: number) => (
+                <tr key={s.plateNo} className={i % 2 ? 'bg-[#F9FAFC]' : ''}>
+                  <TD b>{s.plateNo}</TD><TD>{s.driverName}</TD><TD r>{money(s.totalTripAmount)}</TD><TD r>{money(s.deduction1Percent)}</TD><TD r>{money(s.fuelTotal)}</TD><TD r>{money(s.incomeAdd)}</TD><TD r>{money(s.deductionTotal)}</TD>
+                  <td className="px-2 py-1 text-right font-bold text-[#C00000]">{money(s.netReceive)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* รายละเอียดต่อทะเบียน */}
+        {sums.map((s: any) => {
+          const np = normPlate(s.plateNo);
+          const vTrips = cycleTrips.filter((t: TripDocument) => normPlate(t.plateNo) === np);
+          const vFuel = db.fuelEntries.filter((f: FuelEntry) => f.cycleId === cycle.id && normPlate(f.plateNo) === np);
+          const vIncome = db.deductions.filter((d: DeductionEntry) => d.cycleId === cycle.id && d.kind === 'income' && normPlate(d.plateNo) === np);
+          return (
+            <div key={s.plateNo} className="bg-white rounded-2xl border border-natural-border p-4">
+              <div className="font-bold text-[#1B365D] mb-2">🚚 {s.plateNo} <span className="text-natural-muted font-normal text-sm">· {s.driverName}</span></div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs min-w-[720px]">
+                  <thead className="bg-[#1B365D] text-white"><tr><TH>วันที่</TH><TH>ปลายทาง</TH><TH>เลขใบกระจาย</TH><TH r>จำนวน</TH><TH>แบบ</TH><TH r>ราคา</TH><TH r>เป็นเงิน</TH><TH r>พิเศษ</TH><TH r>รวม</TH><TH>หมายเหตุ</TH></tr></thead>
+                  <tbody>
+                    {vTrips.map((t: TripDocument) => {
+                      const piecePrice = t.receipts?.find((r) => r.piecePrice != null)?.piecePrice ?? null;
+                      const unitRate = t.rateType === 'flat' ? t.rateValue : piecePrice;
+                      const extra = vIncome.filter((d: DeductionEntry) => (d.docNo || '') === t.documentNo).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
+                      const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
+                      return (
+                        <tr key={t.id} className={hasDiv ? 'bg-[#FFF2CC]' : ''}>
+                          <TD>{fmtD(t.documentDate)}</TD><TD>{t.districtRaw ? 'อ.' + t.districtRaw : ''} {t.provinceRaw ? 'จ.' + t.provinceRaw : ''}</TD><TD>{t.documentNo}</TD>
+                          <TD r>{t.billingQty}</TD><TD>{t.rateType === 'piece' ? 'ชิ้น' : t.rateType === 'flat' ? 'เหมา' : '-'}</TD>
+                          <TD r>{unitRate != null ? money(unitRate) : '-'}</TD><TD r>{money(t.tripAmount)}</TD><TD r>{extra ? money(extra) : '-'}</TD>
+                          <td className="px-2 py-1 text-right font-bold text-[#1B365D]">{money(t.tripAmount + extra)}</td>
+                          <TD>{hasDiv ? <span className="text-[#C65911] font-semibold">มีหาร</span> : ''}</TD>
+                        </tr>
+                      );
+                    })}
+                    {vTrips.length === 0 && <tr><td colSpan={10} className="px-2 py-3 text-center text-natural-muted">ไม่มีใบกระจาย</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              {/* สรุปย่อ + น้ำมัน */}
+              <div className="grid md:grid-cols-2 gap-4 mt-3">
+                <div className="text-xs">
+                  <div className="font-semibold text-[#1B365D] mb-1">สรุป</div>
+                  <div className="flex justify-between"><span>รายได้ค่าเที่ยว</span><b>{money(s.totalTripAmount)}</b></div>
+                  <div className="flex justify-between text-rose-700"><span>หัก 1%</span><span>-{money(s.deduction1Percent)}</span></div>
+                  <div className="flex justify-between text-rose-700"><span>หักค่าน้ำมัน</span><span>-{money(s.fuelTotal)}</span></div>
+                  {s.lines.map((ln: any) => <div key={ln.categoryId} className={`flex justify-between ${ln.kind === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}><span>{ln.kind === 'income' ? '+ ' : 'หัก '}{ln.label}</span><span>{ln.kind === 'income' ? '+' : '-'}{money(ln.amount)}</span></div>)}
+                  <div className="flex justify-between border-t border-natural-border mt-1 pt-1 font-bold text-[#C00000]"><span>รวมรับสุทธิ</span><span>{money(s.netReceive)}</span></div>
+                </div>
+                <div className="text-xs">
+                  <div className="font-semibold text-[#1B365D] mb-1">ใบสั่งเติมน้ำมัน</div>
+                  {vFuel.length === 0 ? <div className="text-natural-muted">ไม่มี</div> : (
+                    <table className="w-full">
+                      <thead className="text-natural-muted border-b border-natural-border"><tr><th className="text-left py-0.5">วัน/เดือน/ปี</th><th className="text-left">เลขใบสั่ง</th><th className="text-right">จำนวนเงิน</th></tr></thead>
+                      <tbody>
+                        {vFuel.map((f: FuelEntry) => <tr key={f.id}><td className="py-0.5">{fmtD(f.date)}</td><td>{f.refNo}</td><td className="text-right">{money(f.amount)}</td></tr>)}
+                        <tr className="border-t border-natural-border font-bold"><td colSpan={2} className="text-right pr-2">ผลรวม</td><td className="text-right">{money(vFuel.reduce((a: number, f: FuelEntry) => a + f.amount, 0))}</td></tr>
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </>)}
+    </div>
   );
 }
 
