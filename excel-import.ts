@@ -58,6 +58,34 @@ function num(row: Row, range: number[]): number | null {
   return null;
 }
 
+// คืน index คอลัมน์ของตัวเลขตัวแรกในช่วง (ไว้ยึดตำแหน่ง "จำนวน" จริง)
+function numCol(row: Row, range: number[]): number {
+  for (let i = range[0]; i <= range[1] && i < row.length; i++) {
+    const v = row[i];
+    if (typeof v === 'number' && !Number.isNaN(v)) return i;
+    if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return i;
+  }
+  return -1;
+}
+
+// คำที่เป็น "หน่วยนับ" — ใช้แยกหน่วยออกจากชื่อสินค้า เวลาคอลัมน์เลื่อน
+const UNIT_RE = /^(กล่อง|ชิ้น|ลัง|หีบ|แพ็?ก|แพ็?ค|ถุง|กระสอบ|อัน|ห่อ|แผง|ขวด|มัด|ตัว|ใบ|ชุด|โหล|กก\.?|กิโล)\.?$/;
+
+// อ่าน "หน่วย" และ "ชื่อสินค้า" จากเนื้อหาหลังคอลัมน์จำนวน (กันคอลัมน์เลื่อนจากหัวตาราง)
+// หน่วย = คำที่ตรง UNIT_RE ตัวแรก, ชื่อสินค้า = ข้อความตัวแรกที่ไม่ใช่หน่วย/ตัวเลข
+function extractUnitProduct(row: Row, qtyCol: number, endCol: number): { unit: string; product: string } {
+  let unit = '', product = '';
+  const start = (qtyCol >= 0 ? qtyCol : -1) + 1;
+  for (let i = start; i <= endCol && i < row.length; i++) {
+    const v = String(row[i] ?? '').trim();
+    if (!v) continue;
+    if (!Number.isNaN(Number(v))) continue; // ข้ามตัวเลข
+    if (UNIT_RE.test(v)) { if (!unit) unit = v; continue; }
+    if (!product) product = v;
+  }
+  return { unit, product };
+}
+
 // หาค่าที่อยู่ถัดจาก label ในแถวเดียวกัน (เช่น "ใบกระจายเลขที่" -> "JB...")
 function labelValue(row: Row, label: string): string {
   for (let i = 0; i < row.length; i++) {
@@ -143,6 +171,8 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
         doc = blankDoc();
         doc.documentNo = labelValue(row, 'ใบกระจายเลขที่');
         doc.documentDate = excelDate(labelNumber(row, 'วันที่ออก'));
+        // บางรูปแบบ ทะเบียนรถอยู่แถวเดียวกับใบกระจายเลขที่ -> ดึงเลย
+        if (joined.includes('ทะเบียนรถ')) doc.plateNo = labelValue(row, 'ทะเบียนรถ') || doc.plateNo;
         curReceipt = null;
         continue;
       }
@@ -172,9 +202,17 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
       // --- ข้ามแถวหัวตาราง ---
       if (joined.includes('ผู้รับสินค้า') && joined.includes('ผู้ส่งสินค้า')) continue;
 
+      // บางรูปแบบ เลขที่ใบรับอยู่ "แถวถัดจาก" แถวสินค้า -> เติมให้ใบรับล่าสุดที่ยังว่าง
+      if (curReceipt && !curReceipt.receiptNo) {
+        const rn = findReceiptNo(row, cols);
+        if (rn) curReceipt.receiptNo = rn;
+      }
+
       // --- แถวรายการสินค้า: ต้องมีจำนวน(ตัวเลข) + ชื่อสินค้า ---
-      const qty = num(row, cols.qty);
-      const product = txt(row, cols.product);
+      // จับ "จำนวน" จากตำแหน่งเลขจริง แล้วอ่าน หน่วย/ชื่อสินค้า ตามเนื้อหา (กันคอลัมน์เลื่อนจากหัวตาราง)
+      const qtyCol = numCol(row, cols.qty);
+      const qty = qtyCol >= 0 ? Number(row[qtyCol]) : null;
+      const { unit, product } = extractUnitProduct(row, qtyCol, cols.receipt[0]);
       if (qty == null || !product) continue;
 
       const seq = num(row, cols.seq);
@@ -195,7 +233,6 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
         curReceipt = { receiptNo: '', receiverName: '', senderName: '', provinceRaw: curProvince, districtRaw: curDistrict, items: [] };
         doc.receipts.push(curReceipt);
       }
-      const unit = txt(row, cols.unit);
       curReceipt.items.push({ productName: product, quantity: qty, ...(unit ? { unit } : {}) });
     }
 
