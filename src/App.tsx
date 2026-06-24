@@ -664,9 +664,12 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
 
   return (
     <div className="bg-white rounded-2xl border border-natural-border p-5 flex flex-col gap-4">
-      <div className="flex items-center justify-between border-b border-natural-border pb-2">
-        <h3 className="font-bold text-sm text-[#1B365D]">ขั้นตอนตรวจสอบก่อนยืนยัน — {pending.fileName}</h3>
-        <button onClick={() => setPending(null)} className="text-xs text-natural-muted hover:text-rose-600 font-semibold">ยกเลิก</button>
+      <div className="flex items-center justify-between border-b border-natural-border pb-2 gap-2">
+        <h3 className="font-bold text-sm text-[#1B365D] truncate">ขั้นตอนตรวจสอบก่อนยืนยัน — {pending.fileName}</h3>
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={() => setPending(null)} className="text-xs text-natural-muted hover:text-rose-600 font-semibold border border-natural-border rounded-full px-3 py-1.5">ยกเลิก</button>
+          <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-1.5 text-xs font-bold flex items-center gap-1.5"><Save className="w-3.5 h-3.5" />ยืนยันบันทึก</button>
+        </div>
       </div>
 
       {/* 📅 รอบที่ใบนี้จะเข้า (อัตโนมัติจากวันที่ในใบ) */}
