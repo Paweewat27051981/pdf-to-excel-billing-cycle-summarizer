@@ -375,6 +375,26 @@ async function startServer() {
     }
   });
 
+  // นำเข้าราคาแบบชุด (เขียน DB ครั้งเดียว) — ใช้ตอน import ตารางราคาทั้งสาขา
+  app.post('/api/rate-masters/bulk-create', async (req, res) => {
+    try {
+      const { rates } = req.body as { rates: Partial<RateMaster>[] };
+      if (!Array.isArray(rates) || !rates.length) return res.status(400).json({ error: 'ต้องส่ง rates เป็น array' });
+      const db = await getDb();
+      const now = new Date().toISOString();
+      for (const r of rates) {
+        db.rateMasters.push({
+          productCategory: 'normal', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active',
+          ...r, id: generateId('rate'), createdBy: r.createdBy || 'import', createdAt: now,
+        } as RateMaster);
+      }
+      await saveDb(db);
+      res.status(201).json({ success: true, count: rates.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.put('/api/rate-masters/:id', async (req, res) => {
     try {
       const db = await getDb();
