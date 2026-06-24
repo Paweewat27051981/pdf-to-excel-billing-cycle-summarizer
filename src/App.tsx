@@ -36,8 +36,8 @@ type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 const money = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-// จำนวน: จำนวนเต็มไม่ใส่ทศนิยม, มีเศษแสดงไม่เกิน 2 ตำแหน่ง (กัน float error 1.9999 -> 2)
-const qtyFmt = (n: number) => String(Math.round(((n ?? 0) + Number.EPSILON) * 100) / 100);
+// จำนวน: ตัดทศนิยมที่ 2 ตำแหน่ง (ไม่ปัดขึ้น) กัน float error เช่น 1.9999999998 -> 1.99
+const qtyFmt = (n: number) => String(Math.floor(((n ?? 0) + 1e-9) * 100) / 100);
 
 export default function App() {
   const [db, setDb] = useState<DatabaseState>(EMPTY);
