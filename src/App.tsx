@@ -1412,7 +1412,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
   return (
     <div className="flex flex-col gap-5">
       <Section title="เงื่อนไขแปลงจำนวนสินค้า (ตัวหาร)" icon={Filter}>
-        <p className="text-xs text-natural-muted mb-3">ต้องตรงทุกข้อ: ผู้ส่งเข้าคำว่า "ซีโน" + กลุ่มผู้รับตรง + ชื่อสินค้า + ขนาด → หารตามตัวหาร (คำนวณแยกตามเลขใบรับสินค้า)</p>
+        <p className="text-xs text-natural-muted mb-3">ต้องตรงทุกข้อ: ผู้ส่งเข้าคำว่า "ซีโน" + กลุ่มผู้รับตรง + ชื่อสินค้า + ขนาด → หารตามตัวหาร (คำนวณแยกตามเลขใบรับสินค้า)<br /><span className="text-[#1B365D]">💡 ช่อง "สินค้า" ใส่หลายคำสะกดได้ คั่นด้วย <b>|</b> เช่น <b>ยูบี้|ยูปี้</b> (คนคีย์สลับ บ/ป)</span></p>
         <div className="flex flex-wrap gap-2 mb-3 text-sm">
           <input list="rule-senders" aria-label="ผู้ส่ง (keyword)" placeholder="ผู้ส่ง (พิมพ์ใหม่ได้)" value={form.senderKeyword} onChange={(e) => setForm({ ...form, senderKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
           <select aria-label="กลุ่มผู้รับสินค้า" value={form.receiverGroupId} onChange={(e) => setForm({ ...form, receiverGroupId: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">

@@ -60,6 +60,14 @@ export function textContains(haystack: string, needle: string): boolean {
   return norm(haystack).includes(norm(needle));
 }
 
+// รองรับ "หลายคำสะกด" คั่นด้วย | , / (เช่น "ยูบี้|ยูปี้" — คนคีย์สลับ บ/ป)
+// คืน true ถ้าตรงคำใดคำหนึ่ง
+export function textContainsAny(haystack: string, field: string): boolean {
+  if (!field) return false;
+  const parts = field.split(/[|,/]/).map((s) => s.trim()).filter(Boolean);
+  return parts.some((p) => textContains(haystack, p));
+}
+
 // บรรทัดที่ "ชื่อสินค้ายังไม่ระบุ" เช่น "*** โปรดระบุ ***"
 // หมายเหตุ: ยังนับเข้ายอดตามเอกสาร (PDF รวมบรรทัดพวกนี้ในยอดรวมสินค้า) แค่เตือนให้ระบุชื่อ
 export function isUnspecifiedName(productName: string): boolean {
@@ -163,7 +171,7 @@ export function findConversionRule(
     if (!textContains(params.senderName, rule.senderKeyword)) continue;
     // ถ้ากฎไม่ระบุกลุ่มผู้รับ (ว่าง) = ใช้กับทุกผู้รับ; ถ้าระบุ ต้องตรงกลุ่ม
     if (rule.receiverGroupId && params.receiverGroupId !== rule.receiverGroupId) continue;
-    if (!textContains(params.productName, rule.productKeyword)) continue;
+    if (!textContainsAny(params.productName, rule.productKeyword)) continue;
     if (!sizeMatches(params.productName, rule.productSizeKeyword)) continue;
     return rule;
   }
