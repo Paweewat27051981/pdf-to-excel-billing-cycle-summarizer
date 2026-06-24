@@ -734,6 +734,16 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
         )}
       </div>
 
+      {/* 💰 ยอดรวมทั้งใบ (รวมเก็บคืน/Peat) — เด่นชัด */}
+      <div className="rounded-xl bg-[#1B365D] text-white px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="text-base font-bold">💰 ยอดรวมทั้งใบ: ฿{money(prev.tripAmount)}</span>
+        <span className="text-[11px] opacity-90">
+          งานปกติ ฿{money(prev.breakdown?.normal || 0)}
+          {(prev.breakdown?.collect || 0) > 0 && <> + 🔄 เก็บคืน ฿{money(prev.breakdown.collect)}</>}
+          {(prev.breakdown?.peat || 0) > 0 && <> + 🌱 Peat ฿{money(prev.breakdown.peat)}</>}
+        </span>
+      </div>
+
       <datalist id="units">
         {['กล่อง', 'หีบ', 'ลัง', 'ชิ้น', 'แพ็ค', 'ถุง', 'โหล'].map((u) => <option key={u} value={u} />)}
       </datalist>
