@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
-  Building2, LogOut, Search,
+  Building2, LogOut, Search, Calendar,
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
@@ -176,7 +176,7 @@ export default function App() {
         ) : (
           <>
             {tab === 'calc' && <CalcTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} aiEnabled={aiEnabled} branchId={effBranchId}
-              reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+              reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={auth.isHQ} />}
@@ -419,7 +419,7 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
 // ===========================================================================
 // Tab: คำนวณค่าเที่ยว (upload + review + list)
 // ===========================================================================
-function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, showToast }: any) {
+function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, gotoCycle, showToast }: any) {
   const [extracting, setExtracting] = useState(false);
   const [pending, setPending] = useState<{ extracted: ExtractedTripDocument; fileName: string; preview: TripDocument } | null>(null);
   const [filter, setFilter] = useState<'all' | 'divider' | 'warning'>('all');
@@ -492,10 +492,12 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
   const save = async () => {
     if (!pending) return;
     try {
-      await api('/api/trips', 'POST', { cycleId: cycle.id, extracted: pending.extracted, fileName: pending.fileName, branchId });
-      showToast('success', 'บันทึกใบกระจายลงฐานข้อมูลแล้ว');
+      const saved = await api('/api/trips', 'POST', { extracted: pending.extracted, fileName: pending.fileName, branchId });
+      const cy = saved?._cycle;
+      showToast('success', saved?._cycleCreated ? `เปิดรอบ "${cy?.name}" อัตโนมัติ + บันทึกแล้ว` : `บันทึกเข้ารอบ "${cy?.name}" แล้ว`);
       setPending(null);
-      reload();
+      if (cy?.id && cy.id !== cycle?.id) gotoCycle(cy.id); // สลับไปรอบที่ใบนั้นเข้าจริง
+      else reload();
     } catch (e: any) { showToast('error', e.message); }
   };
 
@@ -632,7 +634,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
 }
 
 // Review board — แก้ไข extracted + แสดงผล preview พร้อม badge
-function ReviewBoard({ pending, setPending, onPreview, onSave, locked, existingTrips = [], cycles = [], cycleId }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
@@ -642,6 +644,11 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked, existingT
   const dupTrip = docNo ? (existingTrips as TripDocument[]).find((t) => (t.documentNo || '').trim() === docNo) : null;
   const dupCycleName = dupTrip ? ((cycles as BillingCycle[]).find((c) => c.id === dupTrip.cycleId)?.name || dupTrip.cycleId) : '';
   const isDup = !!dupTrip;
+
+  // 📅 รอบที่ใบนี้จะเข้า (คำนวณจากวันที่ในใบ ฝั่ง server)
+  const tgtCycle: string = (prev as any)._cycleName || '';
+  const cycleClosed: boolean = !!(prev as any)._cycleClosed;
+  const cycleNew: boolean = !!(prev as any)._cycleCreated;
 
   const update = (patch: Partial<ExtractedTripDocument>) => onPreview({ ...ext, ...patch }, pending.fileName);
   const updReceipt = (ri: number, patch: any) => {
@@ -659,6 +666,16 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked, existingT
         <h3 className="font-bold text-sm text-[#1B365D]">ขั้นตอนตรวจสอบก่อนยืนยัน — {pending.fileName}</h3>
         <button onClick={() => setPending(null)} className="text-xs text-natural-muted hover:text-rose-600 font-semibold">ยกเลิก</button>
       </div>
+
+      {/* 📅 รอบที่ใบนี้จะเข้า (อัตโนมัติจากวันที่ในใบ) */}
+      {tgtCycle && (
+        <div className={`rounded-xl p-3 text-xs flex items-center gap-1.5 font-semibold border ${cycleClosed ? 'bg-rose-50 border-rose-400 text-rose-800' : 'bg-[#EAF2F8] border-[#1B365D]/30 text-[#1B365D]'}`}>
+          <Calendar className="w-4 h-4 shrink-0" />
+          ใบนี้จะเข้ารอบ: <b>{tgtCycle}</b> (ตามวันที่ {ext.documentDate})
+          {cycleNew && <span className="bg-emerald-600 text-white rounded-full px-2 py-0.5">เปิดรอบใหม่อัตโนมัติ</span>}
+          {cycleClosed && <span className="ml-1">⚠️ รอบนี้ถูกปิดอยู่ — บันทึกไม่ได้ (ให้ HQ เปิดรอบก่อน)</span>}
+        </div>
+      )}
 
       {/* warnings */}
       {(prev.warnings || []).length > 0 && (
@@ -798,7 +815,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked, existingT
           {needsBox && <span className="block text-rose-600 text-xs font-semibold mt-0.5">⚠️ มีใบรับที่ต้องกรอกจำนวนกล่องก่อนบันทึก</span>}
           {isDup && <span className="block text-rose-600 text-xs font-semibold mt-0.5">🔒 เลขใบกระจายซ้ำ — บันทึกไม่ได้</span>}
         </div>
-        <button onClick={onSave} disabled={locked || needsBox || isDup} title={isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>
+        <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>
       </div>
     </div>
   );

@@ -99,6 +99,38 @@ function recomputeTrip(
   return trip;
 }
 
+// สร้าง object รอบจาก ปี/เดือน/ครึ่งเดือน (ใช้ทั้งตอนสร้างเอง และเปิดรอบอัตโนมัติ)
+function makeCycle(year: number, month: number, half: 'first' | 'second'): BillingCycle {
+  const lastDay = new Date(year, month, 0).getDate();
+  const startDate = half === 'first' ? `${year}-${String(month).padStart(2, '0')}-01` : `${year}-${String(month).padStart(2, '0')}-16`;
+  const endDate = half === 'first' ? `${year}-${String(month).padStart(2, '0')}-15` : `${year}-${String(month).padStart(2, '0')}-${lastDay}`;
+  const thaiMonth = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'][month - 1];
+  return {
+    id: generateId('cycle'),
+    name: `${thaiMonth} ${(year + 543) % 100} รอบ ${half === 'first' ? '1-15' : '16-31'}`,
+    year, month, half, startDate, endDate, status: 'open', createdAt: new Date().toISOString(),
+  };
+}
+
+// หา/สร้างรอบจาก "วันที่ในใบ" (YYYY-MM-DD) — เปิดรอบอัตโนมัติตามรอบ 1-15 / 16-สิ้นเดือน
+// persist=true จะสร้าง+เพิ่มลง db (ตอนบันทึกจริง), false จะสร้าง object ลอย ๆ (ตอน preview)
+function resolveCycleForDate(
+  db: DatabaseState,
+  dateStr: string,
+  persist: boolean
+): { cycle: BillingCycle | null; created: boolean; closed: boolean; invalid: boolean } {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((dateStr || '').trim());
+  if (!m) return { cycle: null, created: false, closed: false, invalid: true };
+  const year = +m[1], month = +m[2], day = +m[3];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return { cycle: null, created: false, closed: false, invalid: true };
+  const half: 'first' | 'second' = day <= 15 ? 'first' : 'second';
+  const existing = db.cycles.find((c) => c.year === year && c.month === month && c.half === half);
+  if (existing) return { cycle: existing, created: false, closed: existing.status === 'closed', invalid: false };
+  const fresh = makeCycle(year, month, half);
+  if (persist) db.cycles.push(fresh);
+  return { cycle: fresh, created: true, closed: false, invalid: false };
+}
+
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
@@ -416,14 +448,21 @@ async function startServer() {
   // บันทึก trip ที่ผ่าน Review (รับ extracted + คำนวณใหม่ฝั่ง server)
   app.post('/api/trips', async (req, res) => {
     try {
-      const { cycleId, extracted, fileName, branchId } = req.body as {
-        cycleId: string; extracted: ExtractedTripDocument; fileName: string; branchId: string;
+      const { extracted, fileName, branchId } = req.body as {
+        extracted: ExtractedTripDocument; fileName: string; branchId: string;
       };
       if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
       const db = await getDb();
-      const cycle = db.cycles.find((c) => c.id === cycleId);
-      if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
-      if (cycle.status === 'closed') return res.status(400).json({ error: 'รอบนี้ถูกปิดล็อกแล้ว' });
+
+      // 📅 เปิดรอบอัตโนมัติ: จัดใบเข้ารอบตาม "วันที่ในใบ" (1-15 / 16-สิ้นเดือน) สร้างรอบให้ถ้ายังไม่มี
+      const resolved = resolveCycleForDate(db, extracted.documentDate, false);
+      if (resolved.invalid || !resolved.cycle) {
+        return res.status(400).json({ error: `วันที่ในใบไม่ถูกต้อง (${extracted.documentDate || 'ว่าง'}) — ระบุรอบอัตโนมัติไม่ได้ กรุณาแก้วันที่ออกให้ถูกต้อง` });
+      }
+      if (resolved.closed) {
+        return res.status(400).json({ error: `รอบ "${resolved.cycle.name}" ถูกปิดอยู่ — ต้องให้ HQ เปิดรอบก่อนจึงบันทึกได้` });
+      }
+      const cycle = resolved.cycle;
 
       const trip = recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId);
 
@@ -435,7 +474,7 @@ async function startServer() {
         );
         if (dup) {
           const dupCycle = db.cycles.find((c) => c.id === dup.cycleId);
-          const where = dup.cycleId === cycleId ? 'ในรอบนี้' : `ในรอบ "${dupCycle?.name || dup.cycleId}"`;
+          const where = dup.cycleId === cycle.id ? 'ในรอบนี้' : `ในรอบ "${dupCycle?.name || dup.cycleId}"`;
           return res.status(409).json({ error: `เลขใบกระจาย ${docNo} ซ้ำ — มีอยู่แล้ว${where} (ห้ามบันทึกซ้ำ ถ้าต้องการแก้ ให้ลบใบเดิมก่อน)` });
         }
       }
@@ -445,10 +484,12 @@ async function startServer() {
       if (missingBox) {
         return res.status(400).json({ error: `ใบรับ ${missingBox.receiptNo}: ต้องกรอกจำนวนกล่องก่อนบันทึก (ผู้ส่งส่งเป็นชิ้น)` });
       }
+      // ผ่านทุกด่าน -> ถ้าเป็นรอบใหม่ ค่อยเพิ่มลงระบบตอนนี้ (กันสร้างรอบเปล่าเวลาบันทึกไม่ผ่าน)
+      if (resolved.created) db.cycles.push(cycle);
       trip.isVerified = true;
       db.tripDocuments.push(trip);
       await saveDb(db);
-      res.status(201).json(trip);
+      res.status(201).json({ ...trip, _cycle: cycle, _cycleCreated: resolved.created });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -509,9 +550,12 @@ async function startServer() {
         cycleId: string; extracted: ExtractedTripDocument; fileName: string; branchId: string;
       };
       const db = await getDb();
-      const cycle = db.cycles.find((c) => c.id === cycleId);
-      if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
-      res.json(recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId || ''));
+      // คำนวณตามรอบของ "วันที่ในใบ" (ไม่เซฟรอบ) — ถ้าวันที่ไม่ถูกต้อง fallback ใช้รอบที่เลือก
+      const resolved = resolveCycleForDate(db, extracted.documentDate, false);
+      const cycle = resolved.cycle || db.cycles.find((c) => c.id === cycleId);
+      if (!cycle) return res.status(404).json({ error: 'ระบุรอบไม่ได้ — ตรวจสอบวันที่ในใบ' });
+      const preview = recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId || '');
+      res.json({ ...preview, _cycleName: cycle.name, _cycleClosed: resolved.closed, _cycleCreated: resolved.created });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
