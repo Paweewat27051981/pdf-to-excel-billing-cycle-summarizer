@@ -322,7 +322,7 @@ export async function exportPerVehicleReport(
     ws.addRow([]);
 
     // ---- ตารางค่าบรรทุก ----
-    styleHeaderRow(ws.addRow(['วันที่', 'ปลายทาง', 'เลขที่ใบกระจาย', 'จำนวนชิ้น', 'แบบ', 'ราคา', 'เป็นเงิน', 'พิเศษ', 'ราคารวม', 'หมายเหตุ']));
+    styleHeaderRow(ws.addRow(['วันที่', 'ปลายทาง', 'เลขที่ใบกระจาย', 'จำนวนชิ้น', 'แบบ', 'ราคา', 'เป็นเงิน', 'รายได้เพิ่ม (พิเศษ)', 'ราคารวม', 'หมายเหตุ']));
     let zebra = false;
     let sumQty = 0, sumMoney = 0, sumExtra = 0, sumTotal = 0;
     for (const t of vTrips) {
@@ -368,7 +368,7 @@ export async function exportPerVehicleReport(
     net.getCell(6).fill = solid(C.totalBg); net.getCell(7).fill = solid(C.totalBg);
 
     // ความกว้างคอลัมน์ (sheet ค่าบรรทุก)
-    [13, 22, 18, 11, 11, 11, 13, 11, 13, 12].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    [13, 22, 18, 11, 11, 11, 13, 16, 13, 12].forEach((w, i) => (ws.getColumn(i + 1).width = w));
 
     // ---- sheet ใบสั่งเติมน้ำมัน (แยกต่างหากต่อทะเบียน) ----
     const wf = wb.addWorksheet(safeSheetName(`${plate} (น้ำมัน)`, usedNames));
