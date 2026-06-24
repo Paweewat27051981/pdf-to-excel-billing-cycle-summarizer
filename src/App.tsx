@@ -590,7 +590,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
       </div>
 
       {/* review */}
-      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} />}
+      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} />}
 
       {/* filter */}
       <div className="flex gap-2">
@@ -607,10 +607,16 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
 }
 
 // Review board — แก้ไข extracted + แสดงผล preview พร้อม badge
-function ReviewBoard({ pending, setPending, onPreview, onSave, locked }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, locked, existingTrips = [], cycles = [], cycleId }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
+
+  // 🔒 กฎเหล็ก: เลขใบกระจายห้ามซ้ำในสาขา (ทุกรอบ)
+  const docNo = (ext.documentNo || '').trim();
+  const dupTrip = docNo ? (existingTrips as TripDocument[]).find((t) => (t.documentNo || '').trim() === docNo) : null;
+  const dupCycleName = dupTrip ? ((cycles as BillingCycle[]).find((c) => c.id === dupTrip.cycleId)?.name || dupTrip.cycleId) : '';
+  const isDup = !!dupTrip;
 
   const update = (patch: Partial<ExtractedTripDocument>) => onPreview({ ...ext, ...patch }, pending.fileName);
   const updReceipt = (ri: number, patch: any) => {
@@ -633,6 +639,14 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked }: any) {
       {(prev.warnings || []).length > 0 && (
         <div className="bg-[#FCE4D6] border border-amber-200 rounded-xl p-3 text-xs text-[#9C0006] flex flex-col gap-1">
           {(prev.warnings || []).map((w: string, i: number) => <div key={i} className="flex gap-1.5"><AlertTriangle className="w-4 h-4 shrink-0" />{w}</div>)}
+        </div>
+      )}
+
+      {/* 🔒 เตือนเลขใบกระจายซ้ำ */}
+      {isDup && (
+        <div className="bg-rose-50 border-2 border-rose-400 rounded-xl p-3 text-xs text-rose-800 flex gap-1.5 font-semibold">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          เลขใบกระจาย <b>{docNo}</b> ซ้ำ — มีอยู่แล้ว{dupTrip.cycleId === cycleId ? 'ในรอบนี้' : `ในรอบ "${dupCycleName}"`} · บันทึกไม่ได้ (ถ้าต้องการแก้ ให้ลบใบเดิมก่อน หรือเปลี่ยนเลขให้ถูกต้อง)
         </div>
       )}
 
@@ -757,8 +771,9 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked }: any) {
             </span>
           )}
           {needsBox && <span className="block text-rose-600 text-xs font-semibold mt-0.5">⚠️ มีใบรับที่ต้องกรอกจำนวนกล่องก่อนบันทึก</span>}
+          {isDup && <span className="block text-rose-600 text-xs font-semibold mt-0.5">🔒 เลขใบกระจายซ้ำ — บันทึกไม่ได้</span>}
         </div>
-        <button onClick={onSave} disabled={locked || needsBox} title={needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>
+        <button onClick={onSave} disabled={locked || needsBox || isDup} title={isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>
       </div>
     </div>
   );

@@ -426,6 +426,20 @@ async function startServer() {
       if (cycle.status === 'closed') return res.status(400).json({ error: 'รอบนี้ถูกปิดล็อกแล้ว' });
 
       const trip = recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId);
+
+      // 🔒 กฎเหล็ก: เลขใบกระจายห้ามซ้ำภายในสาขา (ทุกรอบ) — ซ้ำ = การเงินผิดเพี้ยน
+      const docNo = (trip.documentNo || '').trim();
+      if (docNo) {
+        const dup = db.tripDocuments.find(
+          (t) => t.branchId === branchId && (t.documentNo || '').trim() === docNo
+        );
+        if (dup) {
+          const dupCycle = db.cycles.find((c) => c.id === dup.cycleId);
+          const where = dup.cycleId === cycleId ? 'ในรอบนี้' : `ในรอบ "${dupCycle?.name || dup.cycleId}"`;
+          return res.status(409).json({ error: `เลขใบกระจาย ${docNo} ซ้ำ — มีอยู่แล้ว${where} (ห้ามบันทึกซ้ำ ถ้าต้องการแก้ ให้ลบใบเดิมก่อน)` });
+        }
+      }
+
       // บังคับ: ผู้ส่งที่ต้องกรอกกล่อง แต่ยังไม่กรอก -> บันทึกไม่ได้
       const missingBox = trip.receipts.find((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
       if (missingBox) {
