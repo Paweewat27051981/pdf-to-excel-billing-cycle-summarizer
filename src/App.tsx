@@ -752,9 +752,13 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
               <div className="flex flex-col justify-end text-[11px]">
                 <span className="text-natural-muted text-[10px] font-bold uppercase">ราคา/ค่าเที่ยวจุดนี้</span>
                 <span className="font-semibold text-[#1B365D]">
-                  {prev.rateType === 'piece'
-                    ? (pr?.piecePrice != null ? `ชิ้น ฿${money(pr.piecePrice)} × ${qtyFmt(pr.billingQty)} = ฿${money(pr.receiptAmount)}` : '⚠️ ไม่เจอราคาชิ้น')
-                    : (pr?.flatPrice != null ? `เหมา ฿${money(pr.flatPrice)}` : '⚠️ ไม่เจอราคาเหมา')}
+                  {(pr?.collectQty > 0)
+                    ? <span className="text-emerald-700">🔄 เก็บคืน ฿{money(pr.collectPrice || 0)} × {qtyFmt(pr.collectQty)} = ฿{money((pr.collectPrice || 0) * pr.collectQty)}</span>
+                    : (pr?.peatQty > 0)
+                    ? <span className="text-emerald-700">🌱 Peat ฿{money(pr.peatPrice || 0)} × {qtyFmt(pr.peatQty)} = ฿{money((pr.peatPrice || 0) * pr.peatQty)}</span>
+                    : prev.rateType === 'piece'
+                    ? (pr?.piecePrice != null ? `ชิ้น ฿${money(pr.piecePrice)} × ${qtyFmt(pr.billingQty)} = ฿${money(pr.receiptAmount)}` : (pr?.normalQty > 0 ? '⚠️ ไม่เจอราคาชิ้น' : '—'))
+                    : (pr?.flatPrice != null ? `เหมา ฿${money(pr.flatPrice)}` : (pr?.normalQty > 0 ? '⚠️ ไม่เจอราคาเหมา' : '—'))}
                 </span>
               </div>
             </div>
@@ -799,9 +803,11 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
                 {!((r.manualBoxQty ?? 0) > 0) && <span className="text-rose-600 font-semibold">* บังคับกรอกก่อนบันทึก</span>}
               </div>
             )}
-            <div className="mt-2 text-xs font-semibold flex gap-4">
+            <div className="mt-2 text-xs font-semibold flex flex-wrap gap-4">
               <span>จำนวนจริง: <b>{qtyFmt(pr?.totalQty)}</b>{pr?.requiresManualBox ? ' ชิ้น' : ''}</span>
               <span className="text-[#C00000]">คิดค่าเที่ยว: <b>{qtyFmt(pr?.billingQty)}</b>{pr?.requiresManualBox ? ' กล่อง' : ''}</span>
+              {pr?.collectQty > 0 && <span className="text-emerald-700">🔄 เก็บคืน: <b>{qtyFmt(pr.collectQty)} × {money(pr.collectPrice || 0)} = ฿{money((pr.collectPrice || 0) * pr.collectQty)}</b></span>}
+              {pr?.peatQty > 0 && <span className="text-emerald-700">🌱 Peat: <b>{qtyFmt(pr.peatQty)} × {money(pr.peatPrice || 0)} = ฿{money((pr.peatPrice || 0) * pr.peatQty)}</b></span>}
             </div>
           </div>
         );
