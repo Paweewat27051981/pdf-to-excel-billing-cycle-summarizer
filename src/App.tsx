@@ -1238,6 +1238,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const [mode, setMode] = useState<'base' | 'cycle'>('base');
   const [adv, setAdv] = useState(false);
   const [filterGroup, setFilterGroup] = useState('__all__');
+  const [fProv, setFProv] = useState('');
+  const [fDist, setFDist] = useState('');
+  const [fCat, setFCat] = useState('');
+  const [fType, setFType] = useState('');
   const [editId, setEditId] = useState<string | null>(null);
   const rateFileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
@@ -1306,7 +1310,15 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
   const allRates: RateMaster[] = db.rateMasters;
-  const rates = filterGroup === '__all__' ? allRates : allRates.filter((r) => (r.rateGroup || '') === (filterGroup === '__none__' ? '' : filterGroup));
+  const nm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, '');
+  const rates = allRates.filter((r) => {
+    if (filterGroup !== '__all__' && (r.rateGroup || '') !== (filterGroup === '__none__' ? '' : filterGroup)) return false;
+    if (fProv && !nm(r.provinceName).includes(nm(fProv))) return false;
+    if (fDist && !nm(r.districtName).includes(nm(fDist)) && !nm(r.destinationName).includes(nm(fDist))) return false;
+    if (fCat && (r.productCategory || 'normal') !== fCat) return false;
+    if (fType && r.priceType !== fType) return false;
+    return true;
+  });
   const toggle = (id: string) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allChecked = rates.length > 0 && rates.every((r) => sel.has(r.id));
   const toggleAll = () => setSel(allChecked ? new Set() : new Set(rates.map((r) => r.id)));
@@ -1378,6 +1390,29 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
           </label>
         )}
       </div>
+
+      {/* ตัวกรองตารางราคา */}
+      <div className="flex flex-wrap items-center gap-2 mb-3 text-xs bg-natural-secondary/60 border border-natural-border rounded-lg p-2">
+        <span className="text-natural-muted font-semibold flex items-center gap-1"><Filter className="w-3.5 h-3.5" />กรอง:</span>
+        <input aria-label="กรองจังหวัด" placeholder="จังหวัด" value={fProv} onChange={(e) => setFProv(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1 w-28" />
+        <input aria-label="กรองอำเภอ/ปลายทาง" placeholder="อำเภอ / ปลายทาง" value={fDist} onChange={(e) => setFDist(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1 w-36" />
+        <select aria-label="กรองหมวด" value={fCat} onChange={(e) => setFCat(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1">
+          <option value="">ทุกหมวด</option>
+          <option value="normal">งานปกติ</option>
+          <option value="collect_back">เก็บคืน</option>
+          <option value="peat_mass">Peat mass</option>
+        </select>
+        <select aria-label="กรองประเภท" value={fType} onChange={(e) => setFType(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1">
+          <option value="">ทุกประเภท</option>
+          <option value="flat">เหมา</option>
+          <option value="piece">ชิ้น</option>
+        </select>
+        {(fProv || fDist || fCat || fType) && (
+          <button type="button" onClick={() => { setFProv(''); setFDist(''); setFCat(''); setFType(''); }} className="text-natural-muted hover:text-rose-600 font-semibold underline">ล้างตัวกรอง</button>
+        )}
+        <span className="text-natural-muted ml-auto">{rates.length}/{allRates.length} รายการ</span>
+      </div>
+
       <div className="flex flex-wrap gap-2 mb-3 text-sm items-center">
         <input aria-label="ปลายทาง" placeholder="ปลายทาง" value={form.destinationName} onChange={(e) => setForm({ ...form, destinationName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
         <input aria-label="จังหวัด" placeholder="จังหวัด" value={form.provinceName} onChange={(e) => setForm({ ...form, provinceName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
