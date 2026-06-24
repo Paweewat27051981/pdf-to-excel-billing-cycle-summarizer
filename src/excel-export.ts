@@ -367,23 +367,29 @@ export async function exportPerVehicleReport(
     const net = addSummary('รวมรับสุทธิ', round2(s.netReceive), { bold: true, color: C.billingText });
     net.getCell(6).fill = solid(C.totalBg); net.getCell(7).fill = solid(C.totalBg);
 
-    // ---- ใบสั่งเติมน้ำมัน ----
-    ws.addRow([]); ws.addRow([]);
-    const fh = ws.addRow(['สรุปใบสั่งเติมน้ำมัน', '', '', '']);
-    fh.getCell(1).font = { name: FONT, size: 14, bold: true, color: { argb: C.title } };
-    styleHeaderRow(ws.addRow(['ลำดับ', 'ว.ด.ป.', 'ใบสั่งเติมน้ำมัน', 'จำนวนเงิน (บาท)']));
+    // ความกว้างคอลัมน์ (sheet ค่าบรรทุก)
+    [13, 22, 18, 11, 11, 11, 13, 11, 13, 12].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+
+    // ---- sheet ใบสั่งเติมน้ำมัน (แยกต่างหากต่อทะเบียน) ----
+    const wf = wb.addWorksheet(safeSheetName(`${plate} (น้ำมัน)`, usedNames));
+    styleTitle(wf, `สรุปใบสั่งเติมน้ำมัน — สาขา${branchName}`, 4,
+      `รอบ ${cycle.name}  ·  ทะเบียน ${plate}  ·  ${s.driverName || '-'}`);
+    wf.addRow([]);
+    styleHeaderRow(wf.addRow(['ลำดับ', 'ว.ด.ป.', 'ใบสั่งเติมน้ำมัน', 'จำนวนเงิน (บาท)']));
     let fz = false, fSum = 0;
     vFuel.forEach((f, i) => {
-      const r = ws.addRow([i + 1, fmtDate(f.date), f.refNo, f.amount]);
+      const r = wf.addRow([i + 1, fmtDate(f.date), f.refNo, f.amount]);
       r.eachCell((cell, col) => bodyCell(cell, { align: col === 1 || col === 4 ? 'right' : 'left', bg: fz ? C.zebra : undefined }));
       r.getCell(4).numFmt = NUM; fz = !fz; fSum += f.amount;
     });
-    const fr = ws.addRow(['', '', 'ผลรวม', round2(fSum)]);
+    if (!vFuel.length) {
+      const er = wf.addRow(['', 'ไม่มีใบสั่งเติมน้ำมัน', '', '']);
+      er.eachCell((cell) => bodyCell(cell, { align: 'left' }));
+    }
+    const fr = wf.addRow(['', '', 'ผลรวม', round2(fSum)]);
     fr.eachCell((cell) => bodyCell(cell, { bold: true, align: 'right', bg: C.totalBg, color: C.title }));
     fr.getCell(4).numFmt = NUM;
-
-    // ความกว้างคอลัมน์
-    [13, 22, 18, 11, 11, 11, 13, 11, 13, 12].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    [10, 18, 24, 18].forEach((w, i) => (wf.getColumn(i + 1).width = w));
   }
 
   const buffer = await wb.xlsx.writeBuffer();
