@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
-  Building2, LogOut,
+  Building2, LogOut, Search,
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
@@ -420,6 +420,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
   const [extracting, setExtracting] = useState(false);
   const [pending, setPending] = useState<{ extracted: ExtractedTripDocument; fileName: string; preview: TripDocument } | null>(null);
   const [filter, setFilter] = useState<'all' | 'divider' | 'warning'>('all');
+  const [search, setSearch] = useState('');
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const excelRef = useRef<HTMLInputElement>(null);
@@ -519,9 +520,18 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
     showToast('success', 'Export Excel สำเร็จ');
   };
 
+  const q = search.trim().toLowerCase();
   const visibleTrips = cycleTrips.filter((t: TripDocument) => {
-    if (filter === 'divider') return t.receipts.some((r) => r.hasAdjustment);
-    if (filter === 'warning') return t.warnings.length > 0;
+    if (filter === 'divider' && !t.receipts.some((r) => r.hasAdjustment)) return false;
+    if (filter === 'warning' && t.warnings.length === 0) return false;
+    if (q) {
+      const hay = [
+        t.documentNo, t.plateNo, t.driverName, t.provinceRaw, t.districtRaw,
+        ...t.receipts.map((r) => r.receiptNo),
+        ...t.receipts.map((r) => r.receiverName),
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
 
@@ -594,15 +604,25 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
       {/* review */}
       {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} />}
 
-      {/* filter */}
-      <div className="flex gap-2">
+      {/* filter + search */}
+      <div className="flex flex-wrap items-center gap-2">
         {([['all', 'ทั้งหมด'], ['divider', '🟧 เฉพาะมีตัวหาร'], ['warning', '⚠️ ต้องตรวจสอบ']] as const).map(([k, l]) => (
           <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${filter === k ? 'bg-[#1B365D] text-white border-[#1B365D]' : 'border-natural-border'}`}>{l}</button>
         ))}
+        <div className="relative ml-auto">
+          <Search className="w-4 h-4 text-natural-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input
+            value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="ค้นหา: เลขใบกระจาย / ทะเบียน / คนขับ / เลขใบรับ / ผู้รับ"
+            className="border border-natural-border rounded-full pl-8 pr-8 py-1.5 text-xs w-72 focus:outline-none focus:border-[#1B365D]"
+          />
+          {search && <button onClick={() => setSearch('')} title="ล้าง" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-natural-muted hover:text-rose-600 font-bold">×</button>}
+        </div>
       </div>
+      {q && <div className="text-xs text-natural-muted -mt-2">พบ {visibleTrips.length} ใบ จากทั้งหมด {cycleTrips.length} ใบ</div>}
 
       {/* saved trips */}
-      {visibleTrips.length === 0 ? <EmptyHint text="ยังไม่มีใบกระจายในรอบนี้" /> :
+      {visibleTrips.length === 0 ? <EmptyHint text={q ? `ไม่พบใบกระจายที่ตรงกับ "${search}"` : 'ยังไม่มีใบกระจายในรอบนี้'} /> :
         visibleTrips.map((t: TripDocument) => <TripCard key={t.id} trip={t} onDelete={() => { void del(t.id); }} />)}
     </div>
   );
