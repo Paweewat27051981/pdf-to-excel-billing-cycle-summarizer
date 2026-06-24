@@ -1445,7 +1445,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
 // Tab: เงื่อนไขตัวหาร + กลุ่มผู้รับ
 // ===========================================================================
 function RulesTab({ db, api, branchId, reload, showToast }: any) {
-  const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null };
+  const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverKeyword: '', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null };
   const [form, setForm] = useState<any>(blank);
   const [fSender, setFSender] = useState('');
   const [fGroup, setFGroup] = useState('');
@@ -1462,15 +1462,17 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
   // ค่าที่เคยใช้ (สำหรับ datalist combobox)
   const uniq = (arr: string[]) => [...new Set(arr.filter(Boolean))];
   const senderOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.senderKeyword));
+  const receiverOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.receiverKeyword || ''));
   const productOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.productKeyword));
   const sizeOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.productSizeKeyword));
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   return (
     <div className="flex flex-col gap-5">
       <Section title="เงื่อนไขแปลงจำนวนสินค้า (ตัวหาร)" icon={Filter}>
-        <p className="text-xs text-natural-muted mb-3">ต้องตรงทุกข้อ: ผู้ส่งเข้าคำว่า "ซีโน" + กลุ่มผู้รับตรง + ชื่อสินค้า + ขนาด → หารตามตัวหาร (คำนวณแยกตามเลขใบรับสินค้า)<br /><span className="text-[#1B365D]">💡 ช่อง "สินค้า" ใส่หลายคำสะกดได้ คั่นด้วย <b>|</b> เช่น <b>ยูบี้|ยูปี้</b> (คนคีย์สลับ บ/ป)</span></p>
+        <p className="text-xs text-natural-muted mb-3">ต้องตรงทุกข้อ: ผู้ส่งเข้าคำ + (ผู้รับเข้าคำ ถ้าระบุ) + กลุ่มผู้รับตรง + ชื่อสินค้า + ขนาด → หารตามตัวหาร (คำนวณแยกตามเลขใบรับสินค้า)<br /><span className="text-[#1B365D]">💡 ช่อง "สินค้า" และ "ผู้รับ" ใส่หลายคำคั่นด้วย <b>|</b> ได้ เช่น <b>ยูบี|ยูปี</b> · ช่องผู้รับเว้นว่าง = ทุกผู้รับ</span></p>
         <div className="flex flex-wrap gap-2 mb-3 text-sm">
           <input list="rule-senders" aria-label="ผู้ส่ง (keyword)" placeholder="ผู้ส่ง (พิมพ์ใหม่ได้)" value={form.senderKeyword} onChange={(e) => setForm({ ...form, senderKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
+          <input list="rule-receivers" aria-label="ผู้รับ (keyword)" placeholder="ผู้รับ (ว่าง=ทุกคน)" value={form.receiverKeyword} onChange={(e) => setForm({ ...form, receiverKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-36" />
           <select aria-label="กลุ่มผู้รับสินค้า" value={form.receiverGroupId} onChange={(e) => setForm({ ...form, receiverGroupId: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">
             {db.receiverGroups.map((g: ReceiverGroup) => <option key={g.id} value={g.id}>{g.groupName}</option>)}
           </select>
@@ -1479,6 +1481,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
           <input type="number" aria-label="ตัวหาร" placeholder="ตัวหาร" value={form.divisor} onChange={(e) => setForm({ ...form, divisor: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-20" />
           <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 font-semibold">เพิ่ม</button>
           <datalist id="rule-senders">{senderOpts.map((s) => <option key={s} value={s} />)}</datalist>
+          <datalist id="rule-receivers">{receiverOpts.map((s) => <option key={s} value={s} />)}</datalist>
           <datalist id="rule-products">{productOpts.map((s) => <option key={s} value={s} />)}</datalist>
           <datalist id="rule-sizes">{sizeOpts.map((s) => <option key={s} value={s} />)}</datalist>
         </div>
@@ -1497,8 +1500,8 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
           <span className="text-xs text-natural-muted ml-auto">{filteredRules.length}/{db.conversionRules.length} กฎ</span>
         </div>
 
-        <SimpleTable cols={['ผู้ส่ง', 'กลุ่มผู้รับ', 'สินค้า', 'ขนาด', 'หาร', 'ปัดเศษ']}
-          rows={filteredRules.map((r: ProductConversionRule) => [r.senderKeyword, db.receiverGroups.find((g: ReceiverGroup) => g.id === r.receiverGroupId)?.groupName || '-', r.productKeyword, r.productSizeKeyword, `÷${r.divisor}`, r.roundingMethod === 'half_up' ? '.5 ปัดขึ้น' : r.roundingMethod])}
+        <SimpleTable cols={['ผู้ส่ง', 'ผู้รับ', 'กลุ่มผู้รับ', 'สินค้า', 'ขนาด', 'หาร', 'ปัดเศษ']}
+          rows={filteredRules.map((r: ProductConversionRule) => [r.senderKeyword, r.receiverKeyword || 'ทุกผู้รับ', db.receiverGroups.find((g: ReceiverGroup) => g.id === r.receiverGroupId)?.groupName || '-', r.productKeyword, r.productSizeKeyword, `÷${r.divisor}`, r.roundingMethod === 'half_up' ? '.5 ปัดขึ้น' : r.roundingMethod])}
           onDelete={async (i: number) => { await api(`/api/conversion-rules/${filteredRules[i].id}`, 'DELETE'); reload(); }} />
       </Section>
       <GroupManager db={db} api={api} branchId={branchId} reload={reload} showToast={showToast} />

@@ -159,6 +159,7 @@ export function matchReceiverGroup(
 export function findConversionRule(
   params: {
     senderName: string;
+    receiverName?: string;
     receiverGroupId: string | null;
     productName: string;
     refDate: string;
@@ -169,6 +170,8 @@ export function findConversionRule(
     if (rule.status !== 'active') continue;
     if (!isEffective(params.refDate, rule.effectiveFrom, rule.effectiveTo)) continue;
     if (!textContains(params.senderName, rule.senderKeyword)) continue;
+    // ถ้ากฎระบุชื่อผู้รับ (ว่าง=ทุกผู้รับ) ต้องเจอคำในชื่อผู้รับ (รองรับหลายคำคั่น |)
+    if (rule.receiverKeyword && !textContainsAny(params.receiverName || '', rule.receiverKeyword)) continue;
     // ถ้ากฎไม่ระบุกลุ่มผู้รับ (ว่าง) = ใช้กับทุกผู้รับ; ถ้าระบุ ต้องตรงกลุ่ม
     if (rule.receiverGroupId && params.receiverGroupId !== rule.receiverGroupId) continue;
     if (!textContainsAny(params.productName, rule.productKeyword)) continue;
@@ -349,6 +352,7 @@ export function computeReceipt(
       const rule = findConversionRule(
         {
           senderName: extracted.senderName,
+          receiverName: extracted.receiverName,
           receiverGroupId: groupId,
           productName: item.productName,
           refDate: ctx.refDate,
