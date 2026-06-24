@@ -655,7 +655,9 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked }: any) {
             <div className="text-[11px] text-natural-muted">ทั้งใบใช้แบบเดียวกัน — เลือกผิดราคาจะเพี้ยน</div>
           </div>
         </div>
-        {prev.rateOptions.flat != null || prev.rateOptions.piece != null ? (
+        {((prev.breakdown?.peat || 0) > 0 || (prev.breakdown?.collect || 0) > 0) && (prev.breakdown?.normal || 0) === 0 ? (
+          <span className="sm:ml-auto font-bold text-emerald-700 flex items-center gap-1.5 text-sm">🟢 คิดตามสินค้าพิเศษ — ไม่ใช้เหมา/ชิ้น</span>
+        ) : prev.rateOptions.flat != null || prev.rateOptions.piece != null ? (
           <div className="flex items-center gap-2.5 sm:ml-auto w-full sm:w-auto">
             <select aria-label="เลือกราคาขนส่ง" value={ext.rateChoice || prev.rateType || ''}
               onChange={(e) => update({ rateChoice: e.target.value as any })}
@@ -745,6 +747,13 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, locked }: any) {
       {/* totals + save */}
       <div className="flex items-center justify-between border-t border-natural-border pt-3">
         <div className="text-sm font-bold text-[#1B365D]">ค่าเที่ยวรวม: ฿{money(prev.tripAmount)} <span className="text-natural-muted font-normal">(คิด {prev.billingQty}/{prev.totalQty} ลัง)</span>
+          {prev.breakdown && ((prev.breakdown.collect || 0) > 0 || (prev.breakdown.peat || 0) > 0) && (
+            <span className="block text-[11px] text-natural-muted font-normal mt-0.5">
+              งานปกติ ฿{money(prev.breakdown.normal)}
+              {(prev.breakdown.peat || 0) > 0 && <> + Peat mass ฿{money(prev.breakdown.peat)}</>}
+              {(prev.breakdown.collect || 0) > 0 && <> + เก็บคืน ฿{money(prev.breakdown.collect)}</>}
+            </span>
+          )}
           {needsBox && <span className="block text-rose-600 text-xs font-semibold mt-0.5">⚠️ มีใบรับที่ต้องกรอกจำนวนกล่องก่อนบันทึก</span>}
         </div>
         <button onClick={onSave} disabled={locked || needsBox} title={needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>

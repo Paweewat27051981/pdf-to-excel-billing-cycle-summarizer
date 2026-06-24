@@ -592,6 +592,7 @@ export function computeTripDocument(
     totalQty,
     billingQty,
     tripAmount: round2(tripAmount),
+    breakdown: { normal: round2(normalAmount), collect: round2(collectAmount), peat: round2(peatAmount) },
     receipts,
     warnings,
     fileName: ctx.fileName,

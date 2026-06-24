@@ -241,6 +241,7 @@ export interface TripDocument {
   totalQty: number;         // รวมจำนวนจริงทุกใบรับ
   billingQty: number;       // รวมจำนวนคิดค่าเที่ยว
   tripAmount: number;       // ค่าเที่ยว = billingQty * piece OR flat
+  breakdown: { normal: number; collect: number; peat: number }; // แยกยอด งานปกติ/เก็บคืน/Peat mass
   receipts: TripReceipt[];
   warnings: string[];       // รายการแจ้งเตือน/ต้องตรวจสอบ
   fileName: string;

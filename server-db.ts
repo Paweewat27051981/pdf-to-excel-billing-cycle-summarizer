@@ -174,6 +174,7 @@ function normalizeTrips(list: any[]): any[] {
   return (list ?? []).map((t) => ({
     ...t,
     warnings: t.warnings ?? [],
+    breakdown: t.breakdown ?? { normal: t.tripAmount ?? 0, collect: 0, peat: 0 },
     receipts: (t.receipts ?? []).map((r: any) => ({
       ...r,
       items: r.items ?? [],
