@@ -883,6 +883,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
   const fuelFileRef = useRef<HTMLInputElement>(null);
   const [impFuel, setImpFuel] = useState(false);
+  const [fPlate, setFPlate] = useState('');
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
@@ -918,7 +919,27 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
     reset(); reload();
   };
 
+  // กรองรายทะเบียน (ใช้ร่วมทั้ง 3 ตาราง)
+  const allPlates: string[] = [...new Set([...fuel, ...incomes, ...ded].map((x: any) => x.plateNo).filter(Boolean) as string[])].sort();
+  const byPlate = (list: any[]): any[] => fPlate ? list.filter((x) => normPlate(x.plateNo) === normPlate(fPlate)) : list;
+  const fuelF = byPlate(fuel), incomesF = byPlate(incomes), dedF = byPlate(ded);
+  const fuelSum = fuelF.reduce((s: number, f: FuelEntry) => s + f.amount, 0);
+
   return (
+    <div className="flex flex-col gap-4">
+      {/* ตัวกรองรายทะเบียน (ใช้ร่วมทุกตาราง) */}
+      <div className="bg-white rounded-2xl border border-natural-border p-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="font-semibold text-[#1B365D] flex items-center gap-1"><Filter className="w-4 h-4" />กรองทะเบียน:</span>
+        <select aria-label="กรองทะเบียนรถ" value={fPlate} onChange={(e) => setFPlate(e.target.value)} className="border border-natural-border rounded-full px-3 py-1.5 text-sm font-semibold text-[#1B365D]">
+          <option value="">🚚 ทุกทะเบียน ({allPlates.length})</option>
+          {allPlates.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        {fPlate && <>
+          <span className="text-natural-muted">ค่าน้ำมัน {fuelF.length} รายการ · รวม ฿{money(fuelSum)}</span>
+          <button type="button" onClick={() => setFPlate('')} className="text-xs text-natural-muted hover:text-rose-600 font-semibold underline ml-auto">ล้างตัวกรอง</button>
+        </>}
+      </div>
+
     <div className="grid md:grid-cols-2 gap-5">
       <Section title="ค่าน้ำมัน (แยกตามทะเบียน)" icon={Fuel}>
         {/* นำเข้า/เทมเพลตค่าน้ำมันจาก Excel */}
@@ -935,8 +956,8 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           <input type="number" aria-label="จำนวนเงินค่าน้ำมัน" placeholder="จำนวนเงิน" value={fForm.amount || ''} onChange={(e) => setFForm({ ...fForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
           <button onClick={addFuel} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={fuel.map((f: FuelEntry) => [f.plateNo, f.refNo, f.date, money(f.amount)])} cols={['ทะเบียน', 'ใบสั่งเติม', 'วันที่', 'จำนวน']}
-          onDelete={async (i: number) => { await api(`/api/fuel/${fuel[i].id}`, 'DELETE'); reload(); }} />
+        <SimpleTable rows={fuelF.map((f: FuelEntry) => [f.plateNo, f.refNo, f.date, money(f.amount)])} cols={['ทะเบียน', 'ใบสั่งเติม', 'วันที่', 'จำนวน']}
+          onDelete={async (i: number) => { await api(`/api/fuel/${fuelF[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 
       {/* รายได้เพิ่ม (income) — dropdown ดึงจาก Master ประเภท */}
@@ -951,8 +972,8 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           <input aria-label="ใบกระจายเลขที่" placeholder="ใบกระจายเลขที่" value={bForm.docNo} onChange={(e) => setBForm({ ...bForm, docNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-36" />
           <button onClick={() => addEntry(bForm.plateNo, bForm.categoryId, bForm.amount, 'income', bForm.docNo, () => setBForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-emerald-600 text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={incomes.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', `+${money(d.amount)}`])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวนเพิ่ม']}
-          onDelete={async (i: number) => { await api(`/api/deductions/${incomes[i].id}`, 'DELETE'); reload(); }} />
+        <SimpleTable rows={incomesF.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', `+${money(d.amount)}`])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวนเพิ่ม']}
+          onDelete={async (i: number) => { await api(`/api/deductions/${incomesF[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 
       {/* รายการหัก (deduction) */}
@@ -966,14 +987,15 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           <input aria-label="ใบกระจายเลขที่" placeholder="ใบกระจายเลขที่" value={dForm.docNo} onChange={(e) => setDForm({ ...dForm, docNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-36" />
           <button onClick={() => addEntry(dForm.plateNo, dForm.categoryId, dForm.amount, 'deduction', dForm.docNo, () => setDForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={ded.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวน']}
-          onDelete={async (i: number) => { await api(`/api/deductions/${ded[i].id}`, 'DELETE'); reload(); }} />
+        <SimpleTable rows={dedF.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวน']}
+          onDelete={async (i: number) => { await api(`/api/deductions/${dedF[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 
       {/* จัดการประเภท — เพิ่มชื่อใน dropdown ได้เองโดยไม่ต้องแก้โค้ด */}
       <CategoryManager cats={cats} api={api} branchId={branchId} reload={reload} showToast={showToast} />
 
       <datalist id="plates">{db.vehicles.map((v: Vehicle) => <option key={v.id} value={v.plateNo} />)}</datalist>
+    </div>
     </div>
   );
 }

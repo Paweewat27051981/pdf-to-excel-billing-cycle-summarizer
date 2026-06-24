@@ -346,6 +346,25 @@ async function startServer() {
     });
   }
 
+  // 🔒 ค่าน้ำมัน: เลขใบสั่งเติมห้ามซ้ำในสาขา (ลงทะเบียน POST ก่อน masterRoutes เพื่อ override)
+  app.post('/api/fuel', async (req, res) => {
+    try {
+      const db = await getDb();
+      const body = req.body as FuelEntry;
+      const refNo = (body.refNo || '').trim();
+      if (refNo) {
+        const dup = db.fuelEntries.find((f) => f.branchId === body.branchId && (f.refNo || '').trim() === refNo);
+        if (dup) return res.status(409).json({ error: `เลขใบสั่งเติมน้ำมัน "${refNo}" ซ้ำ — มีอยู่แล้วในระบบ (ห้ามบันทึกซ้ำ)` });
+      }
+      const item = { ...body, id: generateId('fuel') } as FuelEntry;
+      db.fuelEntries.push(item);
+      await saveDb(db);
+      res.status(201).json(item);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   masterRoutes<Branch>('branches', 'branches', 'br');
   masterRoutes<RateOverride>('rate-overrides', 'rateOverrides', 'rov');
   masterRoutes<MoneyCategory>('money-categories', 'moneyCategories', 'cat');
@@ -385,19 +404,25 @@ async function startServer() {
       const { fuel, summary } = parseFuelExcel(buffer);
       if (!fuel.length) return res.status(422).json({ error: 'อ่านไฟล์ไม่พบใบสั่งเติมน้ำมัน — ตรวจสอบหัวคอลัมน์ ทะเบียน/วันที่/จำนวนเงิน' });
       const db = await getDb();
-      let created = 0;
+      let created = 0, skippedDup = 0;
       const closedCycles = new Set<string>();
       const createdCycles = new Set<string>();
+      // เลขใบสั่งเติมห้ามซ้ำในสาขา (เทียบกับของเดิม + ในไฟล์เดียวกัน)
+      const seenRef = new Set(db.fuelEntries.filter((f) => f.branchId === branchId).map((f) => (f.refNo || '').trim()).filter(Boolean));
       for (const f of fuel) {
         const rv = resolveCycleForDate(db, f.date, true);
         if (rv.invalid || !rv.cycle) continue;
         if (rv.closed) { closedCycles.add(rv.cycle.name); continue; }
+        const rn = (f.refNo || '').trim();
+        if (rn && seenRef.has(rn)) { skippedDup++; continue; }
+        if (rn) seenRef.add(rn);
         if (rv.created) createdCycles.add(rv.cycle.name);
         db.fuelEntries.push({ id: generateId('fuel'), branchId, cycleId: rv.cycle.id, plateNo: f.plateNo, refNo: f.refNo, date: f.date, amount: f.amount });
         created++;
       }
       await saveDb(db);
       if (createdCycles.size) summary.push(`เปิดรอบใหม่อัตโนมัติ: ${[...createdCycles].join(', ')}`);
+      if (skippedDup) summary.push(`⚠️ ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ`);
       if (closedCycles.size) summary.push(`⚠️ ข้ามรายการของรอบที่ปิดอยู่: ${[...closedCycles].join(', ')} (ให้ HQ เปิดรอบก่อน)`);
       res.status(201).json({ success: true, created, summary });
     } catch (err: any) {
