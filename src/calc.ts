@@ -326,12 +326,17 @@ export function computeReceipt(
   const flatPrice = rm.flat ? rm.flat.rateValue : null;
   const piecePrice = rm.piece ? rm.piece.rateValue : null;
   const pieceThreshold = rm.flat?.threshold ?? rm.piece?.threshold ?? null;
-  // ราคาสินค้าพิเศษของปลายทางนี้ (ถ้ามี)
-  const collectPrice = matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null;
+  // ราคาเก็บคืน: จับตาม "ชื่อผู้รับ" ก่อน (ทนที่อยู่ผิด) ไม่งั้นจับตามจังหวัด (เหมือนพิษณุโลก)
+  const collectByRecv = ctx.rates.find((r) =>
+    r.status === 'active' && r.productCategory === 'collect_back' && r.priceType === 'piece' &&
+    r.receiverKeyword && textContains(extracted.receiverName, r.receiverKeyword) &&
+    isEffective(ctx.refDate, r.effectiveFrom, r.effectiveTo));
+  const collectPrice = collectByRecv ? collectByRecv.price : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null);
   const peatPrice = matchRate(rateParams, ctx.rates, undefined, 'peat_mass').piece?.rateValue ?? null;
 
   // แยกประเภทสินค้า (เฉพาะเมื่อมีราคาประเภทนั้นของปลายทาง ไม่งั้นถือเป็นงานปกติ)
-  const isCollect = (it: ExtractedReceiptItem) => collectPrice != null && textContains(it.productName, 'เก็บสินค้าคืน');
+  // จับได้ทั้ง "เก็บสินค้าคืน" (พิษณุโลก) และ "สินค้าเก็บคืน" (กำแพงเพชร)
+  const isCollect = (it: ExtractedReceiptItem) => collectPrice != null && /เก็บ(สินค้า)?คืน/.test(it.productName);
   const isPeat = (it: ExtractedReceiptItem) => peatPrice != null && textContains(it.productName, 'Peat mass');
   const normalItems = extracted.items.filter((it) => !isCollect(it) && !isPeat(it));
   const collectQty = extracted.items.filter(isCollect).reduce((s, it) => s + (it.quantity || 0), 0);
