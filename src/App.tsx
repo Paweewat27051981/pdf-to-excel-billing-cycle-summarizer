@@ -455,23 +455,25 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
   };
 
   const onExcelFiles = async (files: FileList) => {
-    for (const file of Array.from(files)) {
-      const name = file.name.toLowerCase();
-      if (!name.endsWith('.xls') && !name.endsWith('.xlsx')) { showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)'); continue; }
-      const b64 = await new Promise<string>((resolve) => {
-        const r = new FileReader();
-        r.onload = () => resolve((r.result as string).split(',')[1]);
-        r.readAsDataURL(file);
-      });
-      setImporting(true);
-      try {
-        const data = await api('/api/import-excel', 'POST', { fileBase64: b64 });
-        const docs: ExtractedTripDocument[] = data.results || [];
-        for (const doc of docs) await preview(doc, file.name);
-        showToast('success', `นำเข้า ${file.name} สำเร็จ — พบ ${docs.length} ใบกระจาย ตรวจสอบด้านล่าง`);
-      } catch (e: any) { showToast('error', e.message); }
-      finally { setImporting(false); }
-    }
+    const list = Array.from(files);
+    if (list.length > 1) showToast('warning', 'นำเข้า Excel ได้ทีละ 1 ไฟล์เท่านั้น — ใช้ไฟล์แรก');
+    const file = list[0];
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    if (!name.endsWith('.xls') && !name.endsWith('.xlsx')) { showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)'); return; }
+    const b64 = await new Promise<string>((resolve) => {
+      const r = new FileReader();
+      r.onload = () => resolve((r.result as string).split(',')[1]);
+      r.readAsDataURL(file);
+    });
+    setImporting(true);
+    try {
+      const data = await api('/api/import-excel', 'POST', { fileBase64: b64 });
+      const docs: ExtractedTripDocument[] = data.results || [];
+      for (const doc of docs) await preview(doc, file.name);
+      showToast('success', `นำเข้า ${file.name} สำเร็จ — พบ ${docs.length} ใบกระจาย ตรวจสอบด้านล่าง`);
+    } catch (e: any) { showToast('error', e.message); }
+    finally { setImporting(false); }
   };
 
   const manual = () => {
@@ -551,7 +553,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, show
         }}
         className="bg-white rounded-2xl border-2 border-dashed border-natural-border p-6 text-center flex flex-col items-center">
         <input ref={fileRef} type="file" aria-label="เลือกไฟล์ PDF ใบกระจาย" accept="application/pdf" multiple className="hidden" onChange={(e) => e.target.files && onFiles(e.target.files)} />
-        <input ref={excelRef} type="file" aria-label="นำเข้า Excel ใบกระจาย" accept=".xls,.xlsx" multiple className="hidden" onChange={(e) => e.target.files && onExcelFiles(e.target.files)} />
+        <input ref={excelRef} type="file" aria-label="นำเข้า Excel ใบกระจาย" accept=".xls,.xlsx" className="hidden" onChange={(e) => e.target.files && onExcelFiles(e.target.files)} />
         {extracting || importing ? (
           <div className="flex flex-col items-center gap-2 py-2"><RefreshCw className="w-8 h-8 text-[#1B365D] animate-spin" /><p className="text-sm font-semibold text-[#1B365D]">{importing ? 'กำลังอ่าน Excel ใบกระจาย...' : 'AI กำลังอ่าน PDF ใบกระจาย...'}</p></div>
         ) : (
