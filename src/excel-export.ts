@@ -371,7 +371,7 @@ export async function exportPerVehicleReport(
     for (const t of vTrips) {
       const piecePrice = t.receipts?.find((r) => r.piecePrice != null)?.piecePrice ?? null;
       const unitRate = t.rateType === 'flat' ? (t.rateValue ?? null) : piecePrice;
-      const extra = vIncome.filter((d) => (d.docNo || '') === t.documentNo).reduce((a, d) => a + d.amount, 0);
+      const extra = vIncome.filter((d) => (d.docNo || '').trim() && (d.docNo || '').trim() === (t.documentNo || '').trim()).reduce((a, d) => a + d.amount, 0);
       const total = round2(t.tripAmount + extra);
       const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
       const dest = `${t.districtRaw ? 'อ.' + t.districtRaw : ''} ${t.provinceRaw ? 'จ.' + t.provinceRaw : ''}`.trim();
@@ -403,10 +403,19 @@ export async function exportPerVehicleReport(
       vc.alignment = { horizontal: 'right' };
       return row;
     };
+    // แยกรายได้เพิ่ม: มีเลขใบกระจาย = อยู่ในใบ (พิเศษ), ไม่มี = ประจำงวด (ค่าอัพบิล)
+    const inDocIncome = vIncome.filter((d) => (d.docNo || '').trim()).reduce((a, d) => a + d.amount, 0);
+    const perCycleInc: { label: string; amount: number }[] = Object.values(
+      vIncome.filter((d) => !(d.docNo || '').trim()).reduce((m: any, d) => {
+        const k = d.label || 'รายได้เพิ่ม'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
+      }, {})
+    );
     addSummary('รายได้ค่าเที่ยวทั้งหมด', round2(s.totalTripAmount), { bold: true });
+    if (inDocIncome > 0) addSummary('+ รายได้เพิ่มในใบ (พิเศษ)', round2(inDocIncome));
+    for (const l of perCycleInc) addSummary(`+ ${l.label}`, round2(l.amount));
     addSummary('หัก 1%', -round2(s.deduction1Percent));
     addSummary('หักค่าน้ำมัน', -round2(s.fuelTotal));
-    for (const ln of s.lines) addSummary(`${ln.kind === 'income' ? '+ ' : 'หัก '}${ln.label}`, ln.kind === 'income' ? round2(ln.amount) : -round2(ln.amount));
+    for (const ln of s.lines.filter((l: any) => l.kind === 'deduction')) addSummary(`หัก ${ln.label}`, -round2(ln.amount));
     const net = addSummary('รวมรับสุทธิ', round2(s.netReceive), { bold: true, color: C.billingText });
     net.getCell(6).fill = solid(C.totalBg); net.getCell(7).fill = solid(C.totalBg);
 

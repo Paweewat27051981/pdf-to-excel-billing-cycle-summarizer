@@ -1091,6 +1091,13 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
           const vTrips = cycleTrips.filter((t: TripDocument) => normPlate(t.plateNo) === np);
           const vFuel = db.fuelEntries.filter((f: FuelEntry) => f.cycleId === cycle.id && normPlate(f.plateNo) === np);
           const vIncome = db.deductions.filter((d: DeductionEntry) => d.cycleId === cycle.id && d.kind === 'income' && normPlate(d.plateNo) === np);
+          const inDocIncome = vIncome.filter((d: DeductionEntry) => (d.docNo || '').trim()).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
+          const perCycleInc: { label: string; amount: number }[] = Object.values(
+            vIncome.filter((d: DeductionEntry) => !(d.docNo || '').trim()).reduce((m: any, d: DeductionEntry) => {
+              const k = d.label || 'รายได้เพิ่ม'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
+            }, {})
+          );
+          const dedLines = s.lines.filter((l: any) => l.kind === 'deduction');
           return (
             <div key={s.plateNo} className="bg-white rounded-2xl border border-natural-border p-4">
               <div className="font-bold text-[#1B365D] mb-2">🚚 {s.plateNo} <span className="text-natural-muted font-normal text-sm">· {s.driverName}</span></div>
@@ -1101,7 +1108,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                     {vTrips.map((t: TripDocument) => {
                       const piecePrice = t.receipts?.find((r) => r.piecePrice != null)?.piecePrice ?? null;
                       const unitRate = t.rateType === 'flat' ? t.rateValue : piecePrice;
-                      const extra = vIncome.filter((d: DeductionEntry) => (d.docNo || '') === t.documentNo).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
+                      const extra = vIncome.filter((d: DeductionEntry) => (d.docNo || '').trim() && (d.docNo || '').trim() === (t.documentNo || '').trim()).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
                       const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
                       return (
                         <tr key={t.id} className={hasDiv ? 'bg-[#FFF2CC]' : ''}>
@@ -1122,9 +1129,11 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                 <div className="text-xs">
                   <div className="font-semibold text-[#1B365D] mb-1">สรุป</div>
                   <div className="flex justify-between"><span>รายได้ค่าเที่ยว</span><b>{money(s.totalTripAmount)}</b></div>
+                  {inDocIncome > 0 && <div className="flex justify-between text-emerald-700"><span>+ รายได้เพิ่มในใบ (พิเศษ)</span><span>+{money(inDocIncome)}</span></div>}
+                  {perCycleInc.map((l) => <div key={l.label} className="flex justify-between text-emerald-700"><span>+ {l.label}</span><span>+{money(l.amount)}</span></div>)}
                   <div className="flex justify-between text-rose-700"><span>หัก 1%</span><span>-{money(s.deduction1Percent)}</span></div>
                   <div className="flex justify-between text-rose-700"><span>หักค่าน้ำมัน</span><span>-{money(s.fuelTotal)}</span></div>
-                  {s.lines.map((ln: any) => <div key={ln.categoryId} className={`flex justify-between ${ln.kind === 'income' ? 'text-emerald-700' : 'text-rose-700'}`}><span>{ln.kind === 'income' ? '+ ' : 'หัก '}{ln.label}</span><span>{ln.kind === 'income' ? '+' : '-'}{money(ln.amount)}</span></div>)}
+                  {dedLines.map((ln: any) => <div key={ln.categoryId} className="flex justify-between text-rose-700"><span>หัก {ln.label}</span><span>-{money(ln.amount)}</span></div>)}
                   <div className="flex justify-between border-t border-natural-border mt-1 pt-1 font-bold text-[#C00000]"><span>รวมรับสุทธิ</span><span>{money(s.netReceive)}</span></div>
                 </div>
                 <div className="text-xs">
