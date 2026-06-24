@@ -309,6 +309,49 @@ export async function exportPerVehicleReport(
     ws.getCell(1, 1).value = 'ยังไม่มีข้อมูลในรอบนี้';
   }
 
+  const cycleFuel = fuel.filter((f) => f.cycleId === cycle.id);
+  const driverOf = (plate: string) =>
+    summaries.find((s) => normPlate(s.plateNo) === normPlate(plate))?.driverName ||
+    vehicles.find((v) => normPlate(v.plateNo) === normPlate(plate))?.driverName || '';
+
+  // ===== Sheet สรุปรวมต่อทะเบียน (แบบ Dashboard) =====
+  if (summaries.length) {
+    const ws = wb.addWorksheet('สรุปรวม');
+    styleTitle(ws, `สรุปรวมต่อทะเบียน — สาขา${branchName}`, 8, `รอบ ${cycle.name}`);
+    ws.addRow([]);
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ']));
+    let z = false; const g = { trip: 0, d1: 0, fuel: 0, inc: 0, ded: 0, net: 0 };
+    for (const s of summaries) {
+      const r = ws.addRow([s.plateNo, s.driverName, s.totalTripAmount, s.deduction1Percent, s.fuelTotal, s.incomeAdd, s.deductionTotal, s.netReceive]);
+      r.eachCell((cell, col) => bodyCell(cell, { align: col <= 2 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: col === 8, color: col === 8 ? C.billingText : undefined }));
+      [3, 4, 5, 6, 7, 8].forEach((c) => (r.getCell(c).numFmt = NUM));
+      z = !z; g.trip += s.totalTripAmount; g.d1 += s.deduction1Percent; g.fuel += s.fuelTotal; g.inc += s.incomeAdd; g.ded += s.deductionTotal; g.net += s.netReceive;
+    }
+    const tr = ws.addRow(['รวมทุกคัน', '', round2(g.trip), round2(g.d1), round2(g.fuel), round2(g.inc), round2(g.ded), round2(g.net)]);
+    tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col <= 2 ? 'left' : 'right', bg: C.totalBg, color: C.title }));
+    [3, 4, 5, 6, 7, 8].forEach((c) => (tr.getCell(c).numFmt = NUM));
+    [13, 20, 13, 11, 13, 14, 14, 13].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  }
+
+  // ===== Sheet ใบสั่งเติมน้ำมัน รวมทุกคัน =====
+  if (summaries.length) {
+    const ws = wb.addWorksheet('น้ำมันรวมทุกคัน');
+    styleTitle(ws, `สรุปใบสั่งเติมน้ำมัน รวมทุกคัน — สาขา${branchName}`, 5, `รอบ ${cycle.name}`);
+    ws.addRow([]);
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'วัน/เดือน/ปี', 'ใบสั่งเติมน้ำมัน', 'จำนวนเงิน (บาท)']));
+    let z = false, sum = 0;
+    const sortedFuel = [...cycleFuel].sort((a, b) => (a.plateNo > b.plateNo ? 1 : a.plateNo < b.plateNo ? -1 : (a.date > b.date ? 1 : -1)));
+    for (const f of sortedFuel) {
+      const r = ws.addRow([f.plateNo, driverOf(f.plateNo), fmtDate(f.date), f.refNo, f.amount]);
+      r.eachCell((cell, col) => bodyCell(cell, { align: col === 5 ? 'right' : 'left', bg: z ? C.zebra : undefined }));
+      r.getCell(5).numFmt = NUM; z = !z; sum += f.amount;
+    }
+    const tr = ws.addRow(['', '', '', 'ผลรวมทุกคัน', round2(sum)]);
+    tr.eachCell((cell) => bodyCell(cell, { bold: true, align: 'right', bg: C.totalBg, color: C.title }));
+    tr.getCell(5).numFmt = NUM;
+    [13, 20, 16, 22, 16].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  }
+
   for (const s of summaries) {
     const plate = s.plateNo;
     const np = normPlate(plate);
