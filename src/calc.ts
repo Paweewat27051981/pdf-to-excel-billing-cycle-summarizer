@@ -326,12 +326,16 @@ export function computeReceipt(
   const flatPrice = rm.flat ? rm.flat.rateValue : null;
   const piecePrice = rm.piece ? rm.piece.rateValue : null;
   const pieceThreshold = rm.flat?.threshold ?? rm.piece?.threshold ?? null;
-  // ราคาเก็บคืน: จับตาม "ชื่อผู้รับ" ก่อน (ทนที่อยู่ผิด) ไม่งั้นจับตามจังหวัด (เหมือนพิษณุโลก)
-  const collectByRecv = ctx.rates.find((r) =>
-    r.status === 'active' && r.productCategory === 'collect_back' && r.priceType === 'piece' &&
-    r.receiverKeyword && textContains(extracted.receiverName, r.receiverKeyword) &&
-    isEffective(ctx.refDate, r.effectiveFrom, r.effectiveTo));
-  const collectPrice = collectByRecv ? collectByRecv.price : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null);
+  // ราคาเก็บคืน: จับตาม "ชื่อร้าน (ผู้ส่ง) / ผู้รับ" ก่อน (ทนที่อยู่ผิด) ไม่งั้นจับตามจังหวัด (พิษณุโลก)
+  const collectByKw = ctx.rates.find((r) => {
+    if (r.status !== 'active' || r.productCategory !== 'collect_back' || r.priceType !== 'piece') return false;
+    if (!isEffective(ctx.refDate, r.effectiveFrom, r.effectiveTo)) return false;
+    if (!r.senderKeyword && !r.receiverKeyword) return false; // ต้องระบุชื่ออย่างน้อย 1
+    if (r.senderKeyword && !textContains(extracted.senderName, r.senderKeyword)) return false;
+    if (r.receiverKeyword && !textContains(extracted.receiverName, r.receiverKeyword)) return false;
+    return true;
+  });
+  const collectPrice = collectByKw ? collectByKw.price : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null);
   const peatPrice = matchRate(rateParams, ctx.rates, undefined, 'peat_mass').piece?.rateValue ?? null;
 
   // แยกประเภทสินค้า (เฉพาะเมื่อมีราคาประเภทนั้นของปลายทาง ไม่งั้นถือเป็นงานปกติ)
