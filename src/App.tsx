@@ -150,7 +150,7 @@ export default function App() {
             {auth.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5">HQ</span>}
           </div>
           <CycleBar cycles={db.cycles} selectedCycleId={selectedCycleId} setSelectedCycleId={setSelectedCycleId}
-            onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} />
+            onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} isHQ={auth.isHQ} />
           <button onClick={logout} title="ออกจากระบบ"
             className="text-natural-muted hover:text-red-600 flex items-center gap-1 text-xs font-semibold"><LogOut className="w-4 h-4" /></button>
         </div>
@@ -342,7 +342,7 @@ function BranchesTab({ db, api, reload, showToast }: any) {
 // ===========================================================================
 // Cycle bar (เลือกเดือน/รอบ + เปิดรอบใหม่)
 // ===========================================================================
-function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api, showToast }: any) {
+function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api, showToast, isHQ }: any) {
   const [open, setOpen] = useState(false);
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
@@ -382,10 +382,13 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
         <option value="" disabled>— เลือกรอบ —</option>
         {cycles.map((c: BillingCycle) => <option key={c.id} value={c.id}>{c.name} {c.status === 'closed' ? '🔒' : ''}</option>)}
       </select>
-      {cur && (
+      {cur && isHQ && (
         <button onClick={toggleLock} className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1">
           {cur.status === 'open' ? <><Lock className="w-3.5 h-3.5" />ปิดรอบ</> : <><Unlock className="w-3.5 h-3.5" />เปิดรอบ</>}
         </button>
+      )}
+      {cur && !isHQ && cur.status === 'closed' && (
+        <span className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1 text-natural-muted bg-natural-secondary"><Lock className="w-3.5 h-3.5" />รอบนี้ถูกปิด (เฉพาะ HQ เปิด/ปิดได้)</span>
       )}
       <button onClick={() => setOpen(!open)} className="bg-[#1B365D] text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1">
         <Plus className="w-4 h-4" />เปิดรอบใหม่
