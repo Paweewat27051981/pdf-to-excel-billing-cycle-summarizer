@@ -60,6 +60,12 @@ export function textContains(haystack: string, needle: string): boolean {
   return norm(haystack).includes(norm(needle));
 }
 
+// normalize เลขใบกระจาย/ใบสั่ง สำหรับจับคู่ — ตัดอักขระแปลกปลอม (ไทยหลง/เว้นวรรค) + ตัวใหญ่
+// เช่น "่ิjb0626075426" -> "JB0626075426"
+export function normDoc(s: string): string {
+  return (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
 // รองรับ "หลายคำสะกด" คั่นด้วย | , / (เช่น "ยูบี้|ยูปี้" — คนคีย์สลับ บ/ป)
 // คืน true ถ้าตรงคำใดคำหนึ่ง
 export function textContainsAny(haystack: string, field: string): boolean {

@@ -11,7 +11,7 @@ import {
   Vehicle,
   RateMaster,
 } from './types';
-import { summarizeByVehicle, normPlate } from './calc';
+import { summarizeByVehicle, normPlate, normDoc } from './calc';
 
 const FONT = 'Cordia New';
 
@@ -371,7 +371,7 @@ export async function exportPerVehicleReport(
     for (const t of vTrips) {
       const piecePrice = t.receipts?.find((r) => r.piecePrice != null)?.piecePrice ?? null;
       const unitRate = t.rateType === 'flat' ? (t.rateValue ?? null) : piecePrice;
-      const extra = vIncome.filter((d) => (d.docNo || '').trim() && (d.docNo || '').trim() === (t.documentNo || '').trim()).reduce((a, d) => a + d.amount, 0);
+      const extra = vIncome.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || '')).reduce((a, d) => a + d.amount, 0);
       const total = round2(t.tripAmount + extra);
       const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
       const dest = `${t.districtRaw ? 'อ.' + t.districtRaw : ''} ${t.provinceRaw ? 'จ.' + t.provinceRaw : ''}`.trim();
@@ -404,9 +404,9 @@ export async function exportPerVehicleReport(
       return row;
     };
     // แยกรายได้เพิ่ม: มีเลขใบกระจาย = อยู่ในใบ (พิเศษ), ไม่มี = ประจำงวด (ค่าอัพบิล)
-    const inDocIncome = vIncome.filter((d) => (d.docNo || '').trim()).reduce((a, d) => a + d.amount, 0);
+    const inDocIncome = vIncome.filter((d) => normDoc(d.docNo || '')).reduce((a, d) => a + d.amount, 0);
     const perCycleInc: { label: string; amount: number }[] = Object.values(
-      vIncome.filter((d) => !(d.docNo || '').trim()).reduce((m: any, d) => {
+      vIncome.filter((d) => !normDoc(d.docNo || '')).reduce((m: any, d) => {
         const k = d.label || 'รายได้เพิ่ม'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
       }, {})
     );

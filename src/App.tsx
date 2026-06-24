@@ -9,7 +9,7 @@ import {
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate } from './excel-export';
-import { summarizeByVehicle, isUnspecifiedName, normPlate } from './calc';
+import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
 // โมเดลที่มีจริง (ตรวจจาก ListModels API) — flash=เร็ว/ฟรีกว่า, pro=แม่นกว่า
@@ -915,7 +915,9 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', docNo: string, reset: () => void) => {
     const cat = cats.find((c) => c.id === categoryId) || (kind === 'income' ? incomeCats[0] : dedCats[0]);
     if (!plateNo || !amount || !cat) return showToast('warning', 'กรอกทะเบียน/จำนวนเงิน และเลือกประเภท');
-    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, docNo: docNo.trim(), cycleId: cycle.id, branchId });
+    // ล้าง docNo: ตัดอักขระแปลกปลอม (ไทยหลง/เว้นวรรค) + ตัวใหญ่ ให้ตรงกับใบกระจาย
+    const cleanDoc = docNo.replace(/[^A-Za-z0-9/-]/g, '').toUpperCase().trim();
+    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, docNo: cleanDoc, cycleId: cycle.id, branchId });
     reset(); reload();
   };
 
@@ -1214,9 +1216,9 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
           const vTrips = cycleTrips.filter((t: TripDocument) => normPlate(t.plateNo) === np).sort((a: TripDocument, b: TripDocument) => (a.documentDate || '').localeCompare(b.documentDate || '') || (a.documentNo || '').localeCompare(b.documentNo || ''));
           const vFuel = db.fuelEntries.filter((f: FuelEntry) => f.cycleId === cycle.id && normPlate(f.plateNo) === np).sort((a: FuelEntry, b: FuelEntry) => (a.date || '').localeCompare(b.date || ''));
           const vIncome = db.deductions.filter((d: DeductionEntry) => d.cycleId === cycle.id && d.kind === 'income' && normPlate(d.plateNo) === np);
-          const inDocIncome = vIncome.filter((d: DeductionEntry) => (d.docNo || '').trim()).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
+          const inDocIncome = vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '')).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
           const perCycleInc: { label: string; amount: number }[] = Object.values(
-            vIncome.filter((d: DeductionEntry) => !(d.docNo || '').trim()).reduce((m: any, d: DeductionEntry) => {
+            vIncome.filter((d: DeductionEntry) => !normDoc(d.docNo || '')).reduce((m: any, d: DeductionEntry) => {
               const k = d.label || 'รายได้เพิ่ม'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
             }, {})
           );
@@ -1231,7 +1233,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                     {vTrips.map((t: TripDocument) => {
                       const piecePrice = t.receipts?.find((r) => r.piecePrice != null)?.piecePrice ?? null;
                       const unitRate = t.rateType === 'flat' ? t.rateValue : piecePrice;
-                      const extra = vIncome.filter((d: DeductionEntry) => (d.docNo || '').trim() && (d.docNo || '').trim() === (t.documentNo || '').trim()).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
+                      const extra = vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || '')).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
                       const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
                       return (
                         <tr key={t.id} className={hasDiv ? 'bg-[#FFF2CC]' : ''}>
