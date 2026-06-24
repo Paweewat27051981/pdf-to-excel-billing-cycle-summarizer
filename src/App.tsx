@@ -1450,6 +1450,8 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
   const [editId, setEditId] = useState<string | null>(null);
   const [fSender, setFSender] = useState('');
   const [fGroup, setFGroup] = useState('');
+  const [newRecv, setNewRecv] = useState('');
+  const [newSend, setNewSend] = useState('');
   const add = async () => {
     if (!form.productKeyword) return showToast('warning', 'กรอกชื่อสินค้า');
     if (editId) {
@@ -1479,9 +1481,67 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
   const receiverOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.receiverKeyword || ''));
   const productOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.productKeyword));
   const sizeOpts = uniq(db.conversionRules.map((r: ProductConversionRule) => r.productSizeKeyword));
+  // รายชื่อ "ที่หาร 3" รวมจากทุกกฎ — เพิ่ม/ลบที่นี่ sync เข้าทุกกฎ
+  const splitKw = (s: string) => (s || '').split('|').map((x) => x.trim()).filter(Boolean);
+  const allReceivers: string[] = [...new Set(db.conversionRules.flatMap((r: ProductConversionRule) => splitKw(r.receiverKeyword || '')))] as string[];
+  const allSenders: string[] = [...new Set(db.conversionRules.flatMap((r: ProductConversionRule) => splitKw(r.senderKeyword || '')))] as string[];
+  const syncName = async (field: 'receiverKeyword' | 'senderKeyword', name: string, op: 'add' | 'remove') => {
+    const nm = name.trim();
+    if (!nm) return;
+    if (!db.conversionRules.length) return showToast('warning', 'ยังไม่มีกฎตัวหาร — เพิ่มกฎอย่างน้อย 1 ข้อก่อน');
+    for (const r of db.conversionRules as ProductConversionRule[]) {
+      const cur = splitKw((r as any)[field] || '');
+      const has = cur.includes(nm);
+      if (op === 'add' && !has) await api(`/api/conversion-rules/${r.id}`, 'PUT', { [field]: [...cur, nm].join('|') });
+      if (op === 'remove' && has) await api(`/api/conversion-rules/${r.id}`, 'PUT', { [field]: cur.filter((x) => x !== nm).join('|') });
+    }
+    reload();
+  };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   return (
     <div className="flex flex-col gap-5">
+      {/* 📋 รายชื่อที่หาร 3 (ใช้ร่วมทุกกฎ) */}
+      <Section title="รายชื่อผู้รับ / ผู้ส่ง ที่หาร 3 (จดจำไว้ใช้ทุกกฎ)" icon={Filter}>
+        <p className="text-xs text-natural-muted mb-3">เพิ่ม/ลบชื่อที่นี่ที่เดียว ระบบจะบันทึกเข้า <b>ทุกกฎตัวหาร</b> อัตโนมัติ ({db.conversionRules.length} กฎ) — ทำให้หาร 3 แม่นยำ ไม่ต้องไปแก้ทีละกฎ</p>
+        <div className="grid md:grid-cols-2 gap-4">
+          {/* ผู้รับ */}
+          <div className="bg-natural-bg rounded-xl p-3">
+            <div className="font-bold text-sm text-[#1B365D] mb-2">👤 ผู้รับที่หาร 3 ({allReceivers.length})</div>
+            <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
+              {allReceivers.length === 0 && <span className="text-xs text-natural-muted">ยังไม่มี — ว่าง = หารทุกผู้รับ</span>}
+              {allReceivers.map((n) => (
+                <span key={n} className="inline-flex items-center gap-1 bg-white border border-[#1B365D]/30 rounded-full pl-2.5 pr-1 py-0.5 text-xs">
+                  {n}
+                  <button type="button" title="ลบ" onClick={() => syncName('receiverKeyword', n, 'remove')} className="text-natural-muted hover:text-rose-600 font-bold w-4">×</button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newRecv} onChange={(e) => setNewRecv(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { syncName('receiverKeyword', newRecv, 'add'); setNewRecv(''); } }} placeholder="พิมพ์ชื่อผู้รับ เช่น รำพึงรีสอร์ท" className="flex-1 border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
+              <button onClick={() => { syncName('receiverKeyword', newRecv, 'add'); setNewRecv(''); }} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+            </div>
+          </div>
+          {/* ผู้ส่ง */}
+          <div className="bg-natural-bg rounded-xl p-3">
+            <div className="font-bold text-sm text-[#1B365D] mb-2">🚚 ผู้ส่งที่หาร 3 ({allSenders.length})</div>
+            <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
+              {allSenders.length === 0 && <span className="text-xs text-natural-muted">ยังไม่มี</span>}
+              {allSenders.map((n) => (
+                <span key={n} className="inline-flex items-center gap-1 bg-white border border-[#1B365D]/30 rounded-full pl-2.5 pr-1 py-0.5 text-xs">
+                  {n}
+                  <button type="button" title="ลบ" onClick={() => syncName('senderKeyword', n, 'remove')} className="text-natural-muted hover:text-rose-600 font-bold w-4">×</button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input value={newSend} onChange={(e) => setNewSend(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { syncName('senderKeyword', newSend, 'add'); setNewSend(''); } }} placeholder="พิมพ์ชื่อผู้ส่ง เช่น ซีโน" className="flex-1 border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
+              <button onClick={() => { syncName('senderKeyword', newSend, 'add'); setNewSend(''); }} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+            </div>
+          </div>
+        </div>
+        <p className="text-[11px] text-natural-muted mt-2">💡 ชื่อเฉพาะราย ใส่ชื่อให้ครบ (เช่น "รำพึงรีสอร์ท" ไม่ใช่ "รำพึง") · ชื่อแบรนด์ครอบทุกสาขาใส่คำแบรนด์ได้ (เช่น "ไทยลอตเต้")</p>
+      </Section>
+
       <Section title="เงื่อนไขแปลงจำนวนสินค้า (ตัวหาร)" icon={Filter}>
         <p className="text-xs text-natural-muted mb-3">ต้องตรงทุกข้อ: ผู้ส่งเข้าคำ + (ผู้รับเข้าคำ ถ้าระบุ) + กลุ่มผู้รับตรง + ชื่อสินค้า + ขนาด → หารตามตัวหาร (คำนวณแยกตามเลขใบรับสินค้า)<br /><span className="text-[#1B365D]">💡 ช่อง "สินค้า" และ "ผู้รับ" ใส่หลายคำคั่นด้วย <b>|</b> ได้ เช่น <b>ยูบี|ยูปี</b> · ช่องผู้รับเว้นว่าง = ทุกผู้รับ</span></p>
         <div className="flex flex-wrap gap-2 mb-3 text-sm">

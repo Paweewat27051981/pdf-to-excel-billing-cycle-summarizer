@@ -169,7 +169,7 @@ export function findConversionRule(
   for (const rule of rules) {
     if (rule.status !== 'active') continue;
     if (!isEffective(params.refDate, rule.effectiveFrom, rule.effectiveTo)) continue;
-    if (!textContains(params.senderName, rule.senderKeyword)) continue;
+    if (!textContainsAny(params.senderName, rule.senderKeyword)) continue;
     // ถ้ากฎระบุชื่อผู้รับ (ว่าง=ทุกผู้รับ) ต้องเจอคำในชื่อผู้รับ (รองรับหลายคำคั่น |)
     if (rule.receiverKeyword && !textContainsAny(params.receiverName || '', rule.receiverKeyword)) continue;
     // ถ้ากฎไม่ระบุกลุ่มผู้รับ (ว่าง) = ใช้กับทุกผู้รับ; ถ้าระบุ ต้องตรงกลุ่ม
