@@ -333,23 +333,31 @@ export async function exportPerVehicleReport(
     [13, 20, 13, 11, 13, 14, 14, 13].forEach((w, i) => (ws.getColumn(i + 1).width = w));
   }
 
-  // ===== Sheet ใบสั่งเติมน้ำมัน รวมทุกคัน =====
+  // ===== Sheet ค่าน้ำมันรวมทุกคัน — สรุปยอดรวมต่อทะเบียน (ไม่ลงรายละเอียดทุกใบ) =====
   if (summaries.length) {
     const ws = wb.addWorksheet('น้ำมันรวมทุกคัน');
-    styleTitle(ws, `สรุปใบสั่งเติมน้ำมัน รวมทุกคัน — สาขา${branchName}`, 5, `รอบ ${cycle.name}`);
+    styleTitle(ws, `สรุปค่าน้ำมันรวมต่อทะเบียน — สาขา${branchName}`, 3, `รอบ ${cycle.name}`);
     ws.addRow([]);
-    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'วัน/เดือน/ปี', 'ใบสั่งเติมน้ำมัน', 'จำนวนเงิน (บาท)']));
-    let z = false, sum = 0;
-    const sortedFuel = [...cycleFuel].sort((a, b) => (a.plateNo > b.plateNo ? 1 : a.plateNo < b.plateNo ? -1 : (a.date > b.date ? 1 : -1)));
-    for (const f of sortedFuel) {
-      const r = ws.addRow([f.plateNo, driverOf(f.plateNo), fmtDate(f.date), f.refNo, f.amount]);
-      r.eachCell((cell, col) => bodyCell(cell, { align: col === 5 ? 'right' : 'left', bg: z ? C.zebra : undefined }));
-      r.getCell(5).numFmt = NUM; z = !z; sum += f.amount;
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'จำนวนเงินรวม (บาท)']));
+    // รวมยอดน้ำมันต่อทะเบียน
+    const byPlate = new Map<string, { plate: string; total: number }>();
+    for (const f of cycleFuel) {
+      const key = normPlate(f.plateNo);
+      const cur = byPlate.get(key) || { plate: f.plateNo, total: 0 };
+      cur.total += f.amount;
+      byPlate.set(key, cur);
     }
-    const tr = ws.addRow(['', '', '', 'ผลรวมทุกคัน', round2(sum)]);
+    const rows = [...byPlate.values()].sort((a, b) => (a.plate > b.plate ? 1 : a.plate < b.plate ? -1 : 0));
+    let z = false, sum = 0;
+    for (const v of rows) {
+      const r = ws.addRow([v.plate, driverOf(v.plate), round2(v.total)]);
+      r.eachCell((cell, col) => bodyCell(cell, { align: col === 3 ? 'right' : 'left', bg: z ? C.zebra : undefined }));
+      r.getCell(3).numFmt = NUM; z = !z; sum += v.total;
+    }
+    const tr = ws.addRow(['', 'ผลรวมทุกคัน', round2(sum)]);
     tr.eachCell((cell) => bodyCell(cell, { bold: true, align: 'right', bg: C.totalBg, color: C.title }));
-    tr.getCell(5).numFmt = NUM;
-    [13, 20, 16, 22, 16].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    tr.getCell(3).numFmt = NUM;
+    [16, 24, 18].forEach((w, i) => (ws.getColumn(i + 1).width = w));
   }
 
   for (const s of summaries) {
