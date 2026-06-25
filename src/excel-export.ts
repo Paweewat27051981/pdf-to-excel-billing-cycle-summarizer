@@ -686,3 +686,82 @@ export async function exportBranchSummary(
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ===========================================================================
+// Export วิเคราะห์รายได้ พขร (Driver KPI) -> Excel (เป้าหมาย / รายได้คนรถ / KPI สาขา)
+// ===========================================================================
+export async function exportDriverKpi(
+  cycleName: string,
+  t: { totalExpense: number; boxesPerMonth: number; targetPerBox: number; targetPerCycle: number; targetBoxCycle: number },
+  drivers: { plate: string; driver: string; branch: string; boxes: number; net: number; trip: number }[],
+  branchRows: { branch: string; boxes: number; trip: number; perBox: number; nHit: number; nDrivers: number }[]
+) {
+  const wb = new ExcelJS.Workbook();
+  const INT = '#,##0';
+
+  // ---- เป้าหมาย ----
+  {
+    const ws = wb.addWorksheet('เป้าหมาย');
+    styleTitle(ws, 'เป้าหมายรายได้ พขร (KPI)', 2, `รอบ ${cycleName}`);
+    ws.addRow([]);
+    const add = (k: string, v: number, money?: boolean) => {
+      const r = ws.addRow([k, round2(v)]);
+      bodyCell(r.getCell(1), { bold: true });
+      bodyCell(r.getCell(2), { align: 'right' });
+      r.getCell(2).numFmt = money ? NUM : INT;
+    };
+    add('รายจ่ายเป้า/เดือน', t.totalExpense, true);
+    add('กล่อง/เดือน (capacity)', t.boxesPerMonth);
+    add('เป้า บาท/กล่อง', t.targetPerBox, true);
+    add('เป้ารายรับ/รอบ', t.targetPerCycle, true);
+    add('เป้ากล่อง/รอบ', t.targetBoxCycle);
+    [28, 18].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  }
+
+  // ---- รายได้ต่อคนรถ ----
+  {
+    const ws = wb.addWorksheet('รายได้ พขร');
+    styleTitle(ws, 'รายได้ต่อคนรถ', 8, `รอบ ${cycleName} · เป้ากล่อง/รอบ ${Math.round(t.targetBoxCycle)} · เป้า ${t.targetPerBox.toFixed(2)} บ/กล่อง`);
+    ws.addRow([]);
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'สาขา', 'กล่องวิ่ง', '%เป้า', 'รับสุทธิ', 'บาท/กล่อง', 'สถานะ']));
+    let z = false;
+    for (const d of drivers) {
+      const pct = t.targetBoxCycle > 0 ? d.boxes / t.targetBoxCycle : 0;
+      const perBox = d.boxes > 0 ? d.net / d.boxes : 0;
+      const col = pct >= 1 ? 'FF0E9F6E' : pct >= 0.8 ? 'FFB7791F' : 'FFE10026';
+      const text = pct >= 1 ? 'ถึงเป้า' : pct >= 0.8 ? 'ใกล้เป้า' : 'ต่ำกว่าเป้า';
+      const r = ws.addRow([d.plate, d.driver, d.branch, Math.round(d.boxes), pct, round2(d.net), round2(perBox), text]);
+      r.eachCell((cell, c) => bodyCell(cell, { align: c <= 3 ? 'left' : 'right', bg: z ? C.zebra : undefined }));
+      r.getCell(4).numFmt = INT; r.getCell(5).numFmt = '0%'; r.getCell(6).numFmt = NUM; r.getCell(7).numFmt = NUM;
+      r.getCell(5).font = { name: FONT, size: 13, bold: true, color: { argb: col } };
+      r.getCell(8).font = { name: FONT, size: 13, bold: true, color: { argb: col } };
+      z = !z;
+    }
+    [14, 20, 16, 12, 10, 14, 12, 14].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  }
+
+  // ---- KPI สาขา ----
+  {
+    const ws = wb.addWorksheet('KPI สาขา');
+    styleTitle(ws, 'KPI สาขา — ค่ากระจาย บาท/กล่อง (ต่ำสุด = ดีสุด)', 6, `รอบ ${cycleName}`);
+    ws.addRow([]);
+    styleHeaderRow(ws.addRow(['อันดับ', 'สาขา', 'กล่องรวม', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', 'คนรถถึงเป้า']));
+    let z = false;
+    branchRows.forEach((g, i) => {
+      const r = ws.addRow([i + 1, g.branch, Math.round(g.boxes), round2(g.trip), round2(g.perBox), `${g.nHit}/${g.nDrivers}`]);
+      r.eachCell((cell, c) => bodyCell(cell, { align: c <= 1 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: c === 5, color: c === 5 ? (i === 0 ? 'FF0E9F6E' : C.title) : undefined }));
+      r.getCell(3).numFmt = INT; r.getCell(4).numFmt = NUM; r.getCell(5).numFmt = NUM;
+      z = !z;
+    });
+    [10, 20, 14, 16, 20, 14].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  }
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `วิเคราะห์รายได้พขร_${cycleName.replace(/[\s/]/g, '_')}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}

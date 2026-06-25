@@ -8,7 +8,7 @@ import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
-import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
@@ -1276,8 +1276,16 @@ function DriverKpiTab({ db, cycle }: any) {
   };
   const numIn = (v: number, set: (n: number) => void) => (<input type="number" aria-label="ตั้งค่า" value={v || ''} onChange={(e) => set(+e.target.value || 0)} className="w-24 border border-natural-border rounded px-2 py-1 text-sm text-right" />);
 
+  const doExport = () => exportDriverKpi(cycle.name, { totalExpense, boxesPerMonth, targetPerBox, targetPerCycle, targetBoxCycle }, drivers, branchRows);
+
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex justify-end">
+        <button type="button" onClick={doExport} disabled={!drivers.length}
+          className="flex items-center gap-2 bg-brand-red hover:bg-brand-red-hover disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-bold">
+          <FileSpreadsheet className="w-4 h-4" /> Export Excel
+        </button>
+      </div>
       <Section title="ตั้งค่าฐานรายได้ (ปรับเองได้ · บันทึกอัตโนมัติ)" icon={TrendingUp}>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
           <label className="flex items-center justify-between gap-2">กล่อง/วัน {numIn(cfg.boxPerDay, (n) => setCfg({ ...cfg, boxPerDay: n }))}</label>
