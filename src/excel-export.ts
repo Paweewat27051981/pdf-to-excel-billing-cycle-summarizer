@@ -411,6 +411,26 @@ export async function exportPerVehicleReport(
     [16, 24, 18].forEach((w, i) => (ws.getColumn(i + 1).width = w));
   }
 
+  // ===== Sheet สรุปภาษีหัก ณ ที่จ่าย 1% (รายได้ก่อน/หลังหัก) =====
+  if (summaries.length) {
+    const ws = wb.addWorksheet('ภาษีหัก ณ ที่จ่าย 1%');
+    styleTitle(ws, `สรุปภาษีหัก ณ ที่จ่าย 1% — สาขา${branchName}`, 5, `รอบ ${cycle.name} · คิด 1% จากค่าเที่ยว`);
+    ws.addRow([]);
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'รายได้ก่อนหัก (ค่าเที่ยว)', 'ภาษีหัก ณ ที่จ่าย 1%', 'รายได้หลังหัก 1%']));
+    let z = false; const g = { gross: 0, tax: 0, net: 0 };
+    for (const s of summaries) {
+      const gross = s.totalTripAmount, tax = s.deduction1Percent, net = round2(gross - tax);
+      const r = ws.addRow([s.plateNo, s.driverName, round2(gross), round2(tax), net]);
+      r.eachCell((cell, col) => bodyCell(cell, { align: col <= 2 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: col === 5, color: col === 4 ? C.billingText : col === 5 ? C.title : undefined }));
+      [3, 4, 5].forEach((c) => (r.getCell(c).numFmt = NUM));
+      z = !z; g.gross += gross; g.tax += tax; g.net += net;
+    }
+    const tr = ws.addRow(['รวมทุกคัน', '', round2(g.gross), round2(g.tax), round2(g.net)]);
+    tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col <= 2 ? 'left' : 'right', bg: C.totalBg, color: C.title }));
+    [3, 4, 5].forEach((c) => (tr.getCell(c).numFmt = NUM));
+    [16, 24, 22, 20, 20].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  }
+
   for (const s of summaries) {
     const plate = s.plateNo;
     const np = normPlate(plate);
