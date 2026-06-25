@@ -240,24 +240,26 @@ function BranchLogin({ branches, api, onLogin }: any) {
   };
 
   return (
-    <div className="min-h-screen bg-natural-bg flex items-center justify-center p-6">
-      <div className="bg-white rounded-2xl border border-natural-border shadow-lg p-8 w-full max-w-sm flex flex-col items-center">
-        <div className="w-14 h-14 bg-brand-red text-white rounded-2xl flex items-center justify-center mb-3"><Building2 className="w-7 h-7" /></div>
-        <h1 className="text-lg font-bold text-brand-navy">ระบบค่าเที่ยว + ค่าน้ำมัน</h1>
-        <p className="text-xs text-natural-muted mb-5">เลือกสาขา และใส่รหัสผ่านเพื่อเข้าใช้งาน</p>
+    <div className="min-h-screen bg-gradient-to-br from-brand-navy to-[#081627] flex items-center justify-center p-6">
+      <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm flex flex-col items-center">
+        <img src="/iconneo.png" alt="NEOSIAM" className="w-16 h-16 rounded-2xl shadow-md mb-3 object-cover" />
+        <div className="font-extrabold text-2xl italic text-brand-navy tracking-wide">NEOSIAM</div>
+        <div className="text-[11px] text-brand-red font-bold tracking-wide">ส่งด่วน · ส่งไว · แน่นอน</div>
+        <p className="text-xs text-natural-muted mt-1 mb-5">ระบบค่าเที่ยว + ค่าน้ำมันรถร่วม</p>
         <label className="w-full text-xs font-semibold text-natural-dark-muted mb-1">สาขา</label>
         <select aria-label="สาขา" value={branchId} onChange={(e) => setBranchId(e.target.value)}
-          className="w-full border border-natural-border rounded-lg px-3 py-2 text-sm mb-3">
+          className="w-full border border-natural-border rounded-lg px-3 py-2 text-sm mb-3 focus:border-brand-navy outline-none">
           {active.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
         <label className="w-full text-xs font-semibold text-natural-dark-muted mb-1">รหัสผ่าน</label>
         <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()} aria-label="รหัสผ่าน"
-          className="w-full border border-natural-border rounded-lg px-3 py-2 text-sm mb-5" placeholder="••••" />
-        <button onClick={submit} disabled={busy || !branchId}
-          className="w-full bg-brand-red disabled:bg-natural-muted text-white rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2">
+          className="w-full border border-natural-border rounded-lg px-3 py-2 text-sm mb-5 focus:border-brand-navy outline-none" placeholder="••••" />
+        <button type="button" onClick={submit} disabled={busy || !branchId}
+          className="w-full bg-brand-red hover:bg-brand-red-hover disabled:bg-natural-muted text-white rounded-lg py-2.5 text-sm font-bold flex items-center justify-center gap-2 transition-colors">
           {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />} เข้าใช้งาน
         </button>
+        <p className="text-[10px] text-natural-muted/70 mt-5 font-semibold tracking-wide">NEOSIAM LOGISTICS &amp; TRANSPORT</p>
       </div>
     </div>
   );
