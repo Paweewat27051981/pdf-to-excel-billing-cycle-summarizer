@@ -288,8 +288,35 @@ function safeSheetName(name: string, used: Set<string>): string {
   return n;
 }
 
+// 1 ใบ -> หลายบรรทัด: แยกตามปลายทาง (เฉพาะใบราคาชิ้น งานปกติล้วน หลายอำเภอ) ไม่งั้น 1 บรรทัด
+export interface TripSubRow { date: string; dest: string; docNo: string; qty: number; rateType: string; price: number | null; amount: number; hasDiv: boolean; first: boolean; }
+export function tripSubRows(t: TripDocument): TripSubRow[] {
+  const splittable = t.rateType === 'piece' && (t.breakdown?.collect || 0) === 0 && (t.breakdown?.peat || 0) === 0;
+  if (splittable) {
+    const groups = new Map<string, { dist: string; prov: string; qty: number; amount: number; price: number | null; hasDiv: boolean }>();
+    for (const r of t.receipts || []) {
+      if ((r.normalQty || 0) <= 0) continue;
+      const key = (r.districtRaw || '') + '|' + (r.provinceRaw || '');
+      const g = groups.get(key) || { dist: r.districtRaw || '', prov: r.provinceRaw || '', qty: 0, amount: 0, price: null, hasDiv: false };
+      g.qty += r.billingQty || 0;
+      g.amount += r.receiptAmount || 0;
+      if (r.piecePrice != null) g.price = r.piecePrice;
+      if (r.hasAdjustment) g.hasDiv = true;
+      groups.set(key, g);
+    }
+    const arr = [...groups.values()];
+    if (arr.length > 1) {
+      return arr.map((g, i) => ({
+        date: i === 0 ? t.documentDate : '', dest: `${g.dist ? 'อ.' + g.dist : ''}${g.prov ? ' จ.' + g.prov : ''}`.trim(),
+        docNo: i === 0 ? t.documentNo : '', qty: g.qty, rateType: 'piece', price: g.price, amount: round2(g.amount), hasDiv: g.hasDiv, first: i === 0,
+      }));
+    }
+  }
+  return [{ date: t.documentDate, dest: tripDestinations(t), docNo: t.documentNo, qty: t.billingQty, rateType: t.rateType || '', price: tripUnitRate(t), amount: t.tripAmount, hasDiv: !!t.receipts?.some((r) => r.hasAdjustment), first: true }];
+}
+
 // รายชื่อปลายทางทุกอำเภอของใบกระจาย (กลุ่มตามจังหวัด) เช่น "อ.ชนแดน, อ.เมือง จ.เพชรบูรณ์"
-function tripDestinations(t: TripDocument): string {
+export function tripDestinations(t: TripDocument): string {
   const byProv = new Map<string, Set<string>>();
   for (const r of t.receipts || []) {
     const prov = (r.provinceRaw || '').trim();
@@ -303,7 +330,7 @@ function tripDestinations(t: TripDocument): string {
 }
 
 // ราคา/ชิ้น ของใบ: เหมา=ราคาเหมา, ชิ้นราคาเดียว=ราคานั้น, ชิ้นหลายราคา=null (แสดง "หลายราคา")
-function tripUnitRate(t: TripDocument): number | null {
+export function tripUnitRate(t: TripDocument): number | null {
   if (t.rateType === 'flat') return t.rateValue ?? null;
   if (t.rateType === 'piece') {
     const prices = [...new Set((t.receipts || []).filter((r) => r.piecePrice != null).map((r) => r.piecePrice as number))];
@@ -401,22 +428,24 @@ export async function exportPerVehicleReport(
     let zebra = false;
     let sumQty = 0, sumMoney = 0, sumExtra = 0, sumTotal = 0;
     for (const t of vTrips) {
-      const unitRate = tripUnitRate(t);
       const extra = vIncome.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || '')).reduce((a, d) => a + d.amount, 0);
-      const total = round2(t.tripAmount + extra);
-      const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
-      const dest = tripDestinations(t);
-      const r = ws.addRow([
-        fmtDate(t.documentDate), dest, t.documentNo, t.billingQty,
-        t.rateType === 'piece' ? 'ราคาชิ้น' : t.rateType === 'flat' ? 'ราคาเหมา' : '-',
-        unitRate != null ? unitRate : (t.rateType === 'piece' ? 'หลายราคา' : ''), t.tripAmount, extra || '', total, hasDiv ? 'มีหาร' : '',
-      ]);
-      r.eachCell((cell, col) => bodyCell(cell, { align: col >= 4 && col <= 9 ? 'right' : 'left', bg: zebra ? C.zebra : undefined, color: col === 9 ? C.title : undefined, bold: col === 9 }));
-      [7, 8, 9].forEach((c) => (r.getCell(c).numFmt = NUM));
-      if (unitRate != null) r.getCell(6).numFmt = NUM;
-      if (hasDiv) r.getCell(10).font = { name: FONT, size: 13, bold: true, color: { argb: C.dividerText } };
-      zebra = !zebra;
-      sumQty += t.billingQty; sumMoney += t.tripAmount; sumExtra += extra; sumTotal += total;
+      const subs = tripSubRows(t);
+      subs.forEach((sub) => {
+        const rowExtra = sub.first ? extra : 0;
+        const rowTotal = round2(sub.amount + rowExtra);
+        const r = ws.addRow([
+          fmtDate(sub.date), sub.dest, sub.docNo, sub.qty,
+          sub.rateType === 'piece' ? 'ราคาชิ้น' : sub.rateType === 'flat' ? 'ราคาเหมา' : '-',
+          sub.price != null ? sub.price : (sub.rateType === 'piece' ? 'หลายราคา' : ''), sub.amount, rowExtra || '', rowTotal, sub.hasDiv ? 'มีหาร' : '',
+        ]);
+        r.eachCell((cell, col) => bodyCell(cell, { align: col >= 4 && col <= 9 ? 'right' : 'left', bg: zebra ? C.zebra : undefined, color: col === 9 ? C.title : undefined, bold: col === 9 }));
+        [7, 8, 9].forEach((c) => (r.getCell(c).numFmt = NUM));
+        if (sub.price != null) r.getCell(6).numFmt = NUM;
+        if (sub.hasDiv) r.getCell(10).font = { name: FONT, size: 13, bold: true, color: { argb: C.dividerText } };
+        zebra = !zebra;
+        sumQty += sub.qty; sumMoney += sub.amount; sumTotal += rowTotal;
+      });
+      sumExtra += extra;
     }
     // แถวยอดรวม
     const tr = ws.addRow(['ยอดรวม', '', '', round2(sumQty), '', '', round2(sumMoney), round2(sumExtra), round2(sumTotal), '']);

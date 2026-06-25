@@ -8,7 +8,7 @@ import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
-import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
@@ -1208,26 +1208,6 @@ function HQDashboard({ db, cycle }: any) {
 // Tab: รายงานต่อทะเบียน (Export Excel)
 // ===========================================================================
 const fmtD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
-// ปลายทางทุกอำเภอของใบ (กลุ่มตามจังหวัด) + ราคา/ชิ้น (null=หลายราคา)
-const tripDest = (t: TripDocument): string => {
-  const byProv = new Map<string, Set<string>>();
-  for (const r of t.receipts || []) {
-    const p = (r.provinceRaw || '').trim(), d = (r.districtRaw || '').trim();
-    if (!d && !p) continue;
-    if (!byProv.has(p)) byProv.set(p, new Set());
-    if (d) byProv.get(p)!.add(d);
-  }
-  if (!byProv.size) return `${t.districtRaw ? 'อ.' + t.districtRaw : ''} ${t.provinceRaw ? 'จ.' + t.provinceRaw : ''}`.trim();
-  return [...byProv.entries()].map(([p, ds]) => `${[...ds].map((d) => 'อ.' + d).join(', ')}${p ? ' จ.' + p : ''}`).join(' · ');
-};
-const tripUnit = (t: TripDocument): number | null => {
-  if (t.rateType === 'flat') return t.rateValue ?? null;
-  if (t.rateType === 'piece') {
-    const ps = [...new Set((t.receipts || []).filter((r) => r.piecePrice != null).map((r) => r.piecePrice as number))];
-    return ps.length === 1 ? ps[0] : null;
-  }
-  return null;
-};
 
 function ReportsTab({ db, cycle, branchId, showToast }: any) {
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
@@ -1297,19 +1277,20 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                 <table className="w-full text-xs min-w-[720px]">
                   <thead className="bg-brand-navy text-white"><tr><TH>วันที่</TH><TH>ปลายทาง</TH><TH>เลขใบกระจาย</TH><TH r>จำนวน</TH><TH>แบบ</TH><TH r>ราคา</TH><TH r>เป็นเงิน</TH><TH r>พิเศษ</TH><TH r>รวม</TH><TH>หมายเหตุ</TH></tr></thead>
                   <tbody>
-                    {vTrips.map((t: TripDocument) => {
-                      const unitRate = tripUnit(t);
+                    {vTrips.flatMap((t: TripDocument) => {
                       const extra = vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || '')).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
-                      const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
-                      return (
-                        <tr key={t.id} className={hasDiv ? 'bg-[#FFF2CC]' : ''}>
-                          <TD>{fmtD(t.documentDate)}</TD><TD>{tripDest(t)}</TD><TD>{t.documentNo}</TD>
-                          <TD r>{qtyFmt(t.billingQty)}</TD><TD>{t.rateType === 'piece' ? 'ชิ้น' : t.rateType === 'flat' ? 'เหมา' : '-'}</TD>
-                          <TD r>{unitRate != null ? money(unitRate) : (t.rateType === 'piece' ? <span className="text-natural-muted">หลายราคา</span> : '-')}</TD><TD r>{money(t.tripAmount)}</TD><TD r>{extra ? money(extra) : '-'}</TD>
-                          <td className="px-2 py-1 text-right font-bold text-brand-navy">{money(t.tripAmount + extra)}</td>
-                          <TD>{hasDiv ? <span className="text-[#C65911] font-semibold">มีหาร</span> : ''}</TD>
-                        </tr>
-                      );
+                      return tripSubRows(t).map((sub, i) => {
+                        const rowExtra = sub.first ? extra : 0;
+                        return (
+                          <tr key={t.id + '-' + i} className={sub.hasDiv ? 'bg-[#FFF2CC]' : ''}>
+                            <TD>{fmtD(sub.date)}</TD><TD>{sub.dest}</TD><TD>{sub.docNo}</TD>
+                            <TD r>{qtyFmt(sub.qty)}</TD><TD>{sub.rateType === 'piece' ? 'ชิ้น' : sub.rateType === 'flat' ? 'เหมา' : '-'}</TD>
+                            <TD r>{sub.price != null ? money(sub.price) : (sub.rateType === 'piece' ? <span className="text-natural-muted">หลายราคา</span> : '-')}</TD><TD r>{money(sub.amount)}</TD><TD r>{rowExtra ? money(rowExtra) : '-'}</TD>
+                            <td className="px-2 py-1 text-right font-bold text-brand-navy">{money(sub.amount + rowExtra)}</td>
+                            <TD>{sub.hasDiv ? <span className="text-[#C65911] font-semibold">มีหาร</span> : ''}</TD>
+                          </tr>
+                        );
+                      });
                     })}
                     {vTrips.length === 0 && <tr><td colSpan={10} className="px-2 py-3 text-center text-natural-muted">ไม่มีใบกระจาย</td></tr>}
                   </tbody>
