@@ -2,13 +2,13 @@ import React, { useState, useEffect, useRef, Fragment } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
-  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp,
+  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp, MapPin,
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
-import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
@@ -31,7 +31,7 @@ const EMPTY: DatabaseState = {
 };
 
 type BranchAuth = { id: string; name: string; isHQ: boolean };
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi';
+type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -119,6 +119,7 @@ export default function App() {
     ['fuel', 'ค่าน้ำมัน & รายการหัก', Fuel],
     ['dashboard', 'Dashboard', Database],
     ['reports', 'รายงานต่อทะเบียน', FileSpreadsheet],
+    ['costarea', 'พื้นที่ต้นทุนสูง', MapPin],
     ['rates', 'Master ราคาขนส่ง', Tag],
     ['rules', 'เงื่อนไขตัวหาร', Filter],
     ['vehicles', 'รถ & คนขับ', Truck],
@@ -207,6 +208,7 @@ export default function App() {
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={auth.isHQ} />}
             {tab === 'driverkpi' && <DriverKpiTab db={db} cycle={cycle} />}
+            {tab === 'costarea' && <CostAreaTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
             {tab === 'reports' && <ReportsTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
             {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -1023,6 +1025,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           <button onClick={addFuel} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
         <SimpleTable rows={fuelF.map((f: FuelEntry) => [f.plateNo, f.refNo, f.date, money(f.amount)])} cols={['ทะเบียน', 'ใบสั่งเติม', 'วันที่', 'จำนวน']}
+          footer={[`รวม ${fuelF.length} รายการ`, '', '', `฿${money(fuelSum)}`]}
           onDelete={async (i: number) => { await api(`/api/fuel/${fuelF[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 
@@ -1451,6 +1454,94 @@ function DriverKpiTab({ db, cycle }: any) {
         </table>
       </div>
       <p className="text-[11px] text-natural-muted">🔒 ความลับ (เฉพาะ HQ + รหัส) · 💡 "ค่ากระจาย บาท/กล่อง" ยิ่งต่ำ = อัดงานหนาแน่น คนรถได้ปริมาณมาก รายได้สูงขึ้น (ผกผัน) · รหัสเริ่มต้น 2468 (เปลี่ยนได้ในโค้ด KPI_PW)</p>
+    </div>
+  );
+}
+
+// ===========================================================================
+// Tab: พื้นที่ต้นทุนสูง — ต่อสาขา -> จังหวัด เรียงตาม บาท/กล่อง
+// ===========================================================================
+function computeCostAreas(db: any, cycle: BillingCycle, branches: Branch[]) {
+  return branches.map((b) => {
+    const trips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id && t.branchId === b.id);
+    const provMap = new Map<string, { prov: string; boxes: number; cost: number; docs: Set<string> }>();
+    for (const t of trips) {
+      const totalBoxes = (t.receipts || []).reduce((a: number, r: any) => a + (r.totalQty || 0), 0);
+      for (const r of (t.receipts || [])) {
+        const prov = (r.provinceRaw || '').trim() || '(ไม่ระบุจังหวัด)';
+        const boxes = r.totalQty || 0;
+        // ต้นทุน = ค่าเที่ยว: ราคาชิ้น=ตามใบรับ, ราคาเหมา=เฉลี่ยตามสัดส่วนกล่อง
+        const cost = t.rateType === 'piece' ? (r.receiptAmount || 0) : (totalBoxes > 0 ? t.tripAmount * (boxes / totalBoxes) : 0);
+        const g = provMap.get(prov) || { prov, boxes: 0, cost: 0, docs: new Set<string>() };
+        g.boxes += boxes; g.cost += cost; g.docs.add(t.id);
+        provMap.set(prov, g);
+      }
+    }
+    const provs = [...provMap.values()].map((g) => ({ prov: g.prov, boxes: g.boxes, cost: g.cost, docs: g.docs.size, perBox: g.boxes > 0 ? g.cost / g.boxes : 0 }))
+      .filter((g) => g.boxes > 0 || g.cost > 0).sort((a, b) => b.perBox - a.perBox);
+    const total = provs.reduce((a, p) => a + p.cost, 0);
+    return { branch: b.name, branchId: b.id, provs, total };
+  }).filter((d) => d.provs.length > 0).sort((a, b) => b.total - a.total);
+}
+
+function CostAreaTab({ db, cycle, branchId, showToast }: any) {
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
+  const bx = (n: number) => Math.round(n).toLocaleString('th-TH');
+  const branches = (db.branches as Branch[]).filter((b) => !b.isHQ && b.status === 'active' && (!branchId || b.id === branchId));
+  const data = computeCostAreas(db, cycle, branches);
+  const expandAll = () => setOpen(Object.fromEntries(data.map((d) => [d.branchId, true])));
+  const collapseAll = () => setOpen({});
+  const doExport = async () => {
+    if (!data.length) return showToast('warning', 'ยังไม่มีข้อมูลในรอบนี้');
+    try { await exportCostAreas(cycle.name, data); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="bg-white rounded-2xl border border-natural-border p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm"><span className="font-bold text-brand-navy">พื้นที่ต้นทุนสูง</span> <span className="text-natural-muted ml-2">รอบ {cycle.name} · เรียงปลายทางตาม บาท/กล่อง มาก→น้อย</span></div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={expandAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1.5 hover:bg-natural-secondary">ขยายทั้งหมด</button>
+          <button type="button" onClick={collapseAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1.5 hover:bg-natural-secondary">ย่อทั้งหมด</button>
+          <button type="button" onClick={doExport} className="bg-brand-red hover:bg-brand-red-hover text-white rounded-lg px-4 py-2 text-sm font-bold flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" />Export Excel</button>
+        </div>
+      </div>
+
+      {data.length === 0 ? <EmptyHint text="ยังไม่มีข้อมูลในรอบนี้" /> : data.map((d) => {
+        const o = !!open[d.branchId];
+        return (
+          <div key={d.branchId} className="bg-white rounded-2xl border border-natural-border overflow-hidden">
+            <button type="button" onClick={() => setOpen({ ...open, [d.branchId]: !o })} className="w-full flex items-center justify-between px-4 py-3 hover:bg-brand-navy/5 text-left">
+              <span className="font-bold text-brand-navy">{o ? '▾' : '▸'} 🏢 {d.branch}</span>
+              <span className="text-xs text-natural-muted">ต้นทุนรวม <b className="text-brand-navy">฿{money(d.total)}</b> · {d.provs.length} จังหวัด</span>
+            </button>
+            {o && (
+              <div className="overflow-x-auto border-t border-natural-border">
+                <table className="w-full text-xs min-w-[620px]">
+                  <thead className="bg-brand-navy text-white"><tr>
+                    {['ปลายทาง (จังหวัด)', 'กล่อง', 'จำนวนใบ', 'ค่าขนส่งรวม', 'บาท/กล่อง'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {d.provs.map((p, i) => {
+                      const hi = i === 0, lo = i === d.provs.length - 1 && d.provs.length > 1;
+                      const pc = hi ? 'text-rose-600' : lo ? 'text-emerald-700' : '';
+                      return (<tr key={p.prov} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
+                        <td className="p-2 font-semibold text-brand-navy">จ.{p.prov}</td>
+                        <td className="p-2 text-right">{bx(p.boxes)}</td><td className="p-2 text-right">{p.docs}</td>
+                        <td className="p-2 text-right">{money(p.cost)}</td>
+                        <td className={`p-2 text-right font-bold ${pc}`}>฿{money(p.perBox)} {hi ? '🔴' : lo ? '🟢' : ''}</td>
+                      </tr>);
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <p className="text-[11px] text-natural-muted">💡 "ต้นทุน" = ค่าเที่ยวที่จ่ายส่งพื้นที่นั้น (ราคาชิ้น=ตามใบรับ · ราคาเหมา=เฉลี่ยตามสัดส่วนกล่อง) · 🔴 แพงสุด/กล่อง 🟢 ถูกสุด/กล่อง</p>
     </div>
   );
 }
@@ -2225,7 +2316,7 @@ function Stat({ label, value, highlight }: { label: string; value: string; highl
     </div>
   );
 }
-function SimpleTable({ cols, rows, onDelete, onEdit }: { cols: string[]; rows: any[][]; onDelete?: (i: number) => void; onEdit?: (i: number) => void }) {
+function SimpleTable({ cols, rows, onDelete, onEdit, footer }: { cols: string[]; rows: any[][]; onDelete?: (i: number) => void; onEdit?: (i: number) => void; footer?: any[] }) {
   const hasAction = !!(onDelete || onEdit);
   return (
     <div className="overflow-x-auto rounded-xl border border-natural-border">
@@ -2243,6 +2334,12 @@ function SimpleTable({ cols, rows, onDelete, onEdit }: { cols: string[]; rows: a
           ))}
           {rows.length === 0 && <tr><td colSpan={cols.length + 1} className="py-4 text-center text-natural-muted">ยังไม่มีข้อมูล</td></tr>}
         </tbody>
+        {footer && rows.length > 0 && (
+          <tfoot><tr className="border-t-2 border-brand-navy bg-brand-navy/5 font-bold text-brand-navy">
+            {footer.map((cell, j) => <td key={j} className="py-2 px-2">{cell}</td>)}
+            {hasAction && <td></td>}
+          </tr></tfoot>
+        )}
       </table>
     </div>
   );
