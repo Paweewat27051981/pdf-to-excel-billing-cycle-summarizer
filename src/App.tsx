@@ -42,6 +42,7 @@ const qtyFmt = (n: number) => String(Math.floor(((n ?? 0) + 1e-9) * 100) / 100);
 export default function App() {
   const [db, setDb] = useState<DatabaseState>(EMPTY);
   const [loading, setLoading] = useState(true);
+  const [booted, setBooted] = useState(false); // โหลดสำเร็จครั้งแรกแล้ว — reload หลังจากนี้ไม่ขึ้นสปินเนอร์เต็มจอ (กันแท็บ remount/รีเซ็ตสถานะ)
   const [selectedCycleId, setSelectedCycleId] = useState('');
   const [tab, setTab] = useState<Tab>('calc');
   const [navOpen, setNavOpen] = useState(false);
@@ -84,6 +85,7 @@ export default function App() {
       showToast('error', `โหลดข้อมูลไม่ได้: ${e.message}`);
     } finally {
       setLoading(false);
+      setBooted(true);
     }
   };
 
@@ -94,7 +96,7 @@ export default function App() {
 
   // โหลดข้อมูลตามสาขาที่เลือก (HQ workBranchId='' = ทุกสาขา)
   useEffect(() => {
-    if (!auth) { fetch('/api/state').then((r) => r.json()).then(setDb).finally(() => setLoading(false)); return; }
+    if (!auth) { fetch('/api/state').then((r) => r.json()).then(setDb).finally(() => { setLoading(false); setBooted(true); }); return; }
     fetchState();
   }, [auth, workBranchId]);
 
@@ -196,7 +198,7 @@ export default function App() {
         </header>
 
         <main className="flex-1 max-w-[1440px] w-full p-4 md:p-6">
-          {loading ? (
+          {loading && !booted ? (
             <div className="flex flex-col items-center justify-center py-20">
               <RefreshCw className="w-10 h-10 text-brand-red animate-spin mb-3" />
               <p className="text-sm text-natural-dark-muted">กำลังโหลด...</p>
