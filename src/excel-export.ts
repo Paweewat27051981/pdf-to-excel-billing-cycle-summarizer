@@ -437,6 +437,7 @@ export async function exportPerVehicleReport(
     const vTrips = cycleTrips.filter((t) => normPlate(t.plateNo) === np).sort((a, b) => (a.documentDate || '').localeCompare(b.documentDate || '') || (a.documentNo || '').localeCompare(b.documentNo || ''));
     const vFuel = fuel.filter((f) => f.cycleId === cycle.id && normPlate(f.plateNo) === np).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     const vIncome = deductions.filter((d) => d.cycleId === cycle.id && d.kind === 'income' && normPlate(d.plateNo) === np);
+    const vDeduct = deductions.filter((d) => d.cycleId === cycle.id && d.kind === 'deduction' && normPlate(d.plateNo) === np);
 
     const ws = wb.addWorksheet(safeSheetName(plate, usedNames));
     styleTitle(ws, `สรุปค่าบรรทุกรถร่วม — สาขา${branchName}`, 10,
@@ -447,21 +448,38 @@ export async function exportPerVehicleReport(
     styleHeaderRow(ws.addRow(['วันที่', 'ปลายทาง', 'เลขที่ใบกระจาย', 'จำนวนชิ้น', 'แบบ', 'ราคา', 'เป็นเงิน', 'รายได้เพิ่ม (พิเศษ)', 'ราคารวม', 'หมายเหตุ']));
     let zebra = false;
     let sumQty = 0, sumMoney = 0, sumExtra = 0, sumTotal = 0;
+    const fmtB = (n: number) => round2(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     for (const t of vTrips) {
-      const extra = vIncome.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || '')).reduce((a, d) => a + d.amount, 0);
+      const docInc = vIncome.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || ''));
+      const docDed = vDeduct.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || ''));
+      const extra = docInc.reduce((a, d) => a + d.amount, 0);
       const subs = tripSubRows(t);
       subs.forEach((sub) => {
         const rowExtra = sub.first ? extra : 0;
         const rowTotal = round2(sub.amount + rowExtra);
+        // หมายเหตุ: มีหาร + รายการ +/- ที่ผูกเลขใบกระจายนี้ (แสดงในแถวแรกของใบ)
+        const parts: { text: string; color: string }[] = [];
+        if (sub.hasDiv) parts.push({ text: 'มีหาร', color: C.dividerText });
+        if (sub.first) {
+          for (const d of docInc) parts.push({ text: `➕${d.label} ฿${fmtB(d.amount)}`, color: 'FF0E9F6E' });
+          for (const d of docDed) parts.push({ text: `➖${d.label} ฿${fmtB(d.amount)}`, color: 'FFE10026' });
+        }
         const r = ws.addRow([
           fmtDate(sub.date), sub.dest, sub.docNo, sub.qty,
           sub.rateType === 'piece' ? 'ราคาชิ้น' : sub.rateType === 'flat' ? 'ราคาเหมา' : '-',
-          sub.price != null ? sub.price : (sub.rateType === 'piece' ? 'หลายราคา' : ''), sub.amount, rowExtra || '', rowTotal, sub.hasDiv ? 'มีหาร' : '',
+          sub.price != null ? sub.price : (sub.rateType === 'piece' ? 'หลายราคา' : ''), sub.amount, rowExtra || '', rowTotal, '',
         ]);
         r.eachCell((cell, col) => bodyCell(cell, { align: col >= 4 && col <= 9 ? 'right' : 'left', bg: zebra ? C.zebra : undefined, color: col === 9 ? C.title : undefined, bold: col === 9 }));
         [7, 8, 9].forEach((c) => (r.getCell(c).numFmt = NUM));
         if (sub.price != null) r.getCell(6).numFmt = NUM;
-        if (sub.hasDiv) r.getCell(10).font = { name: FONT, size: 13, bold: true, color: { argb: C.dividerText } };
+        if (parts.length) {
+          const rt: ExcelJS.RichText[] = [];
+          parts.forEach((p, i) => {
+            if (i) rt.push({ font: { name: FONT, size: 12, color: { argb: 'FF999999' } }, text: ' · ' });
+            rt.push({ font: { name: FONT, size: 13, bold: true, color: { argb: p.color } }, text: p.text });
+          });
+          r.getCell(10).value = { richText: rt };
+        }
         zebra = !zebra;
         sumQty += sub.qty; sumMoney += sub.amount; sumTotal += rowTotal;
       });
@@ -484,15 +502,14 @@ export async function exportPerVehicleReport(
       vc.alignment = { horizontal: 'right' };
       return row;
     };
-    // แยกรายได้เพิ่ม: มีเลขใบกระจาย = อยู่ในใบ (พิเศษ), ไม่มี = ประจำงวด (ค่าอัพบิล)
-    const inDocIncome = vIncome.filter((d) => normDoc(d.docNo || '')).reduce((a, d) => a + d.amount, 0);
-    const perCycleInc: { label: string; amount: number }[] = Object.values(
-      vIncome.filter((d) => !normDoc(d.docNo || '')).reduce((m: any, d) => {
-        const k = d.label || 'รายได้เพิ่ม'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
-      }, {})
-    );
+    // แยกรายได้เพิ่ม: มีเลขใบกระจาย = อยู่ในใบ (แยกตามชื่อ), ไม่มี = ประจำงวด (ค่าอัพบิล)
+    const byLabel = (list: typeof vIncome) => Object.values(list.reduce((m: any, d) => {
+      const k = d.label || 'รายการ'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
+    }, {})) as { label: string; amount: number }[];
+    const inDocInc = byLabel(vIncome.filter((d) => normDoc(d.docNo || '')));
+    const perCycleInc = byLabel(vIncome.filter((d) => !normDoc(d.docNo || '')));
     addSummary('รายได้ค่าเที่ยวทั้งหมด', round2(s.totalTripAmount), { bold: true });
-    if (inDocIncome > 0) addSummary('+ รายได้เพิ่มในใบ (พิเศษ)', round2(inDocIncome));
+    for (const l of inDocInc) addSummary(`+ ${l.label} (ในใบ)`, round2(l.amount));
     for (const l of perCycleInc) addSummary(`+ ${l.label}`, round2(l.amount));
     addSummary('หัก 1%', -round2(s.deduction1Percent));
     addSummary('หักค่าน้ำมัน', -round2(s.fuelTotal));

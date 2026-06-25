@@ -1497,12 +1497,12 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
           const vTrips = cycleTrips.filter((t: TripDocument) => normPlate(t.plateNo) === np).sort((a: TripDocument, b: TripDocument) => (a.documentDate || '').localeCompare(b.documentDate || '') || (a.documentNo || '').localeCompare(b.documentNo || ''));
           const vFuel = db.fuelEntries.filter((f: FuelEntry) => f.cycleId === cycle.id && normPlate(f.plateNo) === np).sort((a: FuelEntry, b: FuelEntry) => (a.date || '').localeCompare(b.date || ''));
           const vIncome = db.deductions.filter((d: DeductionEntry) => d.cycleId === cycle.id && d.kind === 'income' && normPlate(d.plateNo) === np);
-          const inDocIncome = vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '')).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
-          const perCycleInc: { label: string; amount: number }[] = Object.values(
-            vIncome.filter((d: DeductionEntry) => !normDoc(d.docNo || '')).reduce((m: any, d: DeductionEntry) => {
-              const k = d.label || 'รายได้เพิ่ม'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
-            }, {})
-          );
+          const vDeduct = db.deductions.filter((d: DeductionEntry) => d.cycleId === cycle.id && d.kind === 'deduction' && normPlate(d.plateNo) === np);
+          const byLabel = (list: DeductionEntry[]): { label: string; amount: number }[] => Object.values(list.reduce((m: any, d: DeductionEntry) => {
+            const k = d.label || 'รายการ'; (m[k] = m[k] || { label: k, amount: 0 }).amount += d.amount; return m;
+          }, {}));
+          const inDocInc = byLabel(vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '')));
+          const perCycleInc = byLabel(vIncome.filter((d: DeductionEntry) => !normDoc(d.docNo || '')));
           const dedLines = s.lines.filter((l: any) => l.kind === 'deduction');
           return (
             <div key={s.plateNo} className="bg-white rounded-2xl border border-natural-border p-4">
@@ -1512,16 +1512,24 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                   <thead className="bg-brand-navy text-white"><tr><TH>วันที่</TH><TH>ปลายทาง</TH><TH>เลขใบกระจาย</TH><TH r>จำนวน</TH><TH>แบบ</TH><TH r>ราคา</TH><TH r>เป็นเงิน</TH><TH r>พิเศษ</TH><TH r>รวม</TH><TH>หมายเหตุ</TH></tr></thead>
                   <tbody>
                     {vTrips.flatMap((t: TripDocument) => {
-                      const extra = vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || '')).reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
+                      const docInc = vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || ''));
+                      const docDed = vDeduct.filter((d: DeductionEntry) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || ''));
+                      const extra = docInc.reduce((a: number, d: DeductionEntry) => a + d.amount, 0);
                       return tripSubRows(t).map((sub, i) => {
                         const rowExtra = sub.first ? extra : 0;
+                        const parts: React.ReactNode[] = [];
+                        if (sub.hasDiv) parts.push(<span className="text-[#C65911] font-semibold">มีหาร</span>);
+                        if (sub.first) {
+                          docInc.forEach((d: DeductionEntry) => parts.push(<span className="text-emerald-700 font-semibold">➕{d.label} ฿{money(d.amount)}</span>));
+                          docDed.forEach((d: DeductionEntry) => parts.push(<span className="text-rose-600 font-semibold">➖{d.label} ฿{money(d.amount)}</span>));
+                        }
                         return (
                           <tr key={t.id + '-' + i} className={sub.hasDiv ? 'bg-[#FFF2CC]' : ''}>
                             <TD>{fmtD(sub.date)}</TD><TD>{sub.dest}</TD><TD>{sub.docNo}</TD>
                             <TD r>{qtyFmt(sub.qty)}</TD><TD>{sub.rateType === 'piece' ? 'ชิ้น' : sub.rateType === 'flat' ? 'เหมา' : '-'}</TD>
                             <TD r>{sub.price != null ? money(sub.price) : (sub.rateType === 'piece' ? <span className="text-natural-muted">หลายราคา</span> : '-')}</TD><TD r>{money(sub.amount)}</TD><TD r>{rowExtra ? money(rowExtra) : '-'}</TD>
                             <td className="px-2 py-1 text-right font-bold text-brand-navy">{money(sub.amount + rowExtra)}</td>
-                            <TD>{sub.hasDiv ? <span className="text-[#C65911] font-semibold">มีหาร</span> : ''}</TD>
+                            <TD>{parts.map((p, j) => <span key={j}>{j > 0 && <span className="text-natural-muted"> · </span>}{p}</span>)}</TD>
                           </tr>
                         );
                       });
@@ -1535,7 +1543,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                 <div className="text-xs">
                   <div className="font-semibold text-brand-navy mb-1">สรุป</div>
                   <div className="flex justify-between"><span>รายได้ค่าเที่ยว</span><b>{money(s.totalTripAmount)}</b></div>
-                  {inDocIncome > 0 && <div className="flex justify-between text-emerald-700"><span>+ รายได้เพิ่มในใบ (พิเศษ)</span><span>+{money(inDocIncome)}</span></div>}
+                  {inDocInc.map((l) => <div key={l.label} className="flex justify-between text-emerald-700"><span>+ {l.label} (ในใบ)</span><span>+{money(l.amount)}</span></div>)}
                   {perCycleInc.map((l) => <div key={l.label} className="flex justify-between text-emerald-700"><span>+ {l.label}</span><span>+{money(l.amount)}</span></div>)}
                   <div className="flex justify-between text-rose-700"><span>หัก 1%</span><span>-{money(s.deduction1Percent)}</span></div>
                   <div className="flex justify-between text-rose-700"><span>หักค่าน้ำมัน</span><span>-{money(s.fuelTotal)}</span></div>
