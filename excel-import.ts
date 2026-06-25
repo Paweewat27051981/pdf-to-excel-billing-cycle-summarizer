@@ -344,7 +344,7 @@ function parseAnyDate(v: any): string {
   if (typeof v === 'number') return excelDate(v);
   const s = String(v).trim();
   let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
-  if (m) return `${m[1]}-${pad2(+m[2])}-${pad2(+m[3])}`;
+  if (m) return `${normYear(+m[1])}-${pad2(+m[2])}-${pad2(+m[3])}`; // แปลง พ.ศ.->ค.ศ. ด้วย (2569-06-05 -> 2026-06-05)
   m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/.exec(s); // D/M/Y
   if (m) return `${normYear(+m[3])}-${pad2(+m[2])}-${pad2(+m[1])}`;
   const tm = /^(\d{1,2})\s*([฀-๿.]+)\s*(\d{2,4})$/.exec(s); // ไทย: 2 มิ.ย. 2569
