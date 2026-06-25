@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
-  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight,
+  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp,
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
@@ -31,7 +31,7 @@ const EMPTY: DatabaseState = {
 };
 
 type BranchAuth = { id: string; name: string; isHQ: boolean };
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports';
+type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -123,6 +123,7 @@ export default function App() {
     ['rules', 'เงื่อนไขตัวหาร', Filter],
     ['vehicles', 'รถ & คนขับ', Truck],
   ];
+  if (auth.isHQ) tabs.push(['driverkpi', 'วิเคราะห์รายได้ พขร 🔒', TrendingUp]);
   if (auth.isHQ) tabs.push(['branches', 'จัดการสาขา', Building2]);
 
   const activeTabLabel = tabs.find(([k]) => k === tab)?.[1] || '';
@@ -205,6 +206,7 @@ export default function App() {
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={auth.isHQ} />}
+            {tab === 'driverkpi' && <DriverKpiTab db={db} cycle={cycle} />}
             {tab === 'reports' && <ReportsTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
             {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -1200,6 +1202,140 @@ function HQDashboard({ db, cycle }: any) {
         </table>
       </div>
       <p className="text-[11px] text-natural-muted">💡 เลือกสาขาที่มุมบนเพื่อดู/แก้ไขรายละเอียดของแต่ละสาขา</p>
+    </div>
+  );
+}
+
+// ===========================================================================
+// Tab: วิเคราะห์รายได้ พขร (Driver KPI) — เฉพาะ HQ · มีรหัสเปิดแยก
+// ===========================================================================
+const KPI_PW = '2468';
+const KPI_DEFAULT = { boxPerDay: 350, daysPerMonth: 25, salary: 15000, carPayment: 7000, rent: 2500, family: 5000, pw: KPI_PW };
+function DriverKpiTab({ db, cycle }: any) {
+  const [unlocked, setUnlocked] = useState(false);
+  const [pwInput, setPwInput] = useState('');
+  const [pwErr, setPwErr] = useState(false);
+  const [cfg, setCfg] = useState<any>(() => { try { return { ...KPI_DEFAULT, ...JSON.parse(localStorage.getItem('kpiCfg') || '{}') }; } catch { return KPI_DEFAULT; } });
+  useEffect(() => { localStorage.setItem('kpiCfg', JSON.stringify(cfg)); }, [cfg]);
+
+  if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
+
+  if (!unlocked) {
+    const tryUnlock = () => { if (pwInput === (cfg.pw || KPI_PW)) { setUnlocked(true); setPwErr(false); } else setPwErr(true); };
+    return (
+      <div className="max-w-sm mx-auto mt-10 bg-white rounded-2xl border border-natural-border shadow-lg p-8 flex flex-col items-center">
+        <div className="w-14 h-14 bg-brand-red text-white rounded-2xl flex items-center justify-center mb-3"><Lock className="w-7 h-7" /></div>
+        <h2 className="font-bold text-brand-navy">วิเคราะห์รายได้ พขร</h2>
+        <p className="text-xs text-natural-muted mb-4">หน้านี้เป็นความลับ — ใส่รหัสเพื่อเปิด</p>
+        <input type="password" value={pwInput} autoFocus onChange={(e) => { setPwInput(e.target.value); setPwErr(false); }}
+          onKeyDown={(e) => e.key === 'Enter' && tryUnlock()} placeholder="รหัสผ่าน" aria-label="รหัสผ่าน"
+          className={`w-full border rounded-lg px-3 py-2 text-sm mb-2 outline-none ${pwErr ? 'border-rose-400 bg-rose-50' : 'border-natural-border focus:border-brand-navy'}`} />
+        {pwErr && <p className="text-xs text-rose-600 mb-2 self-start">รหัสไม่ถูกต้อง</p>}
+        <button type="button" onClick={tryUnlock} className="w-full bg-brand-red text-white rounded-lg py-2.5 text-sm font-bold">เปิดดู</button>
+      </div>
+    );
+  }
+
+  const bx = (n: number) => Math.round(n).toLocaleString('th-TH');
+  const boxesPerMonth = Math.max(1, cfg.boxPerDay * cfg.daysPerMonth);
+  const totalExpense = cfg.salary + cfg.carPayment + cfg.rent + cfg.family;
+  const targetPerBox = totalExpense / boxesPerMonth;
+  const targetPerCycle = totalExpense / 2;
+  const targetBoxCycle = boxesPerMonth / 2;
+
+  const branches = (db.branches as Branch[]).filter((b) => !b.isHQ && b.status === 'active');
+  const drivers: any[] = [];
+  for (const b of branches) {
+    const bTrips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id && t.branchId === b.id);
+    if (!bTrips.length) continue;
+    const sums = summarizeByVehicle(cycle.id,
+      db.tripDocuments.filter((t: TripDocument) => t.branchId === b.id),
+      db.fuelEntries.filter((f: FuelEntry) => f.branchId === b.id),
+      db.deductions.filter((d: DeductionEntry) => d.branchId === b.id),
+      db.vehicles.filter((v: Vehicle) => v.branchId === b.id));
+    for (const s of sums) {
+      const boxes = bTrips.filter((t: TripDocument) => normPlate(t.plateNo) === normPlate(s.plateNo)).reduce((a: number, t: TripDocument) => a + (t.totalQty || 0), 0);
+      if (boxes <= 0 && s.totalTripAmount <= 0) continue;
+      drivers.push({ plate: s.plateNo, driver: s.driverName, branch: b.name, boxes, net: s.netReceive, trip: s.totalTripAmount });
+    }
+  }
+  drivers.sort((a, b) => b.net - a.net);
+
+  const byBranch = new Map<string, { branch: string; boxes: number; trip: number; nDrivers: number; nHit: number }>();
+  for (const d of drivers) {
+    const g = byBranch.get(d.branch) || { branch: d.branch, boxes: 0, trip: 0, nDrivers: 0, nHit: 0 };
+    g.boxes += d.boxes; g.trip += d.trip; g.nDrivers++; if (d.boxes >= targetBoxCycle) g.nHit++;
+    byBranch.set(d.branch, g);
+  }
+  const branchRows = [...byBranch.values()].map((g) => ({ ...g, perBox: g.boxes > 0 ? g.trip / g.boxes : 0 }))
+    .filter((g) => g.boxes > 0).sort((a, b) => a.perBox - b.perBox);
+
+  const statusOf = (boxes: number) => {
+    const p = boxes / Math.max(1, targetBoxCycle);
+    return p >= 1 ? { t: '🟢 ถึงเป้า', c: 'text-emerald-700' } : p >= 0.8 ? { t: '🟡 ใกล้เป้า', c: 'text-amber-600' } : { t: '🔴 ต่ำกว่าเป้า', c: 'text-rose-600' };
+  };
+  const numIn = (v: number, set: (n: number) => void) => (<input type="number" aria-label="ตั้งค่า" value={v || ''} onChange={(e) => set(+e.target.value || 0)} className="w-24 border border-natural-border rounded px-2 py-1 text-sm text-right" />);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Section title="ตั้งค่าฐานรายได้ (ปรับเองได้ · บันทึกอัตโนมัติ)" icon={TrendingUp}>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+          <label className="flex items-center justify-between gap-2">กล่อง/วัน {numIn(cfg.boxPerDay, (n) => setCfg({ ...cfg, boxPerDay: n }))}</label>
+          <label className="flex items-center justify-between gap-2">วันทำงาน/เดือน {numIn(cfg.daysPerMonth, (n) => setCfg({ ...cfg, daysPerMonth: n }))}</label>
+          <div className="flex items-center justify-between gap-2 font-semibold text-brand-navy">กล่อง/เดือน <span>{bx(boxesPerMonth)}</span></div>
+          <label className="flex items-center justify-between gap-2">เงินเดือน {numIn(cfg.salary, (n) => setCfg({ ...cfg, salary: n }))}</label>
+          <label className="flex items-center justify-between gap-2">ค่าผ่อนรถ {numIn(cfg.carPayment, (n) => setCfg({ ...cfg, carPayment: n }))}</label>
+          <label className="flex items-center justify-between gap-2">ค่าเช่าบ้าน {numIn(cfg.rent, (n) => setCfg({ ...cfg, rent: n }))}</label>
+          <label className="flex items-center justify-between gap-2">ค่าดูแลครอบครัว {numIn(cfg.family, (n) => setCfg({ ...cfg, family: n }))}</label>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+          <Stat label="รายจ่ายเป้า/เดือน" value={`฿${money(totalExpense)}`} />
+          <Stat label="เป้า บาท/กล่อง" value={`฿${money(targetPerBox)}`} highlight />
+          <Stat label="เป้ารายรับ/รอบ" value={`฿${money(targetPerCycle)}`} />
+          <Stat label="เป้ากล่อง/รอบ" value={bx(targetBoxCycle)} />
+        </div>
+      </Section>
+
+      <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
+        <div className="px-4 pt-3 font-bold text-brand-navy text-sm">👤 รายได้ต่อคนรถ · {cycle.name}</div>
+        <table className="w-full text-xs min-w-[820px] mt-2">
+          <thead className="bg-brand-navy text-white"><tr>
+            {['ทะเบียน', 'คนขับ', 'สาขา', 'กล่องวิ่ง', '%เป้า', 'รับสุทธิ', 'บาท/กล่อง', 'สถานะ'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 2 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {drivers.map((d, i) => {
+              const st = statusOf(d.boxes); const pct = d.boxes / Math.max(1, targetBoxCycle) * 100; const perBox = d.boxes > 0 ? d.net / d.boxes : 0;
+              return (<tr key={d.plate + i} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
+                <td className="p-2 font-semibold text-brand-navy">{d.plate}</td><td className="p-2">{d.driver}</td><td className="p-2">{d.branch}</td>
+                <td className="p-2 text-right">{bx(d.boxes)}</td><td className={`p-2 text-right font-semibold ${st.c}`}>{pct.toFixed(0)}%</td>
+                <td className="p-2 text-right font-bold">{money(d.net)}</td><td className="p-2 text-right">{money(perBox)}</td>
+                <td className={`p-2 text-right font-semibold ${st.c}`}>{st.t}</td>
+              </tr>);
+            })}
+            {drivers.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูลในรอบนี้</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
+        <div className="px-4 pt-3 font-bold text-brand-navy text-sm">🏆 KPI สาขา — ค่ากระจาย บาท/กล่อง (ต่ำสุด = จัดงานเก่งสุด)</div>
+        <table className="w-full text-xs min-w-[720px] mt-2">
+          <thead className="bg-brand-navy text-white"><tr>
+            {['อันดับ', 'สาขา', 'กล่องรวม', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', 'คนรถถึงเป้า'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {branchRows.map((g, i) => (<tr key={g.branch} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
+              <td className="p-2 font-bold">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
+              <td className="p-2 font-semibold text-brand-navy">{g.branch}</td>
+              <td className="p-2 text-right">{bx(g.boxes)}</td><td className="p-2 text-right">{money(g.trip)}</td>
+              <td className={`p-2 text-right font-bold ${i === 0 ? 'text-emerald-700' : ''}`}>฿{money(g.perBox)}</td>
+              <td className="p-2 text-right">{g.nHit}/{g.nDrivers}</td>
+            </tr>))}
+            {branchRows.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูล</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-natural-muted">🔒 ความลับ (เฉพาะ HQ + รหัส) · 💡 "ค่ากระจาย บาท/กล่อง" ยิ่งต่ำ = อัดงานหนาแน่น คนรถได้ปริมาณมาก รายได้สูงขึ้น (ผกผัน) · รหัสเริ่มต้น 2468 (เปลี่ยนได้ในโค้ด KPI_PW)</p>
     </div>
   );
 }
