@@ -692,9 +692,9 @@ export async function exportBranchSummary(
 // ===========================================================================
 export async function exportDriverKpi(
   cycleName: string,
-  t: { totalExpense: number; boxesPerMonth: number; targetPerBox: number; targetPerCycle: number; targetBoxCycle: number },
+  t: { totalExpense: number; boxesPerMonth: number; targetPerBox: number; targetPerCycle: number; targetBoxCycle: number; items?: { label: string; amount: number }[] },
   drivers: { plate: string; driver: string; branch: string; boxes: number; net: number; trip: number }[],
-  branchRows: { branch: string; boxes: number; trip: number; perBox: number; nHit: number; nDrivers: number }[]
+  branchRows: { branch: string; boxes: number; trip: number; perBox: number; nHit: number; nDrivers: number; nTrips?: number; boxPerTrip?: number; boxPerDriver?: number; pctHit?: number }[]
 ) {
   const wb = new ExcelJS.Workbook();
   const INT = '#,##0';
@@ -710,7 +710,11 @@ export async function exportDriverKpi(
       bodyCell(r.getCell(2), { align: 'right' });
       r.getCell(2).numFmt = money ? NUM : INT;
     };
-    add('รายจ่ายเป้า/เดือน', t.totalExpense, true);
+    for (const it of t.items || []) {
+      const r = ws.addRow([`• ${it.label}`, round2(+it.amount || 0)]);
+      bodyCell(r.getCell(1), {}); bodyCell(r.getCell(2), { align: 'right' }); r.getCell(2).numFmt = NUM;
+    }
+    add('รายจ่ายเป้า/เดือน (รวม)', t.totalExpense, true);
     add('กล่อง/เดือน (capacity)', t.boxesPerMonth);
     add('เป้า บาท/กล่อง', t.targetPerBox, true);
     add('เป้ารายรับ/รอบ', t.targetPerCycle, true);
@@ -743,17 +747,18 @@ export async function exportDriverKpi(
   // ---- KPI สาขา ----
   {
     const ws = wb.addWorksheet('KPI สาขา');
-    styleTitle(ws, 'KPI สาขา — ค่ากระจาย บาท/กล่อง (ต่ำสุด = ดีสุด)', 6, `รอบ ${cycleName}`);
+    styleTitle(ws, 'KPI สาขา — การจัดงานคนรถ (ค่ากระจาย บาท/กล่อง ต่ำสุด = ดีสุด)', 9, `รอบ ${cycleName}`);
     ws.addRow([]);
-    styleHeaderRow(ws.addRow(['อันดับ', 'สาขา', 'กล่องรวม', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', 'คนรถถึงเป้า']));
+    styleHeaderRow(ws.addRow(['อันดับ', 'สาขา', 'กล่องรวม', 'เที่ยว', 'กล่อง/เที่ยว', 'กล่อง/คนรถ', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', '%ถึงเป้า']));
     let z = false;
     branchRows.forEach((g, i) => {
-      const r = ws.addRow([i + 1, g.branch, Math.round(g.boxes), round2(g.trip), round2(g.perBox), `${g.nHit}/${g.nDrivers}`]);
-      r.eachCell((cell, c) => bodyCell(cell, { align: c <= 1 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: c === 5, color: c === 5 ? (i === 0 ? 'FF0E9F6E' : C.title) : undefined }));
-      r.getCell(3).numFmt = INT; r.getCell(4).numFmt = NUM; r.getCell(5).numFmt = NUM;
+      const r = ws.addRow([i + 1, g.branch, Math.round(g.boxes), Math.round(g.nTrips || 0), Math.round(g.boxPerTrip || 0), Math.round(g.boxPerDriver || 0), round2(g.trip), round2(g.perBox), (g.pctHit || 0) / 100]);
+      r.eachCell((cell, c) => bodyCell(cell, { align: c <= 1 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: c === 8, color: c === 8 ? (i === 0 ? 'FF0E9F6E' : C.title) : undefined }));
+      [3, 4, 5, 6].forEach((c) => (r.getCell(c).numFmt = INT));
+      r.getCell(7).numFmt = NUM; r.getCell(8).numFmt = NUM; r.getCell(9).numFmt = '0%';
       z = !z;
     });
-    [10, 20, 14, 16, 20, 14].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    [10, 20, 12, 10, 14, 14, 16, 20, 12].forEach((w, i) => (ws.getColumn(i + 1).width = w));
   }
 
   const buffer = await wb.xlsx.writeBuffer();

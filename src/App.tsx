@@ -1210,12 +1210,28 @@ function HQDashboard({ db, cycle }: any) {
 // Tab: วิเคราะห์รายได้ พขร (Driver KPI) — เฉพาะ HQ · มีรหัสเปิดแยก
 // ===========================================================================
 const KPI_PW = '2468';
-const KPI_DEFAULT = { boxPerDay: 350, daysPerMonth: 25, salary: 15000, carPayment: 7000, rent: 2500, family: 5000, pw: KPI_PW };
+const KPI_DEFAULT_ITEMS = [
+  { label: 'เงินเดือน', amount: 15000 }, { label: 'ค่าผ่อนรถ', amount: 7000 },
+  { label: 'ค่าเช่าบ้าน', amount: 2500 }, { label: 'ค่าดูแลครอบครัว', amount: 5000 },
+];
+const KPI_DEFAULT = { boxPerDay: 350, daysPerMonth: 25, items: KPI_DEFAULT_ITEMS, pw: KPI_PW };
 function DriverKpiTab({ db, cycle }: any) {
   const [unlocked, setUnlocked] = useState(false);
   const [pwInput, setPwInput] = useState('');
   const [pwErr, setPwErr] = useState(false);
-  const [cfg, setCfg] = useState<any>(() => { try { return { ...KPI_DEFAULT, ...JSON.parse(localStorage.getItem('kpiCfg') || '{}') }; } catch { return KPI_DEFAULT; } });
+  const [cfg, setCfg] = useState<any>(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem('kpiCfg') || '{}');
+      const base: any = { ...KPI_DEFAULT, ...s };
+      if (!Array.isArray(base.items)) {
+        // migrate รูปแบบเก่า (salary/carPayment/rent/family) -> items[]
+        base.items = (s.salary || s.carPayment || s.rent || s.family)
+          ? [{ label: 'เงินเดือน', amount: s.salary || 0 }, { label: 'ค่าผ่อนรถ', amount: s.carPayment || 0 }, { label: 'ค่าเช่าบ้าน', amount: s.rent || 0 }, { label: 'ค่าดูแลครอบครัว', amount: s.family || 0 }]
+          : KPI_DEFAULT_ITEMS.map((x) => ({ ...x }));
+      }
+      return base;
+    } catch { return { ...KPI_DEFAULT, items: KPI_DEFAULT_ITEMS.map((x) => ({ ...x })) }; }
+  });
   useEffect(() => { localStorage.setItem('kpiCfg', JSON.stringify(cfg)); }, [cfg]);
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
@@ -1237,17 +1253,23 @@ function DriverKpiTab({ db, cycle }: any) {
   }
 
   const bx = (n: number) => Math.round(n).toLocaleString('th-TH');
+  const items: { label: string; amount: number }[] = cfg.items || [];
+  const setItem = (i: number, patch: any) => setCfg({ ...cfg, items: items.map((it, j) => (j === i ? { ...it, ...patch } : it)) });
+  const addItem = () => setCfg({ ...cfg, items: [...items, { label: 'รายการใหม่', amount: 0 }] });
+  const delItem = (i: number) => setCfg({ ...cfg, items: items.filter((_, j) => j !== i) });
   const boxesPerMonth = Math.max(1, cfg.boxPerDay * cfg.daysPerMonth);
-  const totalExpense = cfg.salary + cfg.carPayment + cfg.rent + cfg.family;
+  const totalExpense = items.reduce((a, it) => a + (+it.amount || 0), 0);
   const targetPerBox = totalExpense / boxesPerMonth;
   const targetPerCycle = totalExpense / 2;
   const targetBoxCycle = boxesPerMonth / 2;
 
   const branches = (db.branches as Branch[]).filter((b) => !b.isHQ && b.status === 'active');
   const drivers: any[] = [];
+  const tripCountBy = new Map<string, number>();
   for (const b of branches) {
     const bTrips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id && t.branchId === b.id);
     if (!bTrips.length) continue;
+    tripCountBy.set(b.name, bTrips.length);
     const sums = summarizeByVehicle(cycle.id,
       db.tripDocuments.filter((t: TripDocument) => t.branchId === b.id),
       db.fuelEntries.filter((f: FuelEntry) => f.branchId === b.id),
@@ -1267,8 +1289,10 @@ function DriverKpiTab({ db, cycle }: any) {
     g.boxes += d.boxes; g.trip += d.trip; g.nDrivers++; if (d.boxes >= targetBoxCycle) g.nHit++;
     byBranch.set(d.branch, g);
   }
-  const branchRows = [...byBranch.values()].map((g) => ({ ...g, perBox: g.boxes > 0 ? g.trip / g.boxes : 0 }))
-    .filter((g) => g.boxes > 0).sort((a, b) => a.perBox - b.perBox);
+  const branchRows = [...byBranch.values()].map((g) => {
+    const nTrips = tripCountBy.get(g.branch) || 0;
+    return { ...g, nTrips, perBox: g.boxes > 0 ? g.trip / g.boxes : 0, boxPerTrip: nTrips > 0 ? g.boxes / nTrips : 0, boxPerDriver: g.nDrivers > 0 ? g.boxes / g.nDrivers : 0, pctHit: g.nDrivers > 0 ? g.nHit / g.nDrivers * 100 : 0 };
+  }).filter((g) => g.boxes > 0).sort((a, b) => a.perBox - b.perBox);
 
   const statusOf = (boxes: number) => {
     const p = boxes / Math.max(1, targetBoxCycle);
@@ -1276,7 +1300,7 @@ function DriverKpiTab({ db, cycle }: any) {
   };
   const numIn = (v: number, set: (n: number) => void) => (<input type="number" aria-label="ตั้งค่า" value={v || ''} onChange={(e) => set(+e.target.value || 0)} className="w-24 border border-natural-border rounded px-2 py-1 text-sm text-right" />);
 
-  const doExport = () => exportDriverKpi(cycle.name, { totalExpense, boxesPerMonth, targetPerBox, targetPerCycle, targetBoxCycle }, drivers, branchRows);
+  const doExport = () => exportDriverKpi(cycle.name, { totalExpense, boxesPerMonth, targetPerBox, targetPerCycle, targetBoxCycle, items }, drivers, branchRows);
 
   return (
     <div className="flex flex-col gap-4">
@@ -1287,14 +1311,31 @@ function DriverKpiTab({ db, cycle }: any) {
         </button>
       </div>
       <Section title="ตั้งค่าฐานรายได้ (ปรับเองได้ · บันทึกอัตโนมัติ)" icon={TrendingUp}>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 text-xs mb-4">
           <label className="flex items-center justify-between gap-2">กล่อง/วัน {numIn(cfg.boxPerDay, (n) => setCfg({ ...cfg, boxPerDay: n }))}</label>
           <label className="flex items-center justify-between gap-2">วันทำงาน/เดือน {numIn(cfg.daysPerMonth, (n) => setCfg({ ...cfg, daysPerMonth: n }))}</label>
           <div className="flex items-center justify-between gap-2 font-semibold text-brand-navy">กล่อง/เดือน <span>{bx(boxesPerMonth)}</span></div>
-          <label className="flex items-center justify-between gap-2">เงินเดือน {numIn(cfg.salary, (n) => setCfg({ ...cfg, salary: n }))}</label>
-          <label className="flex items-center justify-between gap-2">ค่าผ่อนรถ {numIn(cfg.carPayment, (n) => setCfg({ ...cfg, carPayment: n }))}</label>
-          <label className="flex items-center justify-between gap-2">ค่าเช่าบ้าน {numIn(cfg.rent, (n) => setCfg({ ...cfg, rent: n }))}</label>
-          <label className="flex items-center justify-between gap-2">ค่าดูแลครอบครัว {numIn(cfg.family, (n) => setCfg({ ...cfg, family: n }))}</label>
+        </div>
+        <div className="border border-natural-border rounded-xl p-3 bg-natural-secondary/30">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-brand-navy">รายการค่าใช้จ่าย/เดือน (เป้ารายได้คนรถ)</span>
+            <button type="button" onClick={addItem} className="flex items-center gap-1 bg-brand-navy text-white rounded-lg px-2.5 py-1 text-xs font-semibold"><Plus className="w-3 h-3" /> เพิ่มรายการ</button>
+          </div>
+          <div className="flex flex-col gap-2">
+            {items.map((it, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <input type="text" aria-label="ชื่อรายการ" value={it.label} onChange={(e) => setItem(i, { label: e.target.value })}
+                  className="flex-1 border border-natural-border rounded px-2 py-1 text-sm" placeholder="ชื่อรายการ เช่น ค่าโทรศัพท์" />
+                <input type="number" aria-label="จำนวนเงิน" value={it.amount || ''} onChange={(e) => setItem(i, { amount: +e.target.value || 0 })}
+                  className="w-28 border border-natural-border rounded px-2 py-1 text-sm text-right" placeholder="บาท" />
+                <button type="button" onClick={() => delItem(i)} className="text-rose-500 hover:text-rose-700 p-1" aria-label="ลบรายการ"><Trash2 className="w-4 h-4" /></button>
+              </div>
+            ))}
+            {items.length === 0 && <p className="text-xs text-natural-muted py-2 text-center">ยังไม่มีรายการ — กด "เพิ่มรายการ"</p>}
+          </div>
+          <div className="flex items-center justify-end gap-2 mt-2 pt-2 border-t border-natural-border text-sm font-bold text-brand-navy">
+            รวมรายจ่าย/เดือน <span className="text-brand-red">฿{money(totalExpense)}</span>
+          </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
           <Stat label="รายจ่ายเป้า/เดือน" value={`฿${money(totalExpense)}`} />
@@ -1326,20 +1367,22 @@ function DriverKpiTab({ db, cycle }: any) {
       </div>
 
       <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
-        <div className="px-4 pt-3 font-bold text-brand-navy text-sm">🏆 KPI สาขา — ค่ากระจาย บาท/กล่อง (ต่ำสุด = จัดงานเก่งสุด)</div>
-        <table className="w-full text-xs min-w-[720px] mt-2">
+        <div className="px-4 pt-3 font-bold text-brand-navy text-sm">🏆 KPI สาขา — การจัดงานคนรถ (ค่ากระจาย บาท/กล่อง ต่ำสุด = อัดงานเก่งสุด)</div>
+        <table className="w-full text-xs min-w-[920px] mt-2">
           <thead className="bg-brand-navy text-white"><tr>
-            {['อันดับ', 'สาขา', 'กล่องรวม', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', 'คนรถถึงเป้า'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+            {['อันดับ', 'สาขา', 'กล่องรวม', 'เที่ยว', 'กล่อง/เที่ยว', 'กล่อง/คนรถ', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', '%ถึงเป้า'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {branchRows.map((g, i) => (<tr key={g.branch} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
               <td className="p-2 font-bold">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
               <td className="p-2 font-semibold text-brand-navy">{g.branch}</td>
-              <td className="p-2 text-right">{bx(g.boxes)}</td><td className="p-2 text-right">{money(g.trip)}</td>
+              <td className="p-2 text-right">{bx(g.boxes)}</td><td className="p-2 text-right">{bx(g.nTrips)}</td>
+              <td className="p-2 text-right font-semibold">{bx(g.boxPerTrip)}</td><td className="p-2 text-right font-semibold">{bx(g.boxPerDriver)}</td>
+              <td className="p-2 text-right">{money(g.trip)}</td>
               <td className={`p-2 text-right font-bold ${i === 0 ? 'text-emerald-700' : ''}`}>฿{money(g.perBox)}</td>
-              <td className="p-2 text-right">{g.nHit}/{g.nDrivers}</td>
+              <td className={`p-2 text-right font-semibold ${g.pctHit >= 100 ? 'text-emerald-700' : g.pctHit >= 50 ? 'text-amber-600' : 'text-rose-600'}`}>{g.pctHit.toFixed(0)}% <span className="text-natural-muted font-normal">({g.nHit}/{g.nDrivers})</span></td>
             </tr>))}
-            {branchRows.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูล</td></tr>}
+            {branchRows.length === 0 && <tr><td colSpan={9} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูล (เลือก "ทุกสาขา" ที่มุมบนเพื่อเทียบทุกสาขา)</td></tr>}
           </tbody>
         </table>
       </div>
