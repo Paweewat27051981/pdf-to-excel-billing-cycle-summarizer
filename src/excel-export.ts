@@ -453,14 +453,18 @@ export async function exportPerVehicleReport(
       const docInc = vIncome.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || ''));
       const docDed = vDeduct.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || ''));
       const extra = docInc.reduce((a, d) => a + d.amount, 0);
+      const destFixed = (t.receipts || []).filter((r) => r.destCorrected);
+      const destNoted = (t.receipts || []).filter((r) => r.destNote && !r.destCorrected);
       const subs = tripSubRows(t);
       subs.forEach((sub) => {
         const rowExtra = sub.first ? extra : 0;
         const rowTotal = round2(sub.amount + rowExtra);
-        // หมายเหตุ: มีหาร + รายการ +/- ที่ผูกเลขใบกระจายนี้ (แสดงในแถวแรกของใบ)
+        // หมายเหตุ: มีหาร + แก้ปลายทาง + รายการ +/- ที่ผูกเลขใบกระจายนี้ (แสดงในแถวแรกของใบ)
         const parts: { text: string; color: string }[] = [];
         if (sub.hasDiv) parts.push({ text: 'มีหาร', color: C.dividerText });
         if (sub.first) {
+          for (const r of destFixed) parts.push({ text: `📍แก้ปลายทางจาก ${r.origDistrict || '-'} ${r.origProvince || ''}`.trim(), color: 'FF7C3AED' });
+          for (const r of destNoted) parts.push({ text: `⚠️โน้ต ${r.destNote}`, color: 'FFB7791F' });
           for (const d of docInc) parts.push({ text: `➕${d.label} ฿${fmtB(d.amount)}`, color: 'FF0E9F6E' });
           for (const d of docDed) parts.push({ text: `➖${d.label} ฿${fmtB(d.amount)}`, color: 'FFE10026' });
         }

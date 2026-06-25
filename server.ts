@@ -14,6 +14,7 @@ import {
   ReceiverGroupAlias,
   ProductConversionRule,
   ManualBoxSender,
+  DestinationOverride,
   MoneyCategory,
   TripDocument,
   FuelEntry,
@@ -90,6 +91,7 @@ function recomputeTrip(
       aliases: db.receiverGroupAliases.filter((a) => a.branchId === branchId),
       rules: db.conversionRules.filter((r) => r.branchId === branchId),
       manualBoxSenders: db.manualBoxSenders.filter((m) => m.branchId === branchId),
+      destOverrides: db.destinationOverrides.filter((d) => d.branchId === branchId),
       minBoxes,
       fileName,
     },
@@ -241,6 +243,7 @@ async function startServer() {
         receiverGroupAliases: inBranch(db.receiverGroupAliases),
         conversionRules: inBranch(db.conversionRules),
         manualBoxSenders: inBranch(db.manualBoxSenders),
+        destinationOverrides: inBranch(db.destinationOverrides),
         moneyCategories: inBranch(db.moneyCategories),
       };
       res.json(safe);
@@ -395,6 +398,7 @@ async function startServer() {
   masterRoutes<ReceiverGroup>('receiver-groups', 'receiverGroups', 'grp');
   masterRoutes<ReceiverGroupAlias>('receiver-aliases', 'receiverGroupAliases', 'al');
   masterRoutes<ProductConversionRule>('conversion-rules', 'conversionRules', 'rule');
+  masterRoutes<DestinationOverride>('destination-overrides', 'destinationOverrides', 'do');
   masterRoutes<FuelEntry>('fuel', 'fuelEntries', 'fuel');
   masterRoutes<DeductionEntry>('deductions', 'deductions', 'ded');
 

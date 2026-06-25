@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
-  ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
+  ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
@@ -27,11 +27,11 @@ const EMPTY: DatabaseState = {
   settings: { geminiModel: 'gemini-3.5-flash' },
   branches: [],
   cycles: [], vehicles: [], rateMasters: [], rateOverrides: [], rateMasterHistory: [], receiverGroups: [],
-  receiverGroupAliases: [], conversionRules: [], manualBoxSenders: [], moneyCategories: [], tripDocuments: [], fuelEntries: [], deductions: [],
+  receiverGroupAliases: [], conversionRules: [], manualBoxSenders: [], destinationOverrides: [], moneyCategories: [], tripDocuments: [], fuelEntries: [], deductions: [],
 };
 
 type BranchAuth = { id: string; name: string; isHQ: boolean };
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea';
+type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -122,6 +122,7 @@ export default function App() {
     ['costarea', 'พื้นที่ต้นทุนสูง', MapPin],
     ['rates', 'Master ราคาขนส่ง', Tag],
     ['rules', 'เงื่อนไขตัวหาร', Filter],
+    ['destfix', 'แก้ปลายทาง 📍', MapPin],
     ['vehicles', 'รถ & คนขับ', Truck],
   ];
   if (auth.isHQ) tabs.push(['driverkpi', 'วิเคราะห์รายได้ พขร 🔒', TrendingUp]);
@@ -212,6 +213,7 @@ export default function App() {
             {tab === 'reports' && <ReportsTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
             {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'destfix' && <DestFixTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'branches' && <BranchesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
           </>
@@ -802,7 +804,17 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
       {ext.receipts.map((r, ri) => {
         const pr = prev.receipts[ri];
         return (
-          <div key={ri} className={`rounded-xl border p-3 ${pr?.requiresManualBox ? 'bg-sky-50 border-l-4 border-l-sky-500 border-natural-border' : pr?.hasAdjustment ? 'bg-[#FFF2CC] border-l-4 border-l-[#C65911] border-natural-border' : 'border-natural-border'}`}>
+          <div key={ri} className={`rounded-xl border p-3 ${pr?.destCorrected ? 'bg-violet-50 border-l-4 border-l-violet-500 border-natural-border' : pr?.requiresManualBox ? 'bg-sky-50 border-l-4 border-l-sky-500 border-natural-border' : pr?.hasAdjustment ? 'bg-[#FFF2CC] border-l-4 border-l-[#C65911] border-natural-border' : 'border-natural-border'}`}>
+            {pr?.destCorrected && (
+              <div className="mb-2 text-[11px] bg-violet-100 border border-violet-300 text-violet-800 rounded-lg px-2 py-1 font-semibold">
+                📍 แก้ปลายทาง: {pr.origDistrict} จ.{pr.origProvince} → <b>อ.{pr.districtRaw} จ.{pr.provinceRaw}</b> (คิดราคาตามปลายทางจริง · คีย์ "{pr.destFixKeyword}")
+              </div>
+            )}
+            {pr?.destNote && !pr?.destCorrected && (
+              <div className="mb-2 text-[11px] bg-amber-50 border border-amber-300 text-amber-800 rounded-lg px-2 py-1 font-semibold">
+                ⚠️ พบโน้ต <b>{pr.destNote}</b> — อาจส่งคนละปลายทาง ตรวจสอบ/ตั้งกฎที่เมนู "แก้ปลายทาง 📍" หรือแก้จังหวัด/อำเภอด้านล่างเอง
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs mb-2">
               <Field label="เลขใบรับสินค้า" value={r.receiptNo} onChange={(v) => updReceipt(ri, { receiptNo: v })} />
               <Field label="ผู้รับสินค้า" value={r.receiverName} onChange={(v) => updReceipt(ri, { receiverName: v })} />
@@ -1572,6 +1584,40 @@ function CostAreaTab({ db, cycle, branchId, showToast }: any) {
         );
       })}
       <p className="text-[11px] text-natural-muted">💡 "ต้นทุน" = ค่าเที่ยวที่จ่ายส่งพื้นที่นั้น (ราคาชิ้น=ตามใบรับ · ราคาเหมา=เฉลี่ยตามสัดส่วนกล่อง) · กดแถวจังหวัดเพื่อดูรายอำเภอ · 🔴 แพงสุด/กล่อง 🟢 ถูกสุด/กล่อง</p>
+    </div>
+  );
+}
+
+// ===========================================================================
+// Tab: แก้ปลายทาง — คีย์เวิร์ด -> จังหวัด/อำเภอจริง (ใบกระจายระบุผิด)
+// ===========================================================================
+function DestFixTab({ db, api, branchId, reload, showToast }: any) {
+  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
+  const [form, setForm] = useState({ keyword: '', province: '', district: '', note: '' });
+  const list = (db.destinationOverrides || []).filter((d: DestinationOverride) => d.branchId === branchId);
+  const inputCls = 'border border-natural-border rounded-lg px-2 py-1.5 text-sm';
+  const add = async () => {
+    if (!form.keyword.trim() || !form.province.trim()) return showToast('warning', 'กรอกคีย์เวิร์ดและจังหวัดจริง');
+    await api('/api/destination-overrides', 'POST', { branchId, keyword: form.keyword.trim(), province: form.province.trim(), district: form.district.trim(), note: form.note.trim(), status: 'active' });
+    showToast('success', 'เพิ่มแล้ว'); setForm({ keyword: '', province: '', district: '', note: '' }); reload();
+  };
+  return (
+    <div className="flex flex-col gap-4">
+      <Section title="แก้ปลายทาง (ใบกระจายระบุจังหวัด/อำเภอผิด)" icon={MapPin}>
+        <p className="text-xs text-natural-dark-muted bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 leading-relaxed">
+          กรณีใบกระจายระบุปลายทางผิด เช่น เขียน <b>อุตรดิตถ์</b> แต่จริงๆ ส่ง <b>พิษณุโลก</b> — ตั้งคีย์เวิร์ด (เช่น <b>เจ๊ไพร</b>) ที่อยู่ใน<b>ชื่อผู้รับ</b> หรือ <b>บรรทัดโน้ต *...*</b> ระบบจะคิดราคาตาม<b>ปลายทางจริง</b>ให้อัตโนมัติ + ติดป้าย 📍 ทั้งในระบบและ Excel
+        </p>
+        <div className="flex flex-wrap gap-2 mb-3">
+          <input value={form.keyword} onChange={(e) => setForm({ ...form, keyword: e.target.value })} placeholder="คีย์เวิร์ด เช่น เจ๊ไพร" aria-label="คีย์เวิร์ด" className={inputCls + ' w-44'} />
+          <input value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value })} placeholder="จังหวัดจริง เช่น พิษณุโลก" aria-label="จังหวัดจริง" className={inputCls + ' w-40'} />
+          <input value={form.district} onChange={(e) => setForm({ ...form, district: e.target.value })} placeholder="อำเภอจริง เช่น เมือง" aria-label="อำเภอจริง" className={inputCls + ' w-36'} />
+          <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="หมายเหตุ (ถ้ามี)" aria-label="หมายเหตุ" className={inputCls + ' w-40'} />
+          <button type="button" onClick={add} className="bg-brand-red hover:bg-brand-red-hover text-white rounded-lg px-4 py-1.5 text-sm font-bold">เพิ่ม</button>
+        </div>
+        <SimpleTable cols={['คีย์เวิร์ด', 'จังหวัดจริง', 'อำเภอจริง', 'หมายเหตุ']}
+          rows={list.map((d: DestinationOverride) => [d.keyword, d.province, d.district, d.note || ''])}
+          onDelete={async (i: number) => { await api(`/api/destination-overrides/${list[i].id}`, 'DELETE'); reload(); }} />
+      </Section>
     </div>
   );
 }

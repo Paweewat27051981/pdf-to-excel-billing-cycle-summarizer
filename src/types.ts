@@ -154,6 +154,20 @@ export interface ManualBoxSender {
 }
 
 // ---------------------------------------------------------------------------
+// 5.2) Master: แก้ปลายทาง — ใบกระจายระบุจังหวัด/อำเภอผิด ให้คิดราคาตามปลายทางจริง
+//      เช่น เจอคำว่า "เจ๊ไพร" (ในชื่อผู้รับ/บรรทัดโน้ต) -> จริงๆ ส่ง พิษณุโลก/เมือง
+// ---------------------------------------------------------------------------
+export interface DestinationOverride {
+  id: string;
+  branchId: string;
+  keyword: string;        // คำที่ต้องเจอ (ในชื่อผู้รับ หรือ บรรทัดโน้ต *...*) เช่น "เจ๊ไพร"
+  province: string;       // จังหวัดจริง เช่น "พิษณุโลก"
+  district: string;       // อำเภอจริง เช่น "เมือง"
+  note?: string;
+  status: RecordStatus;
+}
+
+// ---------------------------------------------------------------------------
 // 6) ผลการอ่าน PDF ใบกระจาย (จาก AI ก่อน Review)
 // ---------------------------------------------------------------------------
 export interface ExtractedReceiptItem {
@@ -222,6 +236,11 @@ export interface TripReceipt {
   receiptAmount: number;           // ค่าเที่ยวของจุดนี้ (ตามแบบที่เลือกทั้งใบ)
   requiresManualBox: boolean;      // ผู้ส่งนี้ส่งเป็นชิ้น ต้องกรอกจำนวนกล่องเอง
   manualBoxQty: number | null;     // จำนวนกล่องที่กรอก (ใช้เป็น billingQty)
+  destCorrected?: boolean;         // ปลายทางถูกแก้ (ใบกระจายระบุผิด) — คิดราคาตามปลายทางจริง
+  origProvince?: string;           // จังหวัดเดิมในใบกระจาย (ก่อนแก้)
+  origDistrict?: string;           // อำเภอเดิมในใบกระจาย (ก่อนแก้)
+  destFixKeyword?: string;         // คีย์เวิร์ดที่ทำให้แก้ (เช่น "เจ๊ไพร")
+  destNote?: string;               // บรรทัดโน้ต "*ส่ง...*" ที่เจอ (เตือนให้ตรวจปลายทาง แม้ยังไม่มีกฎ)
 }
 
 // ใบกระจาย (1 คัน 1 เที่ยว)
@@ -343,6 +362,7 @@ export interface DatabaseState {
   receiverGroupAliases: ReceiverGroupAlias[];
   conversionRules: ProductConversionRule[];
   manualBoxSenders: ManualBoxSender[];
+  destinationOverrides: DestinationOverride[];
   moneyCategories: MoneyCategory[];
   tripDocuments: TripDocument[];
   fuelEntries: FuelEntry[];

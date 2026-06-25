@@ -132,6 +132,7 @@ function seedState(): DatabaseState {
     manualBoxSenders: [
       { id: 'mbs-cpconsumer', branchId: DEFAULT_BRANCH_ID, senderKeyword: 'คอนซูเมอร์', note: 'ซ.พี.คอนซูเมอร์ โพรดักส์ — ส่งเป็นชิ้น ต้องกรอกจำนวนกล่องเอง', status: 'active' },
     ],
+    destinationOverrides: [],
     moneyCategories: defaultMoneyCategories(),
     tripDocuments: [],
     fuelEntries: [],
@@ -203,6 +204,7 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     receiverGroupAliases: withBranch(state.receiverGroupAliases, seed.receiverGroupAliases),
     conversionRules: withBranch(state.conversionRules, seed.conversionRules),
     manualBoxSenders: withBranch(state.manualBoxSenders, seed.manualBoxSenders),
+    destinationOverrides: withBranch(state.destinationOverrides, []),
     moneyCategories: withBranch(state.moneyCategories, seed.moneyCategories),
     tripDocuments: normalizeTrips(withBranch(state.tripDocuments, [])),
     fuelEntries: withBranch(state.fuelEntries, []),

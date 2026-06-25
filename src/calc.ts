@@ -9,6 +9,7 @@ import {
   ReceiverGroupAlias,
   ProductConversionRule,
   ManualBoxSender,
+  DestinationOverride,
   RoundingMethod,
   PriceType,
   Vehicle,
@@ -309,6 +310,7 @@ export function computeReceipt(
     rates: RateMaster[];
     rateOverrides?: Map<string, { price: number; pieceThreshold: number | null }>;
     manualBoxSenders: ManualBoxSender[];
+    destOverrides?: DestinationOverride[];
     refDate: string;
     fallbackProvince: string;
     fallbackDistrict: string;
@@ -319,8 +321,20 @@ export function computeReceipt(
   const groupId = group ? group.id : null;
 
   // ปลายทางของจุดส่งนี้ (ถ้าใบรับไม่ระบุ ใช้ของใบกระจาย)
-  const provinceRaw = (extracted.provinceRaw || '').trim() || ctx.fallbackProvince;
-  const districtRaw = (extracted.districtRaw || '').trim() || ctx.fallbackDistrict;
+  let provinceRaw = (extracted.provinceRaw || '').trim() || ctx.fallbackProvince;
+  let districtRaw = (extracted.districtRaw || '').trim() || ctx.fallbackDistrict;
+  // แก้ปลายทาง: ใบกระจายระบุผิด — จับคีย์เวิร์ดจากชื่อผู้รับ + ทุกบรรทัดสินค้า/โน้ต (*...*)
+  let destCorrected = false, origProvince: string | undefined, origDistrict: string | undefined, destFixKeyword: string | undefined;
+  const destHay = [extracted.receiverName, ...(extracted.items || []).map((it) => it.productName)].join('  ');
+  // โน้ตเปลี่ยนปลายทาง "*ส่ง...*" (เตือนให้ตรวจ แม้ยังไม่มีกฎ)
+  const destNote = (extracted.items || []).map((it) => (it.productName || '').trim()).find((p) => /\*\s*ส่ง/.test(p));
+  const ov = (ctx.destOverrides || []).find((o) => o.status === 'active' && o.keyword && textContains(destHay, o.keyword));
+  if (ov && (ov.province || ov.district)) {
+    origProvince = provinceRaw; origDistrict = districtRaw;
+    if (ov.province) provinceRaw = ov.province;
+    if (ov.district) districtRaw = ov.district;
+    destCorrected = true; destFixKeyword = ov.keyword;
+  }
   const rateParams = { provinceRaw, districtRaw, refDate: ctx.refDate };
   const rm = matchRate(rateParams, ctx.rates, ctx.rateOverrides, 'normal');
   const flatPrice = rm.flat ? rm.flat.rateValue : null;
@@ -416,6 +430,11 @@ export function computeReceipt(
     receiptAmount: 0, // คำนวณจริงในระดับใบกระจาย (หลังรู้ว่าเลือกเหมา/ชิ้น)
     requiresManualBox,
     manualBoxQty,
+    destCorrected,
+    origProvince,
+    origDistrict,
+    destFixKeyword,
+    destNote,
   };
 }
 
@@ -434,6 +453,7 @@ export function computeTripDocument(
     aliases: ReceiverGroupAlias[];
     rules: ProductConversionRule[];
     manualBoxSenders: ManualBoxSender[];
+    destOverrides?: DestinationOverride[];
     minBoxes?: number | null;
     fileName: string;
   },
@@ -464,7 +484,7 @@ export function computeTripDocument(
       {
         groups: ctx.groups, aliases: ctx.aliases, rules: ctx.rules, rates: ctx.rates,
         rateOverrides: ctx.rateOverrides,
-        manualBoxSenders: ctx.manualBoxSenders, refDate,
+        manualBoxSenders: ctx.manualBoxSenders, destOverrides: ctx.destOverrides, refDate,
         fallbackProvince: extracted.provinceRaw, fallbackDistrict: extracted.districtRaw,
       },
       idFactory
