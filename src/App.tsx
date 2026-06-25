@@ -1898,6 +1898,38 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
     showToast('success', 'กลับไปใช้ราคาหลักแล้ว'); reload();
   };
 
+  // ---- โหมดแก้หลายช่อง (batch) ----
+  const [batch, setBatch] = useState(false);
+  const [pending, setPending] = useState<Record<string, { price?: number; pieceThreshold?: number | null }>>({});
+  const [resetKey, setResetKey] = useState(0);
+  const pendingCount = Object.keys(pending).length;
+  const markPending = (r: RateMaster, field: 'price' | 'pieceThreshold', value: number | null) =>
+    setPending((p) => ({ ...p, [r.id]: { ...p[r.id], [field]: value } }));
+  const clearBatch = () => { setPending({}); setResetKey((k) => k + 1); };
+  const saveAll = async () => {
+    const ids = Object.keys(pending);
+    if (!ids.length) return;
+    try {
+      for (const id of ids) {
+        const r = (db.rateMasters as RateMaster[]).find((x) => x.id === id);
+        if (!r) continue;
+        const ch = pending[id];
+        if (cycleMode) {
+          const price = ch.price ?? effPrice(r);
+          const pieceThreshold = ch.pieceThreshold !== undefined ? ch.pieceThreshold : effTh(r);
+          await api('/api/rate-overrides/upsert', 'POST', { branchId, cycleId: cycle.id, rateMasterId: id, price, pieceThreshold });
+        } else {
+          const body: any = {};
+          if (ch.price !== undefined) body.price = ch.price;
+          if (ch.pieceThreshold !== undefined) body.pieceThreshold = ch.pieceThreshold;
+          await api(`/api/rate-masters/${id}`, 'PUT', body);
+        }
+      }
+      showToast('success', `บันทึก ${ids.length} ช่อง${cycleMode ? ` (เฉพาะรอบ ${cycle.name})` : ''} แล้ว`);
+      setPending({}); reload();
+    } catch (e: any) { showToast('error', e.message); }
+  };
+
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
       {/* นำเข้า/เทมเพลตราคาจาก Excel */}
@@ -1916,6 +1948,17 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
           🏷️ ราคาเฉพาะรอบ{cycle ? `: ${cycle.name}` : ' (เลือกรอบก่อน)'}
         </button>
         {cycleMode && <span className="text-amber-700">แก้ราคา/จุดตัด = ทับเฉพาะรอบนี้ · รอบอื่นใช้ราคาหลัก</span>}
+        <button type="button" onClick={() => { if (batch && pendingCount) clearBatch(); setBatch(!batch); }}
+          className={`px-3 py-1.5 rounded-full font-semibold border ${batch ? 'bg-violet-600 text-white border-violet-600' : 'border-natural-border text-natural-muted'}`}>
+          ✏️ แก้หลายช่อง{batch ? ' (เปิด)' : ''}
+        </button>
+        {batch && (
+          <span className="flex items-center gap-2">
+            <button type="button" onClick={saveAll} disabled={!pendingCount}
+              className="bg-emerald-600 disabled:opacity-40 text-white rounded-full px-4 py-1.5 font-bold flex items-center gap-1"><Save className="w-3.5 h-3.5" />บันทึกทั้งหมด ({pendingCount})</button>
+            {pendingCount > 0 && <button type="button" onClick={clearBatch} className="text-rose-600 underline">ยกเลิก</button>}
+          </span>
+        )}
         {branchGroups.length > 0 && (
           <label className="flex items-center gap-1 text-xs text-natural-muted ml-auto">
             กรองกลุ่ม:
@@ -2018,15 +2061,15 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
                 <td className="py-1.5 px-1">{(r.productCategory && r.productCategory !== 'normal') ? <span className="text-amber-700 font-semibold">{catLabel(r.productCategory)}</span> : <span className="text-natural-muted">ปกติ</span>}</td>
                 <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
                 <td className="py-1.5 px-1">
-                  <input type="number" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}`} defaultValue={effPrice(r)} aria-label={`ราคา ${r.destinationName}`}
-                    onBlur={(e) => { const v = +e.target.value; if (v !== effPrice(r)) saveCell(r, 'price', v); }}
-                    className={`w-20 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
-                  {cycleMode && ovFor(r) && <span className="text-[9px] text-amber-700 ml-0.5">เฉพาะรอบ</span>}
+                  <input type="number" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}-${resetKey}`} defaultValue={effPrice(r)} aria-label={`ราคา ${r.destinationName}`}
+                    onBlur={(e) => { const v = +e.target.value; if (v !== effPrice(r)) { batch ? markPending(r, 'price', v) : saveCell(r, 'price', v); } }}
+                    className={`w-20 border rounded px-1 py-0.5 text-xs text-right outline-none ${pending[r.id]?.price !== undefined ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-300' : cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
+                  {pending[r.id]?.price !== undefined ? <span className="text-[9px] text-violet-700 ml-0.5 font-bold">รอบันทึก</span> : cycleMode && ovFor(r) && <span className="text-[9px] text-amber-700 ml-0.5">เฉพาะรอบ</span>}
                 </td>
                 <td className="py-1.5 px-1">
-                  <input type="number" key={`t-${r.id}-${cycleMode ? 'c' : 'b'}-${effTh(r) ?? ''}`} defaultValue={effTh(r) ?? ''} placeholder="-" aria-label={`จุดตัด ${r.destinationName}`}
-                    onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v !== effTh(r)) saveCell(r, 'pieceThreshold', v); }}
-                    className={`w-16 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
+                  <input type="number" key={`t-${r.id}-${cycleMode ? 'c' : 'b'}-${effTh(r) ?? ''}-${resetKey}`} defaultValue={effTh(r) ?? ''} placeholder="-" aria-label={`จุดตัด ${r.destinationName}`}
+                    onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v !== effTh(r)) { batch ? markPending(r, 'pieceThreshold', v) : saveCell(r, 'pieceThreshold', v); } }}
+                    className={`w-16 border rounded px-1 py-0.5 text-xs text-right outline-none ${pending[r.id]?.pieceThreshold !== undefined ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-300' : cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
                 </td>
                 <td className="py-1.5 px-1">{r.effectiveFrom}</td>
                 <td className="py-1.5 px-1 whitespace-nowrap">
