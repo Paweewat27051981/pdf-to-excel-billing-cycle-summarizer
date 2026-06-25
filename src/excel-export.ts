@@ -795,29 +795,38 @@ export async function exportDriverKpi(
 // ===========================================================================
 export async function exportCostAreas(
   cycleName: string,
-  data: { branch: string; total: number; provs: { prov: string; boxes: number; cost: number; docs: number; perBox: number }[] }[]
+  data: { branch: string; total: number; provs: { prov: string; boxes: number; cost: number; docs: number; perBox: number; dists?: { dist: string; boxes: number; cost: number; docs: number; perBox: number }[] }[] }[],
+  thr = 0
 ) {
   const wb = new ExcelJS.Workbook();
   const INT = '#,##0';
   const ws = wb.addWorksheet('พื้นที่ต้นทุนสูง');
-  styleTitle(ws, 'พื้นที่ต้นทุนสูง — ต่อสาขา', 5, `รอบ ${cycleName} · เรียงปลายทางตาม บาท/กล่อง มาก→น้อย`);
+  styleTitle(ws, 'พื้นที่ต้นทุนสูง — ต่อสาขา', 5, `รอบ ${cycleName} · เรียงตาม บาท/กล่อง มาก→น้อย${thr > 0 ? ` · กรองเฉพาะ ≥ ${thr} บ/กล่อง` : ''}`);
   ws.addRow([]);
-  styleHeaderRow(ws.addRow(['สาขา / ปลายทาง (จังหวัด)', 'กล่อง', 'จำนวนใบ', 'ค่าขนส่งรวม', 'บาท/กล่อง']));
+  styleHeaderRow(ws.addRow(['สาขา / จังหวัด / อำเภอ', 'กล่อง', 'จำนวนใบ', 'ค่าขนส่งรวม', 'บาท/กล่อง']));
   for (const d of data) {
     const hr = ws.addRow([`🏢 ${d.branch} — ต้นทุนรวม`, '', '', round2(d.total), '']);
     hr.eachCell((cell, col) => bodyCell(cell, { bold: true, bg: C.subBg, color: C.title, align: col === 1 ? 'left' : 'right' }));
     hr.getCell(4).numFmt = NUM;
     let z = false;
     d.provs.forEach((p, i) => {
-      const r = ws.addRow([`    จ.${p.prov}`, Math.round(p.boxes), p.docs, round2(p.cost), round2(p.perBox)]);
-      r.eachCell((cell, col) => bodyCell(cell, { align: col === 1 ? 'left' : 'right', bg: z ? C.zebra : undefined }));
+      const r = ws.addRow([`   จ.${p.prov}`, Math.round(p.boxes), p.docs, round2(p.cost), round2(p.perBox)]);
+      r.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col === 1 ? 'left' : 'right', bg: z ? C.zebra : undefined }));
       r.getCell(2).numFmt = INT; r.getCell(3).numFmt = INT; r.getCell(4).numFmt = NUM; r.getCell(5).numFmt = NUM;
       const hi = i === 0, lo = i === d.provs.length - 1 && d.provs.length > 1;
       if (hi || lo) r.getCell(5).font = { name: FONT, size: 13, bold: true, color: { argb: hi ? 'FFE10026' : 'FF0E9F6E' } };
       z = !z;
+      // อำเภอย่อย
+      (p.dists || []).forEach((dd, k) => {
+        const dr = ws.addRow([`        อ.${dd.dist}`, Math.round(dd.boxes), dd.docs, round2(dd.cost), round2(dd.perBox)]);
+        dr.eachCell((cell, col) => bodyCell(cell, { align: col === 1 ? 'left' : 'right', color: 'FF666666' }));
+        dr.getCell(2).numFmt = INT; dr.getCell(3).numFmt = INT; dr.getCell(4).numFmt = NUM; dr.getCell(5).numFmt = NUM;
+        const dhi = k === 0, dlo = k === (p.dists || []).length - 1 && (p.dists || []).length > 1;
+        if (dhi || dlo) dr.getCell(5).font = { name: FONT, size: 13, color: { argb: dhi ? 'FFE10026' : 'FF0E9F6E' } };
+      });
     });
   }
-  [32, 12, 11, 16, 14].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+  [34, 12, 11, 16, 14].forEach((w, i) => (ws.getColumn(i + 1).width = w));
 
   const buffer = await wb.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

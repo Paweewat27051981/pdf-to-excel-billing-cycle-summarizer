@@ -1464,21 +1464,27 @@ function DriverKpiTab({ db, cycle }: any) {
 function computeCostAreas(db: any, cycle: BillingCycle, branches: Branch[]) {
   return branches.map((b) => {
     const trips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id && t.branchId === b.id);
-    const provMap = new Map<string, { prov: string; boxes: number; cost: number; docs: Set<string> }>();
+    type Agg = { boxes: number; cost: number; docs: Set<string> };
+    const provMap = new Map<string, Agg & { prov: string; dists: Map<string, Agg & { dist: string }> }>();
     for (const t of trips) {
       const totalBoxes = (t.receipts || []).reduce((a: number, r: any) => a + (r.totalQty || 0), 0);
       for (const r of (t.receipts || [])) {
         const prov = (r.provinceRaw || '').trim() || '(ไม่ระบุจังหวัด)';
+        const dist = (r.districtRaw || '').trim() || '(ไม่ระบุอำเภอ)';
         const boxes = r.totalQty || 0;
         // ต้นทุน = ค่าเที่ยว: ราคาชิ้น=ตามใบรับ, ราคาเหมา=เฉลี่ยตามสัดส่วนกล่อง
         const cost = t.rateType === 'piece' ? (r.receiptAmount || 0) : (totalBoxes > 0 ? t.tripAmount * (boxes / totalBoxes) : 0);
-        const g = provMap.get(prov) || { prov, boxes: 0, cost: 0, docs: new Set<string>() };
+        const g = provMap.get(prov) || { prov, boxes: 0, cost: 0, docs: new Set<string>(), dists: new Map() };
         g.boxes += boxes; g.cost += cost; g.docs.add(t.id);
+        const dg = g.dists.get(dist) || { dist, boxes: 0, cost: 0, docs: new Set<string>() };
+        dg.boxes += boxes; dg.cost += cost; dg.docs.add(t.id); g.dists.set(dist, dg);
         provMap.set(prov, g);
       }
     }
-    const provs = [...provMap.values()].map((g) => ({ prov: g.prov, boxes: g.boxes, cost: g.cost, docs: g.docs.size, perBox: g.boxes > 0 ? g.cost / g.boxes : 0 }))
-      .filter((g) => g.boxes > 0 || g.cost > 0).sort((a, b) => b.perBox - a.perBox);
+    const provs = [...provMap.values()].map((g) => ({
+      prov: g.prov, boxes: g.boxes, cost: g.cost, docs: g.docs.size, perBox: g.boxes > 0 ? g.cost / g.boxes : 0,
+      dists: [...g.dists.values()].map((d) => ({ dist: d.dist, boxes: d.boxes, cost: d.cost, docs: d.docs.size, perBox: d.boxes > 0 ? d.cost / d.boxes : 0 })).sort((a, b) => b.perBox - a.perBox),
+    })).filter((g) => g.boxes > 0 || g.cost > 0).sort((a, b) => b.perBox - a.perBox);
     const total = provs.reduce((a, p) => a + p.cost, 0);
     return { branch: b.name, branchId: b.id, provs, total };
   }).filter((d) => d.provs.length > 0).sort((a, b) => b.total - a.total);
@@ -1486,15 +1492,20 @@ function computeCostAreas(db: any, cycle: BillingCycle, branches: Branch[]) {
 
 function CostAreaTab({ db, cycle, branchId, showToast }: any) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [openProv, setOpenProv] = useState<Record<string, boolean>>({});
+  const [thrStr, setThrStr] = useState('');
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
   const bx = (n: number) => Math.round(n).toLocaleString('th-TH');
+  const thr = +thrStr || 0;
   const branches = (db.branches as Branch[]).filter((b) => !b.isHQ && b.status === 'active' && (!branchId || b.id === branchId));
   const data = computeCostAreas(db, cycle, branches);
-  const expandAll = () => setOpen(Object.fromEntries(data.map((d) => [d.branchId, true])));
-  const collapseAll = () => setOpen({});
+  // กรองเฉพาะจังหวัดที่ บาท/กล่อง >= เกณฑ์
+  const fdata = data.map((d) => ({ ...d, fprovs: thr > 0 ? d.provs.filter((p) => p.perBox >= thr) : d.provs })).filter((d) => d.fprovs.length > 0);
+  const expandAll = () => setOpen(Object.fromEntries(fdata.map((d) => [d.branchId, true])));
+  const collapseAll = () => { setOpen({}); setOpenProv({}); };
   const doExport = async () => {
-    if (!data.length) return showToast('warning', 'ยังไม่มีข้อมูลในรอบนี้');
-    try { await exportCostAreas(cycle.name, data); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
+    if (!fdata.length) return showToast('warning', 'ยังไม่มีข้อมูลในรอบนี้');
+    try { await exportCostAreas(cycle.name, fdata.map((d) => ({ branch: d.branch, total: d.total, provs: d.fprovs })), thr); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
     catch (e: any) { showToast('error', e.message); }
   };
 
@@ -1502,37 +1513,56 @@ function CostAreaTab({ db, cycle, branchId, showToast }: any) {
     <div className="flex flex-col gap-4">
       <div className="bg-white rounded-2xl border border-natural-border p-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm"><span className="font-bold text-brand-navy">พื้นที่ต้นทุนสูง</span> <span className="text-natural-muted ml-2">รอบ {cycle.name} · เรียงปลายทางตาม บาท/กล่อง มาก→น้อย</span></div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1 border border-natural-border rounded-lg px-2 py-1 text-xs">
+            <span className="text-natural-muted">บาท/กล่อง ≥</span>
+            <input type="number" aria-label="เกณฑ์ บาท/กล่อง" value={thrStr} onChange={(e) => setThrStr(e.target.value)} placeholder="ทั้งหมด" className="w-16 text-right outline-none" />
+            {thr > 0 && <button type="button" onClick={() => setThrStr('')} className="text-rose-500 font-bold px-1" title="ล้างตัวกรอง">✕</button>}
+          </div>
           <button type="button" onClick={expandAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1.5 hover:bg-natural-secondary">ขยายทั้งหมด</button>
           <button type="button" onClick={collapseAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1.5 hover:bg-natural-secondary">ย่อทั้งหมด</button>
           <button type="button" onClick={doExport} className="bg-brand-red hover:bg-brand-red-hover text-white rounded-lg px-4 py-2 text-sm font-bold flex items-center gap-1.5"><FileSpreadsheet className="w-4 h-4" />Export Excel</button>
         </div>
       </div>
 
-      {data.length === 0 ? <EmptyHint text="ยังไม่มีข้อมูลในรอบนี้" /> : data.map((d) => {
+      {fdata.length === 0 ? <EmptyHint text={thr > 0 ? `ไม่มีจังหวัดที่ บาท/กล่อง ≥ ${thr}` : 'ยังไม่มีข้อมูลในรอบนี้'} /> : fdata.map((d) => {
         const o = !!open[d.branchId];
         return (
           <div key={d.branchId} className="bg-white rounded-2xl border border-natural-border overflow-hidden">
             <button type="button" onClick={() => setOpen({ ...open, [d.branchId]: !o })} className="w-full flex items-center justify-between px-4 py-3 hover:bg-brand-navy/5 text-left">
               <span className="font-bold text-brand-navy">{o ? '▾' : '▸'} 🏢 {d.branch}</span>
-              <span className="text-xs text-natural-muted">ต้นทุนรวม <b className="text-brand-navy">฿{money(d.total)}</b> · {d.provs.length} จังหวัด</span>
+              <span className="text-xs text-natural-muted">ต้นทุนรวม <b className="text-brand-navy">฿{money(d.total)}</b> · {d.fprovs.length}{thr > 0 ? `/${d.provs.length}` : ''} จังหวัด</span>
             </button>
             {o && (
               <div className="overflow-x-auto border-t border-natural-border">
                 <table className="w-full text-xs min-w-[620px]">
                   <thead className="bg-brand-navy text-white"><tr>
-                    {['ปลายทาง (จังหวัด)', 'กล่อง', 'จำนวนใบ', 'ค่าขนส่งรวม', 'บาท/กล่อง'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+                    {['ปลายทาง', 'กล่อง', 'จำนวนใบ', 'ค่าขนส่งรวม', 'บาท/กล่อง'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>)}
                   </tr></thead>
                   <tbody>
-                    {d.provs.map((p, i) => {
-                      const hi = i === 0, lo = i === d.provs.length - 1 && d.provs.length > 1;
+                    {d.fprovs.map((p, i) => {
+                      const hi = i === 0, lo = i === d.fprovs.length - 1 && d.fprovs.length > 1;
                       const pc = hi ? 'text-rose-600' : lo ? 'text-emerald-700' : '';
-                      return (<tr key={p.prov} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
-                        <td className="p-2 font-semibold text-brand-navy">จ.{p.prov}</td>
-                        <td className="p-2 text-right">{bx(p.boxes)}</td><td className="p-2 text-right">{p.docs}</td>
-                        <td className="p-2 text-right">{money(p.cost)}</td>
-                        <td className={`p-2 text-right font-bold ${pc}`}>฿{money(p.perBox)} {hi ? '🔴' : lo ? '🟢' : ''}</td>
-                      </tr>);
+                      const pk = d.branchId + '|' + p.prov, po = !!openProv[pk];
+                      return (
+                        <Fragment key={p.prov}>
+                          <tr onClick={() => setOpenProv({ ...openProv, [pk]: !po })} className={`cursor-pointer hover:bg-brand-navy/5 ${i % 2 ? 'bg-natural-secondary/40' : ''}`}>
+                            <td className="p-2 font-semibold text-brand-navy">{po ? '▾' : '▸'} จ.{p.prov} <span className="text-natural-muted font-normal">({p.dists.length} อ.)</span></td>
+                            <td className="p-2 text-right">{bx(p.boxes)}</td><td className="p-2 text-right">{p.docs}</td>
+                            <td className="p-2 text-right">{money(p.cost)}</td>
+                            <td className={`p-2 text-right font-bold ${pc}`}>฿{money(p.perBox)} {hi ? '🔴' : lo ? '🟢' : ''}</td>
+                          </tr>
+                          {po && p.dists.map((dd, k) => {
+                            const dhi = k === 0, dlo = k === p.dists.length - 1 && p.dists.length > 1;
+                            return (<tr key={dd.dist} className="bg-natural-secondary/20 text-natural-dark-muted">
+                              <td className="p-2 pl-7">↳ อ.{dd.dist}</td>
+                              <td className="p-2 text-right">{bx(dd.boxes)}</td><td className="p-2 text-right">{dd.docs}</td>
+                              <td className="p-2 text-right">{money(dd.cost)}</td>
+                              <td className={`p-2 text-right font-semibold ${dhi ? 'text-rose-600' : dlo ? 'text-emerald-700' : ''}`}>฿{money(dd.perBox)}</td>
+                            </tr>);
+                          })}
+                        </Fragment>
+                      );
                     })}
                   </tbody>
                 </table>
@@ -1541,7 +1571,7 @@ function CostAreaTab({ db, cycle, branchId, showToast }: any) {
           </div>
         );
       })}
-      <p className="text-[11px] text-natural-muted">💡 "ต้นทุน" = ค่าเที่ยวที่จ่ายส่งพื้นที่นั้น (ราคาชิ้น=ตามใบรับ · ราคาเหมา=เฉลี่ยตามสัดส่วนกล่อง) · 🔴 แพงสุด/กล่อง 🟢 ถูกสุด/กล่อง</p>
+      <p className="text-[11px] text-natural-muted">💡 "ต้นทุน" = ค่าเที่ยวที่จ่ายส่งพื้นที่นั้น (ราคาชิ้น=ตามใบรับ · ราคาเหมา=เฉลี่ยตามสัดส่วนกล่อง) · กดแถวจังหวัดเพื่อดูรายอำเภอ · 🔴 แพงสุด/กล่อง 🟢 ถูกสุด/กล่อง</p>
     </div>
   );
 }
