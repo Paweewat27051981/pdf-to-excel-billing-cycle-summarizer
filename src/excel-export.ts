@@ -288,6 +288,30 @@ function safeSheetName(name: string, used: Set<string>): string {
   return n;
 }
 
+// รายชื่อปลายทางทุกอำเภอของใบกระจาย (กลุ่มตามจังหวัด) เช่น "อ.ชนแดน, อ.เมือง จ.เพชรบูรณ์"
+function tripDestinations(t: TripDocument): string {
+  const byProv = new Map<string, Set<string>>();
+  for (const r of t.receipts || []) {
+    const prov = (r.provinceRaw || '').trim();
+    const dist = (r.districtRaw || '').trim();
+    if (!dist && !prov) continue;
+    if (!byProv.has(prov)) byProv.set(prov, new Set());
+    if (dist) byProv.get(prov)!.add(dist);
+  }
+  if (byProv.size === 0) return `${t.districtRaw ? 'อ.' + t.districtRaw : ''}${t.provinceRaw ? ' จ.' + t.provinceRaw : ''}`.trim();
+  return [...byProv.entries()].map(([prov, dists]) => `${[...dists].map((d) => 'อ.' + d).join(', ')}${prov ? ' จ.' + prov : ''}`).join(' · ');
+}
+
+// ราคา/ชิ้น ของใบ: เหมา=ราคาเหมา, ชิ้นราคาเดียว=ราคานั้น, ชิ้นหลายราคา=null (แสดง "หลายราคา")
+function tripUnitRate(t: TripDocument): number | null {
+  if (t.rateType === 'flat') return t.rateValue ?? null;
+  if (t.rateType === 'piece') {
+    const prices = [...new Set((t.receipts || []).filter((r) => r.piecePrice != null).map((r) => r.piecePrice as number))];
+    return prices.length === 1 ? prices[0] : null;
+  }
+  return null;
+}
+
 export async function exportPerVehicleReport(
   cycle: BillingCycle,
   branchName: string,
@@ -377,19 +401,19 @@ export async function exportPerVehicleReport(
     let zebra = false;
     let sumQty = 0, sumMoney = 0, sumExtra = 0, sumTotal = 0;
     for (const t of vTrips) {
-      const piecePrice = t.receipts?.find((r) => r.piecePrice != null)?.piecePrice ?? null;
-      const unitRate = t.rateType === 'flat' ? (t.rateValue ?? null) : piecePrice;
+      const unitRate = tripUnitRate(t);
       const extra = vIncome.filter((d) => normDoc(d.docNo || '') && normDoc(d.docNo || '') === normDoc(t.documentNo || '')).reduce((a, d) => a + d.amount, 0);
       const total = round2(t.tripAmount + extra);
       const hasDiv = t.receipts?.some((r) => r.hasAdjustment);
-      const dest = `${t.districtRaw ? 'อ.' + t.districtRaw : ''} ${t.provinceRaw ? 'จ.' + t.provinceRaw : ''}`.trim();
+      const dest = tripDestinations(t);
       const r = ws.addRow([
         fmtDate(t.documentDate), dest, t.documentNo, t.billingQty,
         t.rateType === 'piece' ? 'ราคาชิ้น' : t.rateType === 'flat' ? 'ราคาเหมา' : '-',
-        unitRate, t.tripAmount, extra || '', total, hasDiv ? 'มีหาร' : '',
+        unitRate != null ? unitRate : (t.rateType === 'piece' ? 'หลายราคา' : ''), t.tripAmount, extra || '', total, hasDiv ? 'มีหาร' : '',
       ]);
       r.eachCell((cell, col) => bodyCell(cell, { align: col >= 4 && col <= 9 ? 'right' : 'left', bg: zebra ? C.zebra : undefined, color: col === 9 ? C.title : undefined, bold: col === 9 }));
-      [6, 7, 8, 9].forEach((c) => (r.getCell(c).numFmt = NUM));
+      [7, 8, 9].forEach((c) => (r.getCell(c).numFmt = NUM));
+      if (unitRate != null) r.getCell(6).numFmt = NUM;
       if (hasDiv) r.getCell(10).font = { name: FONT, size: 13, bold: true, color: { argb: C.dividerText } };
       zebra = !zebra;
       sumQty += t.billingQty; sumMoney += t.tripAmount; sumExtra += extra; sumTotal += total;
