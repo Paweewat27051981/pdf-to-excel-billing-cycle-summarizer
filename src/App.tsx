@@ -1602,8 +1602,8 @@ function CostAreaTab({ db, cycle, branchId, showToast }: any) {
 // Tab: แก้ปลายทาง — คีย์เวิร์ด -> จังหวัด/อำเภอจริง (ใบกระจายระบุผิด)
 // ===========================================================================
 function DestFixTab({ db, api, branchId, reload, showToast }: any) {
-  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   const [form, setForm] = useState({ keyword: '', province: '', district: '', note: '' });
+  if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   const list = (db.destinationOverrides || []).filter((d: DestinationOverride) => d.branchId === branchId);
   const inputCls = 'border border-natural-border rounded-lg px-2 py-1.5 text-sm';
   const add = async () => {
@@ -1638,12 +1638,12 @@ function DestFixTab({ db, api, branchId, reload, showToast }: any) {
 const fmtD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
 
 function ReportsTab({ db, cycle, branchId, showToast }: any) {
+  const [selPlate, setSelPlate] = useState('');
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
   const branchName = (db.branches as Branch[]).find((b) => b.id === branchId)?.name || '';
   const cycleTrips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id);
   const sums = summarizeByVehicle(cycle.id, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles);
-  const [selPlate, setSelPlate] = useState('');
   const shownSums = selPlate ? sums.filter((s: any) => s.plateNo === selPlate) : sums;
   const exp = async () => {
     if (!cycleTrips.length) return showToast('warning', 'ยังไม่มีใบกระจายในรอบนี้');
@@ -1782,6 +1782,9 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const [editId, setEditId] = useState<string | null>(null);
   const rateFileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const [batch, setBatch] = useState(false);
+  const [pending, setPending] = useState<Record<string, { price?: number; pieceThreshold?: number | null }>>({});
+  const [resetKey, setResetKey] = useState(0);
   const onImportRates = async (files: FileList) => {
     const file = files[0];
     if (!file) return;
@@ -1899,9 +1902,6 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   };
 
   // ---- โหมดแก้หลายช่อง (batch) ----
-  const [batch, setBatch] = useState(false);
-  const [pending, setPending] = useState<Record<string, { price?: number; pieceThreshold?: number | null }>>({});
-  const [resetKey, setResetKey] = useState(0);
   const pendingCount = Object.keys(pending).length;
   const markPending = (r: RateMaster, field: 'price' | 'pieceThreshold', value: number | null) =>
     setPending((p) => ({ ...p, [r.id]: { ...p[r.id], [field]: value } }));
