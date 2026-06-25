@@ -139,7 +139,7 @@ export default function App() {
             <div className="font-extrabold tracking-wide text-lg italic">NEOSIAM</div>
             <div className="text-[10px] text-brand-gold font-semibold">ส่งด่วน · ส่งไว · แน่นอน</div>
           </div>
-          <button onClick={() => setNavOpen(false)} className="ml-auto md:hidden text-white/70 hover:text-white"><X className="w-5 h-5" /></button>
+          <button type="button" aria-label="ปิดเมนู" onClick={() => setNavOpen(false)} className="ml-auto md:hidden text-white/70 hover:text-white"><X className="w-5 h-5" /></button>
         </div>
         <nav className="flex-1 overflow-y-auto py-3 px-2 flex flex-col gap-0.5">
           {tabs.map(([key, label, Icon]) => (
@@ -160,7 +160,7 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col">
         {/* Topbar */}
         <header className="bg-white border-b border-natural-border px-4 md:px-6 py-3 flex items-center gap-3 sticky top-0 z-30">
-          <button onClick={() => setNavOpen(true)} className="md:hidden text-natural-muted"><Menu className="w-6 h-6" /></button>
+          <button type="button" aria-label="เปิดเมนู" onClick={() => setNavOpen(true)} className="md:hidden text-natural-muted"><Menu className="w-6 h-6" /></button>
           <h1 className="text-base md:text-xl font-bold text-brand-navy truncate">{activeTabLabel}</h1>
           <div className="flex items-center gap-2.5 flex-wrap ml-auto">
             <div className="flex items-center gap-1.5 bg-natural-secondary border border-natural-border rounded-full px-3 py-1.5">
