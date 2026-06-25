@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
-  Building2, LogOut, Search, Calendar,
+  Building2, LogOut, Search, Calendar, Menu, X,
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
@@ -44,6 +44,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [selectedCycleId, setSelectedCycleId] = useState('');
   const [tab, setTab] = useState<Tab>('calc');
+  const [navOpen, setNavOpen] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(true);
   const [auth, setAuth] = useState<BranchAuth | null>(() => {
     try { return JSON.parse(localStorage.getItem('branchAuth') || 'null'); } catch { return null; }
@@ -123,60 +124,73 @@ export default function App() {
   ];
   if (auth.isHQ) tabs.push(['branches', 'จัดการสาขา', Building2]);
 
+  const activeTabLabel = tabs.find(([k]) => k === tab)?.[1] || '';
+
   return (
-    <div className="min-h-screen bg-natural-bg text-natural-text font-sans flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b border-natural-border px-6 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 sticky top-0 z-30">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#1B365D] text-white rounded-xl flex items-center justify-center"><Truck className="w-5 h-5" /></div>
-          <div>
-            <h1 className="text-lg font-bold text-[#1B365D]">ระบบค่าเที่ยว + ค่าน้ำมันรถร่วม</h1>
-            <p className="text-xs text-natural-muted">PDF/Excel ใบกระจาย → Review → คำนวณรอบ → Export</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* สาขา */}
-          <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1.5">
-            <Building2 className="w-4 h-4 text-emerald-700" />
-            {auth.isHQ ? (
-              <select aria-label="เลือกสาขา" value={workBranchId} onChange={(e) => setWorkBranchId(e.target.value)}
-                className="bg-transparent text-xs font-bold text-emerald-800 outline-none">
-                <option value="">🌐 ทุกสาขา (ภาพรวม)</option>
-                {db.branches.filter((b) => !b.isHQ && b.status === 'active').map((b) => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
-                ))}
-              </select>
-            ) : (
-              <span className="text-xs font-bold text-emerald-800">{activeBranchName}</span>
-            )}
-            {auth.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5">HQ</span>}
-          </div>
-          <CycleBar cycles={db.cycles} selectedCycleId={selectedCycleId} setSelectedCycleId={setSelectedCycleId}
-            onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} isHQ={auth.isHQ} />
-          <button onClick={logout} title="ออกจากระบบ"
-            className="text-natural-muted hover:text-red-600 flex items-center gap-1 text-xs font-semibold"><LogOut className="w-4 h-4" /></button>
-        </div>
-      </header>
+    <div className="min-h-screen bg-natural-bg text-natural-text font-sans flex">
+      {/* Mobile overlay */}
+      {navOpen && <div className="fixed inset-0 bg-black/50 z-40 md:hidden" onClick={() => setNavOpen(false)} />}
 
-      {/* Tabs */}
-      <nav className="bg-white border-b border-natural-border px-6 flex gap-1 overflow-x-auto">
-        {tabs.map(([key, label, Icon]) => (
-          <button key={key} onClick={() => setTab(key)}
-            className={`px-4 py-3 text-sm font-semibold border-b-2 whitespace-nowrap flex items-center gap-1.5 transition-colors ${
-              tab === key ? 'border-[#1B365D] text-[#1B365D]' : 'border-transparent text-natural-muted hover:text-natural-text'}`}>
-            <Icon className="w-4 h-4" /> {label}
-          </button>
-        ))}
-      </nav>
-
-      <main className="flex-1 max-w-7xl mx-auto w-full p-6">
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-20">
-            <RefreshCw className="w-10 h-10 text-[#1B365D] animate-spin mb-3" />
-            <p className="text-sm text-natural-dark-muted">กำลังโหลด...</p>
+      {/* ===== Sidebar ===== */}
+      <aside className={`fixed md:sticky top-0 z-50 md:z-10 h-screen w-60 shrink-0 bg-brand-navy text-white flex flex-col transition-transform duration-200 ${navOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+        <div className="px-5 py-4 border-b border-white/10 flex items-center gap-2.5">
+          <div className="w-10 h-10 rounded-lg bg-brand-red flex items-center justify-center font-extrabold italic text-lg shadow-md">N</div>
+          <div className="leading-tight">
+            <div className="font-extrabold tracking-wide text-lg italic">NEOSIAM</div>
+            <div className="text-[10px] text-brand-gold font-semibold">ส่งด่วน · ส่งไว · แน่นอน</div>
           </div>
-        ) : (
-          <>
+          <button onClick={() => setNavOpen(false)} className="ml-auto md:hidden text-white/70 hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <nav className="flex-1 overflow-y-auto py-3 px-2 flex flex-col gap-0.5">
+          {tabs.map(([key, label, Icon]) => (
+            <button key={key} onClick={() => { setTab(key); setNavOpen(false); }}
+              className={`relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold text-left transition ${
+                tab === key ? 'bg-white/10 text-white' : 'text-white/60 hover:text-white hover:bg-white/5'}`}>
+              {tab === key && <span className="absolute left-0 top-2 bottom-2 w-1 rounded-full bg-brand-red" />}
+              <Icon className={`w-[18px] h-[18px] shrink-0 ${tab === key ? 'text-brand-red' : ''}`} /> {label}
+            </button>
+          ))}
+        </nav>
+        <div className="px-2 py-3 border-t border-white/10">
+          <button onClick={logout} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-semibold text-white/60 hover:text-white hover:bg-white/5"><LogOut className="w-[18px] h-[18px]" /> ออกจากระบบ</button>
+        </div>
+      </aside>
+
+      {/* ===== Main column ===== */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Topbar */}
+        <header className="bg-white border-b border-natural-border px-4 md:px-6 py-3 flex items-center gap-3 sticky top-0 z-30">
+          <button onClick={() => setNavOpen(true)} className="md:hidden text-natural-muted"><Menu className="w-6 h-6" /></button>
+          <h1 className="text-base md:text-xl font-bold text-brand-navy truncate">{activeTabLabel}</h1>
+          <div className="flex items-center gap-2.5 flex-wrap ml-auto">
+            <div className="flex items-center gap-1.5 bg-natural-secondary border border-natural-border rounded-full px-3 py-1.5">
+              <Building2 className="w-4 h-4 text-brand-navy" />
+              {auth.isHQ ? (
+                <select aria-label="เลือกสาขา" value={workBranchId} onChange={(e) => setWorkBranchId(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-brand-navy outline-none cursor-pointer">
+                  <option value="">🌐 ทุกสาขา (ภาพรวม)</option>
+                  {db.branches.filter((b) => !b.isHQ && b.status === 'active').map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <span className="text-xs font-bold text-brand-navy">{activeBranchName}</span>
+              )}
+              {auth.isHQ && <span className="text-[10px] bg-brand-red text-white rounded-full px-1.5 py-0.5 font-bold">HQ</span>}
+            </div>
+            <CycleBar cycles={db.cycles} selectedCycleId={selectedCycleId} setSelectedCycleId={setSelectedCycleId}
+              onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} isHQ={auth.isHQ} />
+          </div>
+        </header>
+
+        <main className="flex-1 max-w-[1440px] w-full p-4 md:p-6">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center py-20">
+              <RefreshCw className="w-10 h-10 text-brand-red animate-spin mb-3" />
+              <p className="text-sm text-natural-dark-muted">กำลังโหลด...</p>
+            </div>
+          ) : (
+            <>
             {tab === 'calc' && <CalcTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} aiEnabled={aiEnabled} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
@@ -189,7 +203,8 @@ export default function App() {
             {tab === 'branches' && <BranchesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
           </>
         )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
@@ -218,8 +233,8 @@ function BranchLogin({ branches, api, onLogin }: any) {
   return (
     <div className="min-h-screen bg-natural-bg flex items-center justify-center p-6">
       <div className="bg-white rounded-2xl border border-natural-border shadow-lg p-8 w-full max-w-sm flex flex-col items-center">
-        <div className="w-14 h-14 bg-[#1B365D] text-white rounded-2xl flex items-center justify-center mb-3"><Building2 className="w-7 h-7" /></div>
-        <h1 className="text-lg font-bold text-[#1B365D]">ระบบค่าเที่ยว + ค่าน้ำมัน</h1>
+        <div className="w-14 h-14 bg-brand-red text-white rounded-2xl flex items-center justify-center mb-3"><Building2 className="w-7 h-7" /></div>
+        <h1 className="text-lg font-bold text-brand-navy">ระบบค่าเที่ยว + ค่าน้ำมัน</h1>
         <p className="text-xs text-natural-muted mb-5">เลือกสาขา และใส่รหัสผ่านเพื่อเข้าใช้งาน</p>
         <label className="w-full text-xs font-semibold text-natural-dark-muted mb-1">สาขา</label>
         <select aria-label="สาขา" value={branchId} onChange={(e) => setBranchId(e.target.value)}
@@ -231,7 +246,7 @@ function BranchLogin({ branches, api, onLogin }: any) {
           onKeyDown={(e) => e.key === 'Enter' && submit()} aria-label="รหัสผ่าน"
           className="w-full border border-natural-border rounded-lg px-3 py-2 text-sm mb-5" placeholder="••••" />
         <button onClick={submit} disabled={busy || !branchId}
-          className="w-full bg-[#1B365D] disabled:bg-natural-muted text-white rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2">
+          className="w-full bg-brand-red disabled:bg-natural-muted text-white rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2">
           {busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Unlock className="w-4 h-4" />} เข้าใช้งาน
         </button>
       </div>
@@ -296,7 +311,7 @@ function BranchesTab({ db, api, reload, showToast }: any) {
   return (
     <div className="flex flex-col gap-4">
       <div className="bg-white rounded-2xl border border-natural-border p-4">
-        <h3 className="font-bold text-[#1B365D] mb-3 flex items-center gap-2"><Building2 className="w-4 h-4" />เพิ่มสาขาใหม่</h3>
+        <h3 className="font-bold text-brand-navy mb-3 flex items-center gap-2"><Building2 className="w-4 h-4" />เพิ่มสาขาใหม่</h3>
         <div className="flex flex-wrap gap-2 items-end">
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="ชื่อสาขา เช่น ตาก"
             className="border border-natural-border rounded-lg px-3 py-2 text-sm flex-1 min-w-[140px]" />
@@ -310,7 +325,7 @@ function BranchesTab({ db, api, reload, showToast }: any) {
               {realBranches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           </label>
-          <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-1"><Plus className="w-4 h-4" />เพิ่ม</button>
+          <button onClick={add} className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold flex items-center gap-1"><Plus className="w-4 h-4" />เพิ่ม</button>
         </div>
         <p className="text-[11px] text-natural-muted mt-2">💡 คัดลอกกฎตัวหาร/กลุ่มผู้รับ/ประเภทรายได้-หัก จากสาขาต้นแบบมาเป็นจุดเริ่ม (ราคา/รถ ตั้งใหม่แยกต่อสาขา)</p>
       </div>
@@ -323,13 +338,13 @@ function BranchesTab({ db, api, reload, showToast }: any) {
           <tbody>
             {(db.branches as Branch[]).map((b) => (
               <tr key={b.id} className="border-t border-natural-border">
-                <td className="px-4 py-2 font-semibold text-[#1B365D]">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}</td>
+                <td className="px-4 py-2 font-semibold text-brand-navy">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.vehicles.filter((v: Vehicle) => v.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{countMaster(b.id)}</td>
                 <td className="px-4 py-2 text-right whitespace-nowrap">
                   {!b.isHQ && <button type="button" onClick={() => cloneInto(b)} className="text-xs text-emerald-700 font-semibold mr-3">⬇ คัดลอกกฎ</button>}
-                  <button onClick={() => setPwd(b)} className="text-xs text-[#1B365D] font-semibold mr-3">ตั้งรหัสผ่าน</button>
+                  <button onClick={() => setPwd(b)} className="text-xs text-brand-navy font-semibold mr-3">ตั้งรหัสผ่าน</button>
                   {!b.isHQ && <button type="button" title="ลบสาขา" onClick={() => del(b)} className="text-red-500"><Trash2 className="w-4 h-4 inline" /></button>}
                 </td>
               </tr>
@@ -392,12 +407,12 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
       {cur && !isHQ && cur.status === 'closed' && (
         <span className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1 text-natural-muted bg-natural-secondary"><Lock className="w-3.5 h-3.5" />รอบนี้ถูกปิด (เฉพาะ HQ เปิด/ปิดได้)</span>
       )}
-      <button onClick={() => setOpen(!open)} className="bg-[#1B365D] text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1">
+      <button onClick={() => setOpen(!open)} className="bg-brand-red text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1">
         <Plus className="w-4 h-4" />เปิดรอบใหม่
       </button>
       {open && (
         <div className="absolute top-12 right-0 bg-white border border-natural-border rounded-2xl shadow-lg p-4 z-40 flex flex-col gap-3 w-72">
-          <h4 className="font-bold text-sm text-[#1B365D]">เปิดรอบคำนวณใหม่</h4>
+          <h4 className="font-bold text-sm text-brand-navy">เปิดรอบคำนวณใหม่</h4>
           <div className="flex gap-2">
             <select aria-label="เลือกเดือน" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm flex-1">
               {THAI_MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
@@ -406,12 +421,12 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
           </div>
           <div className="flex gap-2">
             {(['first', 'second'] as const).map((h) => (
-              <button key={h} onClick={() => setHalf(h)} className={`flex-1 py-1.5 rounded-lg text-sm font-semibold border ${half === h ? 'bg-[#1B365D] text-white border-[#1B365D]' : 'border-natural-border'}`}>
+              <button key={h} onClick={() => setHalf(h)} className={`flex-1 py-1.5 rounded-lg text-sm font-semibold border ${half === h ? 'bg-brand-navy text-white border-brand-navy' : 'border-natural-border'}`}>
                 {h === 'first' ? 'รอบ 1-15' : 'รอบ 16-31'}
               </button>
             ))}
           </div>
-          <button onClick={create} className="bg-[#1B365D] text-white rounded-lg py-2 text-sm font-semibold">สร้างรอบ</button>
+          <button onClick={create} className="bg-brand-red text-white rounded-lg py-2 text-sm font-semibold">สร้างรอบ</button>
         </div>
       )}
     </div>
@@ -549,12 +564,12 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
       {/* action bar */}
       <div className="bg-white rounded-2xl border border-natural-border p-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm">
-          <span className="font-bold text-[#1B365D]">{cycle.name}</span>
+          <span className="font-bold text-brand-navy">{cycle.name}</span>
           <span className="text-natural-muted ml-2">{cycleTrips.length} ใบกระจาย · ค่าเที่ยวรวม ฿{money(totalTrip)}</span>
         </div>
         <div className="flex gap-2">
           <button onClick={recalc} className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" />Recalculate</button>
-          <button onClick={exportExcel} className="bg-[#1B365D] text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-4 h-4" />Export Excel</button>
+          <button onClick={exportExcel} className="bg-brand-red text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-4 h-4" />Export Excel</button>
         </div>
       </div>
 
@@ -572,11 +587,11 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
         <input ref={fileRef} type="file" aria-label="เลือกไฟล์ PDF ใบกระจาย" accept="application/pdf" multiple className="hidden" onChange={(e) => e.target.files && onFiles(e.target.files)} />
         <input ref={excelRef} type="file" aria-label="นำเข้า Excel ใบกระจาย" accept=".xls,.xlsx" className="hidden" onChange={(e) => e.target.files && onExcelFiles(e.target.files)} />
         {extracting || importing ? (
-          <div className="flex flex-col items-center gap-2 py-2"><RefreshCw className="w-8 h-8 text-[#1B365D] animate-spin" /><p className="text-sm font-semibold text-[#1B365D]">{importing ? 'กำลังอ่าน Excel ใบกระจาย...' : 'AI กำลังอ่าน PDF ใบกระจาย...'}</p></div>
+          <div className="flex flex-col items-center gap-2 py-2"><RefreshCw className="w-8 h-8 text-brand-navy animate-spin" /><p className="text-sm font-semibold text-brand-navy">{importing ? 'กำลังอ่าน Excel ใบกระจาย...' : 'AI กำลังอ่าน PDF ใบกระจาย...'}</p></div>
         ) : (
           <>
-            <UploadCloud className="w-8 h-8 text-[#1B365D] mb-2" />
-            <p className="font-semibold text-sm text-[#1B365D]">ลากวางไฟล์ใบกระจาย — Excel (.xls/.xlsx) หรือ PDF (หลายไฟล์ได้)</p>
+            <UploadCloud className="w-8 h-8 text-brand-navy mb-2" />
+            <p className="font-semibold text-sm text-brand-navy">ลากวางไฟล์ใบกระจาย — Excel (.xls/.xlsx) หรือ PDF (หลายไฟล์ได้)</p>
             <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1 mt-2">
               💡 แนะนำ Excel — ฟรี ไม่ใช้ AI ชื่อสินค้าเป๊ะ 100% ตัวหารจับอัตโนมัติ
             </p>
@@ -589,7 +604,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
               <button onClick={() => excelRef.current?.click()}
                 className="bg-emerald-600 text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-4 h-4" />นำเข้า Excel</button>
               <button onClick={() => fileRef.current?.click()} disabled={!aiEnabled}
-                className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-2 text-xs font-semibold">เลือกไฟล์ PDF</button>
+                className="bg-brand-red disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-2 text-xs font-semibold">เลือกไฟล์ PDF</button>
               <button onClick={manual} className="border border-natural-border rounded-full px-4 py-2 text-xs font-semibold">กรอกเอง</button>
               <label className="flex items-center gap-1 text-[11px] text-natural-muted ml-1">
                 โมเดล AI:
@@ -599,7 +614,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
                     showToast('success', `เปลี่ยนโมเดลเป็น ${e.target.value}`);
                     reload();
                   }}
-                  className="border border-natural-border rounded-lg px-2 py-1 text-[11px] font-semibold text-[#1B365D]">
+                  className="border border-natural-border rounded-lg px-2 py-1 text-[11px] font-semibold text-brand-navy">
                   {GEMINI_MODELS.map((m) => <option key={m} value={m}>{m}</option>)}
                 </select>
               </label>
@@ -614,14 +629,14 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
         {([['all', 'ทั้งหมด'], ['divider', '🟧 เฉพาะมีตัวหาร'], ['warning', '⚠️ ต้องตรวจสอบ']] as const).map(([k, l]) => (
-          <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${filter === k ? 'bg-[#1B365D] text-white border-[#1B365D]' : 'border-natural-border'}`}>{l}</button>
+          <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${filter === k ? 'bg-brand-navy text-white border-brand-navy' : 'border-natural-border'}`}>{l}</button>
         ))}
         <div className="relative ml-auto">
           <Search className="w-4 h-4 text-natural-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="ค้นหา: เลขใบกระจาย / ทะเบียน / คนขับ / เลขใบรับ / ผู้รับ"
-            className="border border-natural-border rounded-full pl-8 pr-8 py-1.5 text-xs w-72 focus:outline-none focus:border-[#1B365D]"
+            className="border border-natural-border rounded-full pl-8 pr-8 py-1.5 text-xs w-72 focus:outline-none focus:border-brand-navy"
           />
           {search && <button onClick={() => setSearch('')} title="ล้าง" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-natural-muted hover:text-rose-600 font-bold">×</button>}
         </div>
@@ -665,16 +680,16 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   return (
     <div className="bg-white rounded-2xl border border-natural-border p-5 flex flex-col gap-4">
       <div className="flex items-center justify-between border-b border-natural-border pb-2 gap-2">
-        <h3 className="font-bold text-sm text-[#1B365D] truncate">ขั้นตอนตรวจสอบก่อนยืนยัน — {pending.fileName}</h3>
+        <h3 className="font-bold text-sm text-brand-navy truncate">ขั้นตอนตรวจสอบก่อนยืนยัน — {pending.fileName}</h3>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={() => setPending(null)} className="text-xs text-natural-muted hover:text-rose-600 font-semibold border border-natural-border rounded-full px-3 py-1.5">ยกเลิก</button>
-          <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-1.5 text-xs font-bold flex items-center gap-1.5"><Save className="w-3.5 h-3.5" />ยืนยันบันทึก</button>
+          <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-brand-red disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-1.5 text-xs font-bold flex items-center gap-1.5"><Save className="w-3.5 h-3.5" />ยืนยันบันทึก</button>
         </div>
       </div>
 
       {/* 📅 รอบที่ใบนี้จะเข้า (อัตโนมัติจากวันที่ในใบ) */}
       {tgtCycle && (
-        <div className={`rounded-xl p-3 text-xs flex items-center gap-1.5 font-semibold border ${cycleClosed ? 'bg-rose-50 border-rose-400 text-rose-800' : 'bg-[#EAF2F8] border-[#1B365D]/30 text-[#1B365D]'}`}>
+        <div className={`rounded-xl p-3 text-xs flex items-center gap-1.5 font-semibold border ${cycleClosed ? 'bg-rose-50 border-rose-400 text-rose-800' : 'bg-[#EAF2F8] border-brand-navy/30 text-brand-navy'}`}>
           <Calendar className="w-4 h-4 shrink-0" />
           ใบนี้จะเข้ารอบ: <b>{tgtCycle}</b> (ตามวันที่ {ext.documentDate})
           {cycleNew && <span className="bg-emerald-600 text-white rounded-full px-2 py-0.5">เปิดรอบใหม่อัตโนมัติ</span>}
@@ -708,9 +723,9 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
 
       {/* แถบเลือกราคาขนส่ง — จุดสำคัญ ทำให้เด่นชัด */}
       <div className={`rounded-2xl border-2 p-3.5 flex flex-col sm:flex-row sm:items-center gap-3 ${
-        prev.rateType === 'piece' ? 'border-[#C65911] bg-[#FFF2CC]' : prev.rateType === 'flat' ? 'border-[#1B365D] bg-[#EAF2F8]' : 'border-rose-400 bg-rose-50'}`}>
+        prev.rateType === 'piece' ? 'border-[#C65911] bg-[#FFF2CC]' : prev.rateType === 'flat' ? 'border-brand-navy bg-[#EAF2F8]' : 'border-rose-400 bg-rose-50'}`}>
         <div className="flex items-center gap-2.5 shrink-0">
-          <div className={`rounded-xl p-2 text-white ${prev.rateType === 'piece' ? 'bg-[#C65911]' : prev.rateType === 'flat' ? 'bg-[#1B365D]' : 'bg-rose-500'}`}>
+          <div className={`rounded-xl p-2 text-white ${prev.rateType === 'piece' ? 'bg-[#C65911]' : prev.rateType === 'flat' ? 'bg-brand-navy' : 'bg-rose-500'}`}>
             <Coins className="w-5 h-5" />
           </div>
           <div>
@@ -724,11 +739,11 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
           <div className="flex items-center gap-2.5 sm:ml-auto w-full sm:w-auto">
             <select aria-label="เลือกราคาขนส่ง" value={ext.rateChoice || prev.rateType || ''}
               onChange={(e) => update({ rateChoice: e.target.value as any })}
-              className="flex-1 sm:flex-none border-2 border-natural-border bg-white rounded-xl px-3 py-2.5 text-base font-bold text-[#1B365D] focus:border-[#1B365D] outline-none cursor-pointer shadow-xs">
+              className="flex-1 sm:flex-none border-2 border-natural-border bg-white rounded-xl px-3 py-2.5 text-base font-bold text-brand-navy focus:border-brand-navy outline-none cursor-pointer shadow-xs">
               {prev.rateOptions.flat != null && <option value="flat">🔵 เหมา ฿{money(prev.rateOptions.flat)} (สูงสุด)</option>}
               {prev.rateOptions.piece != null && <option value="piece">🟠 ชิ้น รวมทุกจุด ฿{money(prev.rateOptions.piece)}</option>}
             </select>
-            <span className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-bold text-white ${prev.rateType === 'piece' ? 'bg-[#C65911]' : 'bg-[#1B365D]'}`}>
+            <span className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-bold text-white ${prev.rateType === 'piece' ? 'bg-[#C65911]' : 'bg-brand-navy'}`}>
               {prev.rateType === 'piece' ? 'คิดแบบ ชิ้น' : 'คิดแบบ เหมา'}
             </span>
           </div>
@@ -738,7 +753,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
       </div>
 
       {/* 💰 ยอดรวมทั้งใบ (รวมเก็บคืน/Peat) — เด่นชัด */}
-      <div className="rounded-xl bg-[#1B365D] text-white px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+      <div className="rounded-xl bg-brand-navy text-white px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1">
         <span className="text-base font-bold">💰 ยอดรวมทั้งใบ: ฿{money(prev.tripAmount)}</span>
         <span className="text-[11px] opacity-90">
           งานปกติ ฿{money(prev.breakdown?.normal || 0)}
@@ -764,7 +779,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
               <Field label="อำเภอปลายทาง" value={r.districtRaw || ''} onChange={(v) => updReceipt(ri, { districtRaw: v })} />
               <div className="flex flex-col justify-end text-[11px]">
                 <span className="text-natural-muted text-[10px] font-bold uppercase">ราคา/ค่าเที่ยวจุดนี้</span>
-                <span className="font-semibold text-[#1B365D]">
+                <span className="font-semibold text-brand-navy">
                   {(pr?.collectQty > 0)
                     ? <span className="text-emerald-700">🔄 เก็บคืน ฿{money(pr.collectPrice || 0)} × {qtyFmt(pr.collectQty)} = ฿{money((pr.collectPrice || 0) * pr.collectQty)}</span>
                     : (pr?.peatQty > 0)
@@ -801,7 +816,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
                 })}
               </tbody>
             </table>
-            <button onClick={() => updReceipt(ri, { items: [...r.items, { productName: '', quantity: 0 }] })} className="text-[#1B365D] text-xs font-semibold mt-1 flex items-center gap-1"><Plus className="w-3 h-3" />เพิ่มสินค้า</button>
+            <button onClick={() => updReceipt(ri, { items: [...r.items, { productName: '', quantity: 0 }] })} className="text-brand-navy text-xs font-semibold mt-1 flex items-center gap-1"><Plus className="w-3 h-3" />เพิ่มสินค้า</button>
             {pr?.hasAdjustment && (
               <div className="mt-2 text-[11px] text-[#C65911] font-semibold flex flex-wrap gap-2">
                 {(pr.adjustments || []).map((a: any, i: number) => <span key={i} className="bg-white border border-[#C65911]/40 rounded-full px-2 py-0.5">🟧÷{a.divisor} {a.productName}: {a.note}</span>)}
@@ -826,11 +841,11 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
         );
       })}
       <button onClick={() => update({ receipts: [...ext.receipts, { receiptNo: '', receiverName: '', senderName: '', items: [{ productName: '', quantity: 0 }] }] })}
-        className="text-[#1B365D] text-xs font-semibold flex items-center gap-1"><Plus className="w-3.5 h-3.5" />เพิ่มใบรับสินค้า</button>
+        className="text-brand-navy text-xs font-semibold flex items-center gap-1"><Plus className="w-3.5 h-3.5" />เพิ่มใบรับสินค้า</button>
 
       {/* totals + save */}
       <div className="flex items-center justify-between border-t border-natural-border pt-3">
-        <div className="text-sm font-bold text-[#1B365D]">ค่าเที่ยวรวม: ฿{money(prev.tripAmount)} <span className="text-natural-muted font-normal">(คิด {qtyFmt(prev.billingQty)}/{qtyFmt(prev.totalQty)} ลัง)</span>
+        <div className="text-sm font-bold text-brand-navy">ค่าเที่ยวรวม: ฿{money(prev.tripAmount)} <span className="text-natural-muted font-normal">(คิด {qtyFmt(prev.billingQty)}/{qtyFmt(prev.totalQty)} ลัง)</span>
           {prev.breakdown && ((prev.breakdown.collect || 0) > 0 || (prev.breakdown.peat || 0) > 0) && (
             <span className="block text-[11px] text-natural-muted font-normal mt-0.5">
               งานปกติ ฿{money(prev.breakdown.normal)}
@@ -841,7 +856,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
           {needsBox && <span className="block text-rose-600 text-xs font-semibold mt-0.5">⚠️ มีใบรับที่ต้องกรอกจำนวนกล่องก่อนบันทึก</span>}
           {isDup && <span className="block text-rose-600 text-xs font-semibold mt-0.5">🔒 เลขใบกระจายซ้ำ — บันทึกไม่ได้</span>}
         </div>
-        <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-[#1B365D] disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>
+        <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-brand-red disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>
       </div>
     </div>
   );
@@ -853,7 +868,7 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
     <div className={`bg-white rounded-2xl border p-4 ${trip.warnings.length ? 'border-l-4 border-l-[#9C0006]' : hasDiv ? 'border-l-4 border-l-[#C65911]' : 'border-natural-border'}`}>
       <div className="flex items-center justify-between">
         <div>
-          <span className="font-bold text-[#1B365D] text-sm">{trip.documentNo}</span>
+          <span className="font-bold text-brand-navy text-sm">{trip.documentNo}</span>
           <span className="text-natural-muted text-xs ml-2">{trip.documentDate} · {trip.plateNo} {trip.driverName && `(${trip.driverName})`} · {trip.rateType === 'flat' ? 'เหมา' : 'ชิ้น'}</span>
         </div>
         <div className="flex items-center gap-3">
@@ -950,8 +965,8 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
     <div className="flex flex-col gap-4">
       {/* ตัวกรองรายทะเบียน (ใช้ร่วมทุกตาราง) */}
       <div className="bg-white rounded-2xl border border-natural-border p-3 flex flex-wrap items-center gap-2 text-sm">
-        <span className="font-semibold text-[#1B365D] flex items-center gap-1"><Filter className="w-4 h-4" />กรองทะเบียน:</span>
-        <select aria-label="กรองทะเบียนรถ" value={fPlate} onChange={(e) => setFPlate(e.target.value)} className="border border-natural-border rounded-full px-3 py-1.5 text-sm font-semibold text-[#1B365D]">
+        <span className="font-semibold text-brand-navy flex items-center gap-1"><Filter className="w-4 h-4" />กรองทะเบียน:</span>
+        <select aria-label="กรองทะเบียนรถ" value={fPlate} onChange={(e) => setFPlate(e.target.value)} className="border border-natural-border rounded-full px-3 py-1.5 text-sm font-semibold text-brand-navy">
           <option value="">🚚 ทุกทะเบียน ({allPlates.length})</option>
           {allPlates.map((p) => <option key={p} value={p}>{p}</option>)}
         </select>
@@ -975,7 +990,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           <input aria-label="เลขใบสั่งเติม" placeholder="เลขใบสั่งเติม" value={fForm.refNo} onChange={(e) => setFForm({ ...fForm, refNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-32" />
           <input type="date" aria-label="วันที่เติมน้ำมัน" value={fForm.date} onChange={(e) => setFForm({ ...fForm, date: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
           <input type="number" aria-label="จำนวนเงินค่าน้ำมัน" placeholder="จำนวนเงิน" value={fForm.amount || ''} onChange={(e) => setFForm({ ...fForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
-          <button onClick={addFuel} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+          <button onClick={addFuel} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
         <SimpleTable rows={fuelF.map((f: FuelEntry) => [f.plateNo, f.refNo, f.date, money(f.amount)])} cols={['ทะเบียน', 'ใบสั่งเติม', 'วันที่', 'จำนวน']}
           onDelete={async (i: number) => { await api(`/api/fuel/${fuelF[i].id}`, 'DELETE'); reload(); }} />
@@ -1006,7 +1021,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           </select>
           <input type="number" aria-label="จำนวนเงินรายการหัก" placeholder="จำนวนเงิน" value={dForm.amount || ''} onChange={(e) => setDForm({ ...dForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
           <input aria-label="ใบกระจายเลขที่" placeholder="ใบกระจายเลขที่" value={dForm.docNo} onChange={(e) => setDForm({ ...dForm, docNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-36" />
-          <button onClick={() => addEntry(dForm.plateNo, dForm.categoryId, dForm.amount, 'deduction', dForm.docNo, () => setDForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+          <button onClick={() => addEntry(dForm.plateNo, dForm.categoryId, dForm.amount, 'deduction', dForm.docNo, () => setDForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
         <SimpleTable rows={dedF.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวน']}
           onDelete={async (i: number) => { await api(`/api/deductions/${dedF[i].id}`, 'DELETE'); reload(); }} />
@@ -1042,7 +1057,7 @@ function CategoryManager({ cats, api, branchId, reload, showToast }: any) {
           <option value="deduction">รายการหัก (−)</option>
           <option value="income">รายได้เพิ่ม (+)</option>
         </select>
-        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่มประเภท</button>
+        <button onClick={add} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่มประเภท</button>
       </div>
       <SimpleTable cols={['ชื่อประเภท', 'ทิศทาง', 'ระบบ']}
         rows={cats.map((c: MoneyCategory) => [c.name, c.kind === 'income' ? 'รายได้เพิ่ม (+)' : 'หักออก (−)', c.builtin ? '✓' : ''])}
@@ -1072,7 +1087,7 @@ function DashboardTab({ db, cycle, branchId, isHQ }: any) {
       </div>
       <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
         <table className="w-full text-xs min-w-[800px]">
-          <thead className="bg-[#1B365D] text-white"><tr>
+          <thead className="bg-brand-navy text-white"><tr>
             {['ทะเบียน', 'คนขับ', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ'].map((h) => <th key={h} className={`p-2 font-semibold ${h === 'ทะเบียน' || h === 'คนขับ' ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
@@ -1140,13 +1155,13 @@ function HQDashboard({ db, cycle }: any) {
 
       <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
         <table className="w-full text-xs min-w-[760px]">
-          <thead className="bg-[#1B365D] text-white"><tr>
+          <thead className="bg-brand-navy text-white"><tr>
             {['สาขา', 'ใบกระจาย', 'รถ', 'ค่าเที่ยว', 'ค่าน้ำมัน', '+รายได้เพิ่ม', 'รวมหัก', 'รับสุทธิ', 'สัดส่วน'].map((h) => <th key={h} className={`p-2 font-semibold ${h === 'สาขา' || h === 'สัดส่วน' ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {rows.map((r, i) => (
               <tr key={r.branch.id} className={i % 2 ? 'bg-[#F9FAFC]' : ''}>
-                <td className="p-2 font-semibold text-[#1B365D]">{r.branch.name}</td>
+                <td className="p-2 font-semibold text-brand-navy">{r.branch.name}</td>
                 <td className="p-2 text-right">{r.docs}</td>
                 <td className="p-2 text-right">{r.trucks}</td>
                 <td className="p-2 text-right">{money(r.trip)}</td>
@@ -1154,10 +1169,10 @@ function HQDashboard({ db, cycle }: any) {
                 <td className="p-2 text-right text-emerald-700">{money(r.income)}</td>
                 <td className="p-2 text-right text-rose-700">{money(r.deduct)}</td>
                 <td className="p-2 text-right font-bold text-[#C00000]">{money(r.net)}</td>
-                <td className="p-2 w-32"><div className="bg-natural-bg rounded-full h-2 overflow-hidden"><div className="bg-[#1B365D] h-2 rounded-full" style={{ width: `${(r.trip / maxTrip) * 100}%` }} /></div></td>
+                <td className="p-2 w-32"><div className="bg-natural-bg rounded-full h-2 overflow-hidden"><div className="bg-brand-navy h-2 rounded-full" style={{ width: `${(r.trip / maxTrip) * 100}%` }} /></div></td>
               </tr>
             ))}
-            <tr className="border-t-2 border-[#1B365D] font-bold bg-[#FFF2CC]">
+            <tr className="border-t-2 border-brand-navy font-bold bg-[#FFF2CC]">
               <td className="p-2">รวมทุกสาขา</td>
               <td className="p-2 text-right">{g.docs}</td>
               <td className="p-2"></td>
@@ -1201,10 +1216,10 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
     <div className="flex flex-col gap-4">
       {/* action */}
       <div className="bg-white rounded-2xl border border-natural-border p-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm"><span className="font-bold text-[#1B365D]">รายงานต่อทะเบียน</span> <span className="text-natural-muted ml-2">รอบ {cycle.name} · สาขา {branchName} · {sums.length} ทะเบียน</span></div>
+        <div className="text-sm"><span className="font-bold text-brand-navy">รายงานต่อทะเบียน</span> <span className="text-natural-muted ml-2">รอบ {cycle.name} · สาขา {branchName} · {sums.length} ทะเบียน</span></div>
         <div className="flex items-center gap-2 ml-auto">
           <label className="text-xs text-natural-muted font-semibold">เลือกทะเบียน:</label>
-          <select aria-label="เลือกทะเบียนรถ" value={selPlate} onChange={(e) => setSelPlate(e.target.value)} className="border border-natural-border rounded-full px-3 py-1.5 text-xs focus:outline-none focus:border-[#1B365D]">
+          <select aria-label="เลือกทะเบียนรถ" value={selPlate} onChange={(e) => setSelPlate(e.target.value)} className="border border-natural-border rounded-full px-3 py-1.5 text-xs focus:outline-none focus:border-brand-navy">
             <option value="">🚚 ทุกคัน ({sums.length})</option>
             {sums.map((s: any) => <option key={s.plateNo} value={s.plateNo}>{s.plateNo} — {s.driverName}</option>)}
           </select>
@@ -1215,12 +1230,12 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
       {sums.length === 0 ? <EmptyHint text="ยังไม่มีข้อมูลในรอบนี้" /> : (<>
         {/* สรุปรวม */}
         <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
-          <div className="px-4 pt-3 font-bold text-[#1B365D] text-sm">📊 สรุปรวมต่อทะเบียน</div>
+          <div className="px-4 pt-3 font-bold text-brand-navy text-sm">📊 สรุปรวมต่อทะเบียน</div>
           <table className="w-full text-xs min-w-[760px] mt-2">
-            <thead className="bg-[#1B365D] text-white"><tr><TH>ทะเบียน</TH><TH>คนขับ</TH><TH r>รายได้</TH><TH r>หัก 1%</TH><TH r>ค่าน้ำมัน</TH><TH r>+รายได้เพิ่ม</TH><TH r>รวมหัก</TH><TH r>รับสุทธิ</TH></tr></thead>
+            <thead className="bg-brand-navy text-white"><tr><TH>ทะเบียน</TH><TH>คนขับ</TH><TH r>รายได้</TH><TH r>หัก 1%</TH><TH r>ค่าน้ำมัน</TH><TH r>+รายได้เพิ่ม</TH><TH r>รวมหัก</TH><TH r>รับสุทธิ</TH></tr></thead>
             <tbody>
               {sums.map((s: any, i: number) => (
-                <tr key={s.plateNo} onClick={() => setSelPlate(selPlate === s.plateNo ? '' : s.plateNo)} className={`cursor-pointer ${selPlate === s.plateNo ? 'bg-[#FFF2CC] ring-1 ring-[#1B365D]' : i % 2 ? 'bg-[#F9FAFC]' : ''} hover:bg-[#EAF2F8]`}>
+                <tr key={s.plateNo} onClick={() => setSelPlate(selPlate === s.plateNo ? '' : s.plateNo)} className={`cursor-pointer ${selPlate === s.plateNo ? 'bg-[#FFF2CC] ring-1 ring-brand-navy' : i % 2 ? 'bg-[#F9FAFC]' : ''} hover:bg-[#EAF2F8]`}>
                   <TD b>{s.plateNo}</TD><TD>{s.driverName}</TD><TD r>{money(s.totalTripAmount)}</TD><TD r>{money(s.deduction1Percent)}</TD><TD r>{money(s.fuelTotal)}</TD><TD r>{money(s.incomeAdd)}</TD><TD r>{money(s.deductionTotal)}</TD>
                   <td className="px-2 py-1 text-right font-bold text-[#C00000]">{money(s.netReceive)}</td>
                 </tr>
@@ -1244,10 +1259,10 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
           const dedLines = s.lines.filter((l: any) => l.kind === 'deduction');
           return (
             <div key={s.plateNo} className="bg-white rounded-2xl border border-natural-border p-4">
-              <div className="font-bold text-[#1B365D] mb-2">🚚 {s.plateNo} <span className="text-natural-muted font-normal text-sm">· {s.driverName}</span></div>
+              <div className="font-bold text-brand-navy mb-2">🚚 {s.plateNo} <span className="text-natural-muted font-normal text-sm">· {s.driverName}</span></div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs min-w-[720px]">
-                  <thead className="bg-[#1B365D] text-white"><tr><TH>วันที่</TH><TH>ปลายทาง</TH><TH>เลขใบกระจาย</TH><TH r>จำนวน</TH><TH>แบบ</TH><TH r>ราคา</TH><TH r>เป็นเงิน</TH><TH r>พิเศษ</TH><TH r>รวม</TH><TH>หมายเหตุ</TH></tr></thead>
+                  <thead className="bg-brand-navy text-white"><tr><TH>วันที่</TH><TH>ปลายทาง</TH><TH>เลขใบกระจาย</TH><TH r>จำนวน</TH><TH>แบบ</TH><TH r>ราคา</TH><TH r>เป็นเงิน</TH><TH r>พิเศษ</TH><TH r>รวม</TH><TH>หมายเหตุ</TH></tr></thead>
                   <tbody>
                     {vTrips.map((t: TripDocument) => {
                       const piecePrice = t.receipts?.find((r) => r.piecePrice != null)?.piecePrice ?? null;
@@ -1259,7 +1274,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                           <TD>{fmtD(t.documentDate)}</TD><TD>{t.districtRaw ? 'อ.' + t.districtRaw : ''} {t.provinceRaw ? 'จ.' + t.provinceRaw : ''}</TD><TD>{t.documentNo}</TD>
                           <TD r>{qtyFmt(t.billingQty)}</TD><TD>{t.rateType === 'piece' ? 'ชิ้น' : t.rateType === 'flat' ? 'เหมา' : '-'}</TD>
                           <TD r>{unitRate != null ? money(unitRate) : '-'}</TD><TD r>{money(t.tripAmount)}</TD><TD r>{extra ? money(extra) : '-'}</TD>
-                          <td className="px-2 py-1 text-right font-bold text-[#1B365D]">{money(t.tripAmount + extra)}</td>
+                          <td className="px-2 py-1 text-right font-bold text-brand-navy">{money(t.tripAmount + extra)}</td>
                           <TD>{hasDiv ? <span className="text-[#C65911] font-semibold">มีหาร</span> : ''}</TD>
                         </tr>
                       );
@@ -1271,7 +1286,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
               {/* สรุปย่อ + น้ำมัน */}
               <div className="grid md:grid-cols-2 gap-4 mt-3">
                 <div className="text-xs">
-                  <div className="font-semibold text-[#1B365D] mb-1">สรุป</div>
+                  <div className="font-semibold text-brand-navy mb-1">สรุป</div>
                   <div className="flex justify-between"><span>รายได้ค่าเที่ยว</span><b>{money(s.totalTripAmount)}</b></div>
                   {inDocIncome > 0 && <div className="flex justify-between text-emerald-700"><span>+ รายได้เพิ่มในใบ (พิเศษ)</span><span>+{money(inDocIncome)}</span></div>}
                   {perCycleInc.map((l) => <div key={l.label} className="flex justify-between text-emerald-700"><span>+ {l.label}</span><span>+{money(l.amount)}</span></div>)}
@@ -1281,7 +1296,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                   <div className="flex justify-between border-t border-natural-border mt-1 pt-1 font-bold text-[#C00000]"><span>รวมรับสุทธิ</span><span>{money(s.netReceive)}</span></div>
                 </div>
                 <div className="text-xs">
-                  <div className="font-semibold text-[#1B365D] mb-1">ใบสั่งเติมน้ำมัน</div>
+                  <div className="font-semibold text-brand-navy mb-1">ใบสั่งเติมน้ำมัน</div>
                   {vFuel.length === 0 ? <div className="text-natural-muted">ไม่มี</div> : (
                     <table className="w-full">
                       <thead className="text-natural-muted border-b border-natural-border"><tr><th className="text-left py-0.5">วัน/เดือน/ปี</th><th className="text-left">เลขใบสั่ง</th><th className="text-right">จำนวนเงิน</th></tr></thead>
@@ -1447,7 +1462,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
 
       {/* สวิตช์ ราคาหลัก / ราคาเฉพาะรอบ */}
       <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
-        <button onClick={() => setMode('base')} className={`px-3 py-1.5 rounded-full font-semibold border ${mode === 'base' ? 'bg-[#1B365D] text-white border-[#1B365D]' : 'border-natural-border text-natural-muted'}`}>ราคาหลัก (ทุกรอบ)</button>
+        <button onClick={() => setMode('base')} className={`px-3 py-1.5 rounded-full font-semibold border ${mode === 'base' ? 'bg-brand-navy text-white border-brand-navy' : 'border-natural-border text-natural-muted'}`}>ราคาหลัก (ทุกรอบ)</button>
         <button onClick={() => setMode('cycle')} disabled={!cycle} className={`px-3 py-1.5 rounded-full font-semibold border disabled:opacity-40 ${mode === 'cycle' ? 'bg-amber-500 text-white border-amber-500' : 'border-natural-border text-natural-muted'}`}>
           🏷️ ราคาเฉพาะรอบ{cycle ? `: ${cycle.name}` : ' (เลือกรอบก่อน)'}
         </button>
@@ -1455,7 +1470,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         {branchGroups.length > 0 && (
           <label className="flex items-center gap-1 text-xs text-natural-muted ml-auto">
             กรองกลุ่ม:
-            <select aria-label="กรองกลุ่มราคา" value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1 text-xs font-semibold text-[#1B365D]">
+            <select aria-label="กรองกลุ่มราคา" value={filterGroup} onChange={(e) => setFilterGroup(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1 text-xs font-semibold text-brand-navy">
               <option value="__all__">ทุกกลุ่ม</option>
               {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
               <option value="__none__">— ไม่ระบุกลุ่ม (ใช้ร่วม) —</option>
@@ -1498,9 +1513,9 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         </select>
         <input type="number" aria-label="ราคา" placeholder="ราคา" value={form.price || ''} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
         <input type="number" aria-label="จุดตัดชิ้น" placeholder="จุดตัดชิ้น" title="≤จุดตัด=เหมา, >จุดตัด=ชิ้น (เว้นว่าง=ไม่ใช้)" value={form.pieceThreshold} onChange={(e) => setForm({ ...form, pieceThreshold: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
-        <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-[#1B365D]'} text-white rounded-lg px-3 py-1.5 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
+        <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-brand-navy'} text-white rounded-lg px-3 py-1.5 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
         {editId && <button onClick={cancelEdit} className="border border-natural-border rounded-lg px-3 py-1.5 text-sm font-semibold">ยกเลิก</button>}
-        <button onClick={() => setAdv(!adv)} className="text-xs text-[#1B365D] font-semibold underline">{adv ? 'ซ่อน' : 'เงื่อนไขพิเศษ'}</button>
+        <button onClick={() => setAdv(!adv)} className="text-xs text-brand-navy font-semibold underline">{adv ? 'ซ่อน' : 'เงื่อนไขพิเศษ'}</button>
         {sel.size > 0 && (
           <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
             <Trash2 className="w-4 h-4" />ลบที่เลือก ({sel.size})
@@ -1542,13 +1557,13 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
                 {branchGroups.length > 0 && (
                   <td className="py-1.5 px-1">
                     <select aria-label={`กลุ่ม ${r.destinationName}`} value={r.rateGroup || ''} onChange={(e) => updateGroup(r, e.target.value)}
-                      className="border border-natural-border rounded px-1 py-0.5 text-xs font-semibold text-[#1B365D]">
+                      className="border border-natural-border rounded px-1 py-0.5 text-xs font-semibold text-brand-navy">
                       <option value="">ใช้ร่วม</option>
                       {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
                     </select>
                   </td>
                 )}
-                <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{r.destinationName}</td>
+                <td className="py-1.5 px-1 font-semibold text-brand-navy">{r.destinationName}</td>
                 <td className="py-1.5 px-1">{r.provinceName}</td>
                 <td className="py-1.5 px-1">{r.districtName}</td>
                 <td className="py-1.5 px-1">{(r.productCategory && r.productCategory !== 'normal') ? <span className="text-amber-700 font-semibold">{catLabel(r.productCategory)}</span> : <span className="text-natural-muted">ปกติ</span>}</td>
@@ -1556,18 +1571,18 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
                 <td className="py-1.5 px-1">
                   <input type="number" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}`} defaultValue={effPrice(r)} aria-label={`ราคา ${r.destinationName}`}
                     onBlur={(e) => { const v = +e.target.value; if (v !== effPrice(r)) saveCell(r, 'price', v); }}
-                    className={`w-20 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-[#1B365D]`} />
+                    className={`w-20 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
                   {cycleMode && ovFor(r) && <span className="text-[9px] text-amber-700 ml-0.5">เฉพาะรอบ</span>}
                 </td>
                 <td className="py-1.5 px-1">
                   <input type="number" key={`t-${r.id}-${cycleMode ? 'c' : 'b'}-${effTh(r) ?? ''}`} defaultValue={effTh(r) ?? ''} placeholder="-" aria-label={`จุดตัด ${r.destinationName}`}
                     onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v !== effTh(r)) saveCell(r, 'pieceThreshold', v); }}
-                    className={`w-16 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-[#1B365D]`} />
+                    className={`w-16 border rounded px-1 py-0.5 text-xs text-right outline-none ${cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
                 </td>
                 <td className="py-1.5 px-1">{r.effectiveFrom}</td>
                 <td className="py-1.5 px-1 whitespace-nowrap">
                   {cycleMode && ovFor(r) && <button type="button" title="กลับไปใช้ราคาหลัก" onClick={() => removeOverride(r)} className="text-amber-600 hover:text-amber-800 mr-1"><RefreshCw className="w-3.5 h-3.5 inline" /></button>}
-                  <button type="button" title="แก้ไข (ใส่รหัส)" onClick={() => startEdit(r)} className="text-[#1B365D] hover:text-amber-700 font-semibold mr-2">✎</button>
+                  <button type="button" title="แก้ไข (ใส่รหัส)" onClick={() => startEdit(r)} className="text-brand-navy hover:text-amber-700 font-semibold mr-2">✎</button>
                   <button type="button" title="ลบ" onClick={() => delOne(r)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5 inline" /></button>
                 </td>
               </tr>
@@ -1645,11 +1660,11 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
         <div className="grid md:grid-cols-2 gap-4">
           {/* ผู้รับ */}
           <div className="bg-natural-bg rounded-xl p-3">
-            <div className="font-bold text-sm text-[#1B365D] mb-2">👤 ผู้รับที่หาร 3 ({allReceivers.length})</div>
+            <div className="font-bold text-sm text-brand-navy mb-2">👤 ผู้รับที่หาร 3 ({allReceivers.length})</div>
             <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
               {allReceivers.length === 0 && <span className="text-xs text-natural-muted">ยังไม่มี — ว่าง = หารทุกผู้รับ</span>}
               {allReceivers.map((n) => (
-                <span key={n} className="inline-flex items-center gap-1 bg-white border border-[#1B365D]/30 rounded-full pl-2.5 pr-1 py-0.5 text-xs">
+                <span key={n} className="inline-flex items-center gap-1 bg-white border border-brand-navy/30 rounded-full pl-2.5 pr-1 py-0.5 text-xs">
                   {n}
                   <button type="button" title="ลบ" onClick={() => syncName('receiverKeyword', n, 'remove')} className="text-natural-muted hover:text-rose-600 font-bold w-4">×</button>
                 </span>
@@ -1657,16 +1672,16 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
             </div>
             <div className="flex gap-2">
               <input value={newRecv} onChange={(e) => setNewRecv(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { syncName('receiverKeyword', newRecv, 'add'); setNewRecv(''); } }} placeholder="พิมพ์ชื่อผู้รับ เช่น รำพึงรีสอร์ท" className="flex-1 border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
-              <button onClick={() => { syncName('receiverKeyword', newRecv, 'add'); setNewRecv(''); }} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+              <button onClick={() => { syncName('receiverKeyword', newRecv, 'add'); setNewRecv(''); }} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
             </div>
           </div>
           {/* ผู้ส่ง */}
           <div className="bg-natural-bg rounded-xl p-3">
-            <div className="font-bold text-sm text-[#1B365D] mb-2">🚚 ผู้ส่งที่หาร 3 ({allSenders.length})</div>
+            <div className="font-bold text-sm text-brand-navy mb-2">🚚 ผู้ส่งที่หาร 3 ({allSenders.length})</div>
             <div className="flex flex-wrap gap-1.5 mb-2 min-h-[28px]">
               {allSenders.length === 0 && <span className="text-xs text-natural-muted">ยังไม่มี</span>}
               {allSenders.map((n) => (
-                <span key={n} className="inline-flex items-center gap-1 bg-white border border-[#1B365D]/30 rounded-full pl-2.5 pr-1 py-0.5 text-xs">
+                <span key={n} className="inline-flex items-center gap-1 bg-white border border-brand-navy/30 rounded-full pl-2.5 pr-1 py-0.5 text-xs">
                   {n}
                   <button type="button" title="ลบ" onClick={() => syncName('senderKeyword', n, 'remove')} className="text-natural-muted hover:text-rose-600 font-bold w-4">×</button>
                 </span>
@@ -1674,7 +1689,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
             </div>
             <div className="flex gap-2">
               <input value={newSend} onChange={(e) => setNewSend(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { syncName('senderKeyword', newSend, 'add'); setNewSend(''); } }} placeholder="พิมพ์ชื่อผู้ส่ง เช่น ซีโน" className="flex-1 border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
-              <button onClick={() => { syncName('senderKeyword', newSend, 'add'); setNewSend(''); }} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+              <button onClick={() => { syncName('senderKeyword', newSend, 'add'); setNewSend(''); }} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
             </div>
           </div>
         </div>
@@ -1682,7 +1697,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
       </Section>
 
       <Section title="เงื่อนไขแปลงจำนวนสินค้า (ตัวหาร)" icon={Filter}>
-        <p className="text-xs text-natural-muted mb-3">ต้องตรงทุกข้อ: ผู้ส่งเข้าคำ + (ผู้รับเข้าคำ ถ้าระบุ) + กลุ่มผู้รับตรง + ชื่อสินค้า + ขนาด → หารตามตัวหาร (คำนวณแยกตามเลขใบรับสินค้า)<br /><span className="text-[#1B365D]">💡 ช่อง "สินค้า" และ "ผู้รับ" ใส่หลายคำคั่นด้วย <b>|</b> ได้ เช่น <b>ยูบี|ยูปี</b> · ช่องผู้รับเว้นว่าง = ทุกผู้รับ</span></p>
+        <p className="text-xs text-natural-muted mb-3">ต้องตรงทุกข้อ: ผู้ส่งเข้าคำ + (ผู้รับเข้าคำ ถ้าระบุ) + กลุ่มผู้รับตรง + ชื่อสินค้า + ขนาด → หารตามตัวหาร (คำนวณแยกตามเลขใบรับสินค้า)<br /><span className="text-brand-navy">💡 ช่อง "สินค้า" และ "ผู้รับ" ใส่หลายคำคั่นด้วย <b>|</b> ได้ เช่น <b>ยูบี|ยูปี</b> · ช่องผู้รับเว้นว่าง = ทุกผู้รับ</span></p>
         <div className="flex flex-wrap gap-2 mb-3 text-sm">
           <input list="rule-senders" aria-label="ผู้ส่ง (keyword)" placeholder="ผู้ส่ง (พิมพ์ใหม่ได้)" value={form.senderKeyword} onChange={(e) => setForm({ ...form, senderKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
           <input list="rule-receivers" aria-label="ผู้รับ (keyword)" placeholder="ผู้รับ (ว่าง=ทุกคน)" value={form.receiverKeyword} onChange={(e) => setForm({ ...form, receiverKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-36" />
@@ -1692,7 +1707,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
           <input list="rule-products" aria-label="ชื่อสินค้า" placeholder="สินค้า (พิมพ์ใหม่ได้)" value={form.productKeyword} onChange={(e) => setForm({ ...form, productKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
           <input list="rule-sizes" aria-label="ขนาดสินค้า" placeholder="ขนาด เช่น 14 กรัม" value={form.productSizeKeyword} onChange={(e) => setForm({ ...form, productSizeKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
           <input type="number" aria-label="ตัวหาร" placeholder="ตัวหาร" value={form.divisor} onChange={(e) => setForm({ ...form, divisor: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-20" />
-          <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-[#1B365D]'} text-white rounded-lg px-3 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
+          <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-brand-navy'} text-white rounded-lg px-3 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
           {editId && <button onClick={cancelEdit} className="border border-natural-border rounded-lg px-3 font-semibold">ยกเลิก</button>}
           <datalist id="rule-senders">{senderOpts.map((s) => <option key={s} value={s} />)}</datalist>
           <datalist id="rule-receivers">{receiverOpts.map((s) => <option key={s} value={s} />)}</datalist>
@@ -1739,7 +1754,7 @@ function ManualBoxSenderManager({ db, api, branchId, reload, showToast }: any) {
       <div className="flex flex-wrap gap-2 mb-3 text-sm">
         <input aria-label="คำในชื่อผู้ส่ง" placeholder="คำในชื่อผู้ส่ง เช่น คอนซูเมอร์" value={form.senderKeyword} onChange={(e) => setForm({ ...form, senderKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-48" />
         <input aria-label="หมายเหตุ" placeholder="หมายเหตุ (ถ้ามี)" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-48" />
-        <button onClick={add} className="bg-[#1B365D] text-white rounded-lg px-3 font-semibold">เพิ่ม</button>
+        <button onClick={add} className="bg-brand-red text-white rounded-lg px-3 font-semibold">เพิ่ม</button>
       </div>
       <SimpleTable cols={['คำในชื่อผู้ส่ง', 'หมายเหตุ']}
         rows={db.manualBoxSenders.map((s: ManualBoxSender) => [s.senderKeyword, s.note || ''])}
@@ -1780,14 +1795,14 @@ function GroupManager({ db, api, branchId, reload, showToast }: any) {
       {/* เพิ่มกลุ่มใหม่ */}
       <div className="flex flex-wrap gap-2 mb-4">
         <input aria-label="ชื่อกลุ่มผู้รับใหม่" placeholder="ชื่อกลุ่มใหม่ เช่น โลตัส" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-44" />
-        <button onClick={addGroup} className="bg-[#1B365D] text-white rounded-lg px-3 text-sm font-semibold">+ เพิ่มกลุ่ม</button>
+        <button onClick={addGroup} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">+ เพิ่มกลุ่ม</button>
       </div>
 
       <div className="flex flex-col gap-3">
         {db.receiverGroups.map((g: ReceiverGroup) => (
           <div key={g.id} className="border border-natural-border rounded-xl p-3">
             <div className="flex items-center justify-between mb-2">
-              <span className="font-semibold text-sm text-[#1B365D]">{g.groupName}</span>
+              <span className="font-semibold text-sm text-brand-navy">{g.groupName}</span>
               <button type="button" aria-label="ลบกลุ่ม" title="ลบกลุ่ม" onClick={() => delGroup(g)} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-3.5 h-3.5" /></button>
             </div>
             <div className="flex flex-wrap gap-1.5 items-center mb-2">
@@ -1865,7 +1880,7 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
             {branchGroups.map((g) => <option key={g} value={g}>{g}</option>)}
           </select>
         )}
-        <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-[#1B365D]'} text-white rounded-lg px-3 py-1.5 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
+        <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-brand-navy'} text-white rounded-lg px-3 py-1.5 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
         {editId && <button onClick={cancelEdit} className="border border-natural-border rounded-lg px-3 py-1.5 font-semibold">ยกเลิก</button>}
         {sel.size > 0 && (
           <button onClick={bulkDel} className="bg-red-600 text-white rounded-lg px-3 py-1.5 font-semibold flex items-center gap-1 ml-auto">
@@ -1885,7 +1900,7 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
             {vehicles.map((v) => (
               <tr key={v.id} className={`border-b border-natural-border/60 ${sel.has(v.id) ? 'bg-red-50' : ''}`}>
                 <td className="py-1.5 px-1"><input type="checkbox" aria-label={`เลือก ${v.plateNo}`} checked={sel.has(v.id)} onChange={() => toggle(v.id)} /></td>
-                <td className="py-1.5 px-1 font-semibold text-[#1B365D]">{v.plateNo}</td>
+                <td className="py-1.5 px-1 font-semibold text-brand-navy">{v.plateNo}</td>
                 <td className="py-1.5 px-1">{v.driverName}</td>
                 <td className="py-1.5 px-1">{v.vehicleType}</td>
                 {branchGroups.length > 0 && (
@@ -1897,7 +1912,7 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
                   </td>
                 )}
                 <td className="py-1.5 px-1 whitespace-nowrap">
-                  <button type="button" title="แก้ไข (ใส่รหัส)" onClick={() => startEdit(v)} className="text-[#1B365D] hover:text-amber-700 font-semibold mr-2">✎</button>
+                  <button type="button" title="แก้ไข (ใส่รหัส)" onClick={() => startEdit(v)} className="text-brand-navy hover:text-amber-700 font-semibold mr-2">✎</button>
                   <button type="button" title="ลบ" onClick={() => delOne(v)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5 inline" /></button>
                 </td>
               </tr>
@@ -1917,38 +1932,39 @@ function Field({ label, value, onChange, type = 'text' }: { label: string; value
   return (
     <div className="flex flex-col gap-0.5">
       <span className="text-natural-muted text-[10px] font-bold uppercase">{label}</span>
-      <input type={type} value={value} aria-label={label} onChange={(e) => onChange(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1.5 focus:border-[#1B365D] outline-none" />
+      <input type={type} value={value} aria-label={label} onChange={(e) => onChange(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1.5 focus:border-brand-navy outline-none" />
     </div>
   );
 }
 function Section({ title, icon: Icon, children }: any) {
   return (
     <div className="bg-white rounded-2xl border border-natural-border p-5">
-      <h3 className="font-bold text-sm text-[#1B365D] flex items-center gap-1.5 mb-3"><Icon className="w-4 h-4" />{title}</h3>
+      <h3 className="font-bold text-sm text-brand-navy flex items-center gap-1.5 mb-3"><Icon className="w-4 h-4" />{title}</h3>
       {children}
     </div>
   );
 }
 function Stat({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
-    <div className={`rounded-2xl border p-4 text-center ${highlight ? 'bg-[#E6EEF8] border-[#1B365D]' : 'bg-white border-natural-border'}`}>
-      <div className="text-[10px] uppercase font-bold text-natural-muted">{label}</div>
-      <div className={`text-xl font-bold mt-1 ${highlight ? 'text-[#C00000]' : 'text-[#1B365D]'}`}>{value}</div>
+    <div className={`relative rounded-2xl border p-4 overflow-hidden shadow-xs ${highlight ? 'bg-white border-brand-red/30' : 'bg-white border-natural-border'}`}>
+      <span className={`absolute left-0 top-0 bottom-0 w-1 ${highlight ? 'bg-brand-red' : 'bg-brand-navy'}`} />
+      <div className="text-[10px] uppercase font-bold tracking-wide text-natural-muted pl-1">{label}</div>
+      <div className={`text-2xl font-extrabold mt-1 pl-1 ${highlight ? 'text-brand-red' : 'text-brand-navy'}`}>{value}</div>
     </div>
   );
 }
 function SimpleTable({ cols, rows, onDelete, onEdit }: { cols: string[]; rows: any[][]; onDelete?: (i: number) => void; onEdit?: (i: number) => void }) {
   const hasAction = !!(onDelete || onEdit);
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto rounded-xl border border-natural-border">
       <table className="w-full text-xs">
-        <thead><tr className="text-natural-muted text-left border-b border-natural-border">{cols.map((c) => <th key={c} className="py-1.5 px-1">{c}</th>)}{hasAction && <th className="w-16"></th>}</tr></thead>
+        <thead><tr className="bg-brand-navy text-white text-left">{cols.map((c) => <th key={c} className="py-2 px-2 font-semibold">{c}</th>)}{hasAction && <th className="w-16"></th>}</tr></thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className={i % 2 ? 'bg-[#F9FAFC]' : ''}>
+            <tr key={i} className={`border-t border-natural-border ${i % 2 ? 'bg-natural-secondary/40' : 'bg-white'}`}>
               {row.map((cell, j) => <td key={j} className="py-1.5 px-1">{cell}</td>)}
               {hasAction && <td className="text-center whitespace-nowrap">
-                {onEdit && <button type="button" aria-label="แก้ไขรายการ" title="แก้ไข (ใส่รหัส)" onClick={() => onEdit(i)} className="text-[#1B365D] hover:text-amber-700 font-semibold mr-2">✎</button>}
+                {onEdit && <button type="button" aria-label="แก้ไขรายการ" title="แก้ไข (ใส่รหัส)" onClick={() => onEdit(i)} className="text-brand-navy hover:text-amber-700 font-semibold mr-2">✎</button>}
                 {onDelete && <button type="button" aria-label="ลบรายการ" title="ลบรายการ" onClick={async () => { if (await confirmDelete()) onDelete(i); }} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-3.5 h-3.5 inline" /></button>}
               </td>}
             </tr>
