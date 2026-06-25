@@ -1073,7 +1073,7 @@ function DashboardTab({ db, cycle, branchId, isHQ }: any) {
       <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
         <table className="w-full text-xs min-w-[800px]">
           <thead className="bg-[#1B365D] text-white"><tr>
-            {['ทะเบียน', 'คนขับ', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ'].map((h) => <th key={h} className="p-2 font-semibold">{h}</th>)}
+            {['ทะเบียน', 'คนขับ', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ'].map((h) => <th key={h} className={`p-2 font-semibold ${h === 'ทะเบียน' || h === 'คนขับ' ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {sums.map((s, i) => (
@@ -1141,14 +1141,14 @@ function HQDashboard({ db, cycle }: any) {
       <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
         <table className="w-full text-xs min-w-[760px]">
           <thead className="bg-[#1B365D] text-white"><tr>
-            {['สาขา', 'ใบกระจาย', 'รถ', 'ค่าเที่ยว', 'ค่าน้ำมัน', '+รายได้เพิ่ม', 'รวมหัก', 'รับสุทธิ', 'สัดส่วน'].map((h) => <th key={h} className="p-2 font-semibold text-left">{h}</th>)}
+            {['สาขา', 'ใบกระจาย', 'รถ', 'ค่าเที่ยว', 'ค่าน้ำมัน', '+รายได้เพิ่ม', 'รวมหัก', 'รับสุทธิ', 'สัดส่วน'].map((h) => <th key={h} className={`p-2 font-semibold ${h === 'สาขา' || h === 'สัดส่วน' ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {rows.map((r, i) => (
               <tr key={r.branch.id} className={i % 2 ? 'bg-[#F9FAFC]' : ''}>
                 <td className="p-2 font-semibold text-[#1B365D]">{r.branch.name}</td>
-                <td className="p-2">{r.docs}</td>
-                <td className="p-2">{r.trucks}</td>
+                <td className="p-2 text-right">{r.docs}</td>
+                <td className="p-2 text-right">{r.trucks}</td>
                 <td className="p-2 text-right">{money(r.trip)}</td>
                 <td className="p-2 text-right text-rose-700">{money(r.fuel)}</td>
                 <td className="p-2 text-right text-emerald-700">{money(r.income)}</td>
@@ -1159,7 +1159,7 @@ function HQDashboard({ db, cycle }: any) {
             ))}
             <tr className="border-t-2 border-[#1B365D] font-bold bg-[#FFF2CC]">
               <td className="p-2">รวมทุกสาขา</td>
-              <td className="p-2">{g.docs}</td>
+              <td className="p-2 text-right">{g.docs}</td>
               <td className="p-2"></td>
               <td className="p-2 text-right">{money(g.trip)}</td>
               <td className="p-2 text-right">{money(g.fuel)}</td>
