@@ -376,6 +376,8 @@ export function computeReceipt(
       );
       if (!rule) continue;
       const specialQty = item.quantity || 0;
+      // จำนวนน้อยกว่าตัวหาร -> ไม่หาร เก็บค่าเดิม (เช่น 2 ชิ้น ÷3 = เก็บ 2)
+      if (specialQty < rule.divisor) continue;
       const convertedQty = applyRounding(specialQty / rule.divisor, rule.roundingMethod);
       billingQty = trunc2(billingQty - specialQty + convertedQty);
       adjustments.push({
