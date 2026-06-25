@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Fragment } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
@@ -1233,6 +1233,7 @@ function DriverKpiTab({ db, cycle }: any) {
     } catch { return { ...KPI_DEFAULT, items: KPI_DEFAULT_ITEMS.map((x) => ({ ...x })) }; }
   });
   useEffect(() => { localStorage.setItem('kpiCfg', JSON.stringify(cfg)); }, [cfg]);
+  const [openBranch, setOpenBranch] = useState<Record<string, boolean>>({});
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
 
@@ -1294,6 +1295,22 @@ function DriverKpiTab({ db, cycle }: any) {
     return { ...g, nTrips, perBox: g.boxes > 0 ? g.trip / g.boxes : 0, boxPerTrip: nTrips > 0 ? g.boxes / nTrips : 0, boxPerDriver: g.nDrivers > 0 ? g.boxes / g.nDrivers : 0, pctHit: g.nDrivers > 0 ? g.nHit / g.nDrivers * 100 : 0 };
   }).filter((g) => g.boxes > 0).sort((a, b) => a.perBox - b.perBox);
 
+  // จัดกลุ่มคนรถตามสาขา (สำหรับตารางย่อ/ขยาย) เรียงตาม %ถึงเป้า มาก->น้อย
+  const driverGroups = (() => {
+    const m = new Map<string, { branch: string; list: any[]; boxes: number; net: number }>();
+    for (const d of drivers) {
+      const g = m.get(d.branch) || { branch: d.branch, list: [], boxes: 0, net: 0 };
+      g.list.push(d); g.boxes += d.boxes; g.net += d.net;
+      m.set(d.branch, g);
+    }
+    return [...m.values()].map((g) => {
+      const tgt = g.list.length * targetBoxCycle;
+      return { ...g, pct: tgt > 0 ? g.boxes / tgt * 100 : 0, perBox: g.boxes > 0 ? g.net / g.boxes : 0, nHit: g.list.filter((d) => d.boxes >= targetBoxCycle).length };
+    }).sort((a, b) => b.pct - a.pct);
+  })();
+  const expandAll = () => setOpenBranch(Object.fromEntries(driverGroups.map((g) => [g.branch, true])));
+  const collapseAll = () => setOpenBranch({});
+
   const statusOf = (boxes: number) => {
     const p = boxes / Math.max(1, targetBoxCycle);
     return p >= 1 ? { t: '🟢 ถึงเป้า', c: 'text-emerald-700' } : p >= 0.8 ? { t: '🟡 ใกล้เป้า', c: 'text-amber-600' } : { t: '🔴 ต่ำกว่าเป้า', c: 'text-rose-600' };
@@ -1346,22 +1363,44 @@ function DriverKpiTab({ db, cycle }: any) {
       </Section>
 
       <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
-        <div className="px-4 pt-3 font-bold text-brand-navy text-sm">👤 รายได้ต่อคนรถ · {cycle.name}</div>
-        <table className="w-full text-xs min-w-[820px] mt-2">
+        <div className="px-4 pt-3 flex items-center justify-between flex-wrap gap-2">
+          <span className="font-bold text-brand-navy text-sm">👤 รายได้ต่อคนรถ (จัดกลุ่มตามสาขา) · {cycle.name}</span>
+          <div className="flex gap-2">
+            <button type="button" onClick={expandAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1 hover:bg-natural-secondary">ขยายทั้งหมด</button>
+            <button type="button" onClick={collapseAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1 hover:bg-natural-secondary">ย่อทั้งหมด</button>
+          </div>
+        </div>
+        <table className="w-full text-xs min-w-[760px] mt-2">
           <thead className="bg-brand-navy text-white"><tr>
-            {['ทะเบียน', 'คนขับ', 'สาขา', 'กล่องวิ่ง', '%เป้า', 'รับสุทธิ', 'บาท/กล่อง', 'สถานะ'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 2 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+            {['ทะเบียน', 'คนขับ', 'กล่องวิ่ง', '%เป้า', 'รับสุทธิ', 'บาท/กล่อง', 'สถานะ'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
-            {drivers.map((d, i) => {
-              const st = statusOf(d.boxes); const pct = d.boxes / Math.max(1, targetBoxCycle) * 100; const perBox = d.boxes > 0 ? d.net / d.boxes : 0;
-              return (<tr key={d.plate + i} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
-                <td className="p-2 font-semibold text-brand-navy">{d.plate}</td><td className="p-2">{d.driver}</td><td className="p-2">{d.branch}</td>
-                <td className="p-2 text-right">{bx(d.boxes)}</td><td className={`p-2 text-right font-semibold ${st.c}`}>{pct.toFixed(0)}%</td>
-                <td className="p-2 text-right font-bold">{money(d.net)}</td><td className="p-2 text-right">{money(perBox)}</td>
-                <td className={`p-2 text-right font-semibold ${st.c}`}>{st.t}</td>
-              </tr>);
+            {driverGroups.map((g) => {
+              const open = !!openBranch[g.branch];
+              const gc = g.pct >= 100 ? 'text-emerald-700' : g.pct >= 80 ? 'text-amber-600' : 'text-rose-600';
+              return (
+                <Fragment key={g.branch}>
+                  <tr onClick={() => setOpenBranch({ ...openBranch, [g.branch]: !open })} className="cursor-pointer bg-brand-navy/5 hover:bg-brand-navy/10 font-bold text-brand-navy border-t border-natural-border">
+                    <td className="p-2" colSpan={2}>{open ? '▾' : '▸'} 🏢 {g.branch} <span className="text-natural-muted font-normal">· {g.list.length} คน</span></td>
+                    <td className="p-2 text-right">{bx(g.boxes)}</td>
+                    <td className={`p-2 text-right ${gc}`}>{g.pct.toFixed(0)}%</td>
+                    <td className="p-2 text-right">{money(g.net)}</td>
+                    <td className="p-2 text-right">{money(g.perBox)}</td>
+                    <td className={`p-2 text-right ${gc}`}>{g.nHit}/{g.list.length} ถึงเป้า</td>
+                  </tr>
+                  {open && g.list.map((d: any, i: number) => {
+                    const st = statusOf(d.boxes); const pct = d.boxes / Math.max(1, targetBoxCycle) * 100; const perBox = d.boxes > 0 ? d.net / d.boxes : 0;
+                    return (<tr key={d.plate + i} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
+                      <td className="p-2 pl-6 font-semibold text-brand-navy">{d.plate}</td><td className="p-2">{d.driver}</td>
+                      <td className="p-2 text-right">{bx(d.boxes)}</td><td className={`p-2 text-right font-semibold ${st.c}`}>{pct.toFixed(0)}%</td>
+                      <td className="p-2 text-right font-bold">{money(d.net)}</td><td className="p-2 text-right">{money(perBox)}</td>
+                      <td className={`p-2 text-right font-semibold ${st.c}`}>{st.t}</td>
+                    </tr>);
+                  })}
+                </Fragment>
+              );
             })}
-            {drivers.length === 0 && <tr><td colSpan={8} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูลในรอบนี้</td></tr>}
+            {driverGroups.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูลในรอบนี้</td></tr>}
           </tbody>
         </table>
       </div>
