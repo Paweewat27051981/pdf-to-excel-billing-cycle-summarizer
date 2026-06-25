@@ -291,6 +291,28 @@ async function startServer() {
     }
   });
 
+  // ลบรอบ — กันลบถ้ามีข้อมูลอ้างอิง (ใบกระจาย/น้ำมัน/รายการหัก)
+  app.delete('/api/cycles/:id', async (req, res) => {
+    try {
+      const db = await getDb();
+      const id = req.params.id;
+      const idx = db.cycles.findIndex((c) => c.id === id);
+      if (idx === -1) return res.status(404).json({ error: 'ไม่พบรอบ' });
+      const nTrip = db.tripDocuments.filter((t) => t.cycleId === id).length;
+      const nFuel = db.fuelEntries.filter((f) => f.cycleId === id).length;
+      const nDed = db.deductions.filter((d) => d.cycleId === id).length;
+      if (nTrip || nFuel || nDed) {
+        return res.status(409).json({ error: `รอบนี้มีข้อมูลอยู่ (ใบกระจาย ${nTrip} · น้ำมัน ${nFuel} · รายการหัก ${nDed}) — ลบข้อมูลในรอบก่อนจึงจะลบรอบได้` });
+      }
+      const name = db.cycles[idx].name;
+      db.cycles.splice(idx, 1);
+      await saveDb(db);
+      res.json({ success: true, name });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ===================== Generic master CRUD helper =====================
   function masterRoutes<T extends { id: string }>(
     name: string,

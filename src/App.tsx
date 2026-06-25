@@ -405,6 +405,18 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
     } catch (e: any) { showToast('error', e.message); }
   };
 
+  const delCycle = async () => {
+    const ok = await confirmDelete(`รอบ "${cur.name}" (รอบที่มีข้อมูลจะลบไม่ได้)`);
+    if (!ok) return;
+    try {
+      await api(`/api/cycles/${cur.id}`, 'DELETE');
+      showToast('success', `ลบรอบ "${cur.name}" แล้ว`);
+      const other = cycles.find((c: BillingCycle) => c.id !== cur.id);
+      setSelectedCycleId(other ? other.id : '');
+      onCreated(other ? other.id : '');
+    } catch (e: any) { showToast('error', e.message); }
+  };
+
   return (
     <div className="flex items-center gap-2 flex-wrap relative">
       <select aria-label="เลือกรอบคำนวณ" value={selectedCycleId} onChange={(e) => setSelectedCycleId(e.target.value)}
@@ -415,6 +427,11 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
       {cur && isHQ && (
         <button onClick={toggleLock} className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1">
           {cur.status === 'open' ? <><Lock className="w-3.5 h-3.5" />ปิดรอบ</> : <><Unlock className="w-3.5 h-3.5" />เปิดรอบ</>}
+        </button>
+      )}
+      {cur && isHQ && (
+        <button onClick={delCycle} title="ลบรอบนี้" className="border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1">
+          <Trash2 className="w-3.5 h-3.5" />ลบรอบ
         </button>
       )}
       {cur && !isHQ && cur.status === 'closed' && (
