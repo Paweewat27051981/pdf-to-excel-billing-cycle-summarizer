@@ -134,7 +134,7 @@ export default function App() {
       {/* ===== Sidebar ===== */}
       <aside className={`fixed md:sticky top-0 z-50 md:z-10 h-screen w-60 shrink-0 bg-brand-navy text-white flex flex-col transition-transform duration-200 ${navOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="px-5 py-4 border-b border-white/10 flex items-center gap-2.5">
-          <div className="w-10 h-10 rounded-lg bg-brand-red flex items-center justify-center font-extrabold italic text-lg shadow-md">N</div>
+          <img src="/iconneo.png" alt="NEOSIAM" className="w-10 h-10 rounded-lg object-cover shadow-md shrink-0" />
           <div className="leading-tight">
             <div className="font-extrabold tracking-wide text-lg italic">NEOSIAM</div>
             <div className="text-[10px] text-brand-gold font-semibold">ส่งด่วน · ส่งไว · แน่นอน</div>
