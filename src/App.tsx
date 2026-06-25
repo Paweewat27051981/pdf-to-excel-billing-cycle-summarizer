@@ -1478,19 +1478,27 @@ function computeCostAreas(db: any, cycle: BillingCycle, branches: Branch[]) {
     const trips = db.tripDocuments.filter((t: TripDocument) => t.cycleId === cycle.id && t.branchId === b.id);
     type Agg = { boxes: number; cost: number; docs: Set<string> };
     const provMap = new Map<string, Agg & { prov: string; dists: Map<string, Agg & { dist: string }> }>();
+    const add = (prov: string, dist: string, boxes: number, cost: number, docId: string) => {
+      const g = provMap.get(prov) || { prov, boxes: 0, cost: 0, docs: new Set<string>(), dists: new Map() };
+      g.boxes += boxes; g.cost += cost; g.docs.add(docId);
+      const dg = g.dists.get(dist) || { dist, boxes: 0, cost: 0, docs: new Set<string>() };
+      dg.boxes += boxes; dg.cost += cost; dg.docs.add(docId); g.dists.set(dist, dg);
+      provMap.set(prov, g);
+    };
     for (const t of trips) {
-      const totalBoxes = (t.receipts || []).reduce((a: number, r: any) => a + (r.totalQty || 0), 0);
-      for (const r of (t.receipts || [])) {
-        const prov = (r.provinceRaw || '').trim() || '(ไม่ระบุจังหวัด)';
-        const dist = (r.districtRaw || '').trim() || '(ไม่ระบุอำเภอ)';
-        const boxes = r.totalQty || 0;
-        // ต้นทุน = ค่าเที่ยว: ราคาชิ้น=ตามใบรับ, ราคาเหมา=เฉลี่ยตามสัดส่วนกล่อง
-        const cost = t.rateType === 'piece' ? (r.receiptAmount || 0) : (totalBoxes > 0 ? t.tripAmount * (boxes / totalBoxes) : 0);
-        const g = provMap.get(prov) || { prov, boxes: 0, cost: 0, docs: new Set<string>(), dists: new Map() };
-        g.boxes += boxes; g.cost += cost; g.docs.add(t.id);
-        const dg = g.dists.get(dist) || { dist, boxes: 0, cost: 0, docs: new Set<string>() };
-        dg.boxes += boxes; dg.cost += cost; dg.docs.add(t.id); g.dists.set(dist, dg);
-        provMap.set(prov, g);
+      const recs = t.receipts || [];
+      if (t.rateType === 'piece') {
+        // ราคาชิ้น: คิดต่อใบรับ (แต่ละจุดมีราคาจริง)
+        for (const r of recs) add((r.provinceRaw || '').trim() || '(ไม่ระบุจังหวัด)', (r.districtRaw || '').trim() || '(ไม่ระบุอำเภอ)', r.totalQty || 0, r.receiptAmount || 0, t.id);
+      } else {
+        // ราคาเหมา: ยกค่าเที่ยว+กล่องทั้งใบไป "จุดหลัก" (กล่องมากสุด) — กันที่อยู่ สนญ./ปลายทางแปลกรั่ว
+        const keyBoxes = new Map<string, number>();
+        for (const r of recs) { const k = ((r.provinceRaw || '').trim()) + '|' + ((r.districtRaw || '').trim()); keyBoxes.set(k, (keyBoxes.get(k) || 0) + (r.totalQty || 0)); }
+        let pk = '|', mx = -1;
+        for (const [k, bxq] of keyBoxes) if (bxq > mx) { mx = bxq; pk = k; }
+        const [pp, pd] = pk.split('|');
+        const boxes = recs.reduce((a: number, r: any) => a + (r.totalQty || 0), 0);
+        add(pp.trim() || '(ไม่ระบุจังหวัด)', pd.trim() || '(ไม่ระบุอำเภอ)', boxes, t.tripAmount, t.id);
       }
     }
     const provs = [...provMap.values()].map((g) => ({
