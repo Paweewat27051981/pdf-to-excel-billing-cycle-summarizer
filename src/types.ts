@@ -203,12 +203,13 @@ export interface ExtractedTripDocument {
 // การปรับจำนวนระดับ "รายการสินค้าในใบรับ" ที่เข้ากฎตัวหาร
 export interface ReceiptAdjustment {
   productName: string;
-  originalQty: number;     // จำนวนจริงของรายการนั้น
+  originalQty: number;     // จำนวนจริงของรายการนั้น (กลุ่ม = ผลรวม)
   specialQty: number;      // จำนวนสินค้าที่เข้ากฎ (= originalQty)
   divisor: number;
   convertedQty: number;    // ROUND(specialQty / divisor)
   ruleId: string;
-  note: string;            // เช่น "100-7+2 = 95"
+  note: string;            // เช่น "1+4 = 5 ÷3 = 2"
+  items?: string[];        // ชื่อสินค้าทุกตัวในกลุ่ม (รวมตระกูลเดียวกันในใบรับแล้วหาร)
 }
 
 // ใบรับสินค้า (ระดับคำนวณค่าเที่ยวจริง + ปลายทาง/ราคาต่อจุด)
@@ -227,6 +228,7 @@ export interface TripReceipt {
   peatPrice: number | null;        // ราคา Peat mass/ชิ้น (ตามอำเภอ, เมื่อ Peat อย่างเดียว)
   hasAdjustment: boolean;          // มีรายการตัวหารหรือไม่
   adjustments: ReceiptAdjustment[];
+  divisorSkipped?: { productName: string; qty: number; divisor: number; groupTotal: number }[]; // เข้ากฎตัวหารแต่รวมไม่ถึงตัวหาร (ไฮไลท์ ไม่หาร)
   items: ExtractedReceiptItem[];   // รายการดิบทั้งหมด
   provinceRaw: string;             // ปลายทางของจุดส่งนี้
   districtRaw: string;

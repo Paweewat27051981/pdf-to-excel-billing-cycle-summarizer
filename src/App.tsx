@@ -841,20 +841,24 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
               <tbody>
                 {r.items.map((it, ii) => {
                   const unspecified = isUnspecifiedName(it.productName);
-                  const adj = (pr?.adjustments || []).find((a: any) => a.productName === it.productName);
+                  const adj = (pr?.adjustments || []).find((a: any) => (a.items || [a.productName]).includes(it.productName));
+                  const skip = !adj && (pr?.divisorSkipped || []).find((s: any) => s.productName === it.productName);
+                  const single = adj && (adj.items?.length ?? 1) === 1;
                   return (
-                  <tr key={ii} title={adj ? `หาร ${adj.divisor}: ${adj.note}` : unspecified ? 'ชื่อสินค้ายังไม่ระบุ — นับเข้ายอดตามเอกสาร' : ''}
-                    className={adj ? 'bg-[#FFE0B2] outline outline-1 outline-[#C65911]' : ''}>
+                  <tr key={ii} title={adj ? `หาร ${adj.divisor}: ${adj.note}` : skip ? `เข้ากฎ÷${skip.divisor} แต่รวม ${skip.groupTotal} < ${skip.divisor} — ไม่หาร` : unspecified ? 'ชื่อสินค้ายังไม่ระบุ — นับเข้ายอดตามเอกสาร' : ''}
+                    className={adj ? 'bg-[#FFE0B2] outline outline-1 outline-[#C65911]' : skip ? 'bg-[#FFF2CC] outline outline-1 outline-dashed outline-[#C65911]' : ''}>
                     <td className="py-0.5">
                       <div className="flex items-center gap-1">
                         {adj && <span className="shrink-0 text-[10px] font-extrabold bg-[#C65911] text-white rounded px-1.5 py-0.5">÷{adj.divisor}</span>}
-                        <input value={it.productName} aria-label="ชื่อสินค้า" onChange={(e) => updItem(ri, ii, { productName: e.target.value })} className={`w-full border-b border-dashed border-natural-border bg-transparent p-1 ${adj ? 'text-[#7a3a00] font-bold' : unspecified ? 'text-amber-700' : ''}`} placeholder="ชื่อสินค้า" />
+                        {skip && <span className="shrink-0 text-[10px] font-bold bg-white text-[#C65911] border border-[#C65911] rounded px-1.5 py-0.5" title={`รวม ${skip.groupTotal} < ${skip.divisor}`}>÷{skip.divisor}·ไม่ถึง</span>}
+                        <input value={it.productName} aria-label="ชื่อสินค้า" onChange={(e) => updItem(ri, ii, { productName: e.target.value })} className={`w-full border-b border-dashed border-natural-border bg-transparent p-1 ${adj ? 'text-[#7a3a00] font-bold' : skip ? 'text-[#9a5a10] font-semibold' : unspecified ? 'text-amber-700' : ''}`} placeholder="ชื่อสินค้า" />
                         {unspecified && <span className="shrink-0 text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-300 rounded px-1 py-0.5">ระบุชื่อ?</span>}
                       </div>
                     </td>
                     <td><input type="number" aria-label="จำนวนสินค้า" value={it.quantity || ''} onChange={(e) => updItem(ri, ii, { quantity: +e.target.value || 0 })} className={`w-full text-center border-b border-dashed border-natural-border bg-transparent p-1 font-bold ${adj ? 'text-[#7a3a00]' : ''}`} /></td>
-                    <td className="text-center">{adj
+                    <td className="text-center">{single
                       ? <span className="text-[11px] font-bold text-[#C65911]">→ {adj.convertedQty}</span>
+                      : adj ? <span className="text-[10px] font-semibold text-[#C65911]">(รวมหาร)</span>
                       : <input list="units" aria-label="หน่วยนับ" value={it.unit || ''} onChange={(e) => updItem(ri, ii, { unit: e.target.value })} placeholder="หน่วย" className="w-full text-center border-b border-dashed border-natural-border bg-transparent p-1 text-natural-muted" />}</td>
                     <td className="text-center"><button type="button" aria-label="ลบรายการสินค้า" title="ลบรายการสินค้า" onClick={() => updReceipt(ri, { items: r.items.filter((_, j) => j !== ii) })} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-3.5 h-3.5" /></button></td>
                   </tr>
@@ -863,9 +867,10 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
               </tbody>
             </table>
             <button onClick={() => updReceipt(ri, { items: [...r.items, { productName: '', quantity: 0 }] })} className="text-brand-navy text-xs font-semibold mt-1 flex items-center gap-1"><Plus className="w-3 h-3" />เพิ่มสินค้า</button>
-            {pr?.hasAdjustment && (
-              <div className="mt-2 text-[11px] text-[#C65911] font-semibold flex flex-wrap gap-2">
-                {(pr.adjustments || []).map((a: any, i: number) => <span key={i} className="bg-white border border-[#C65911]/40 rounded-full px-2 py-0.5">🟧÷{a.divisor} {a.productName}: {a.note}</span>)}
+            {(pr?.hasAdjustment || pr?.divisorSkipped?.length > 0) && (
+              <div className="mt-2 text-[11px] font-semibold flex flex-wrap gap-2">
+                {(pr.adjustments || []).map((a: any, i: number) => <span key={i} className="text-[#C65911] bg-white border border-[#C65911]/40 rounded-full px-2 py-0.5">🟧÷{a.divisor} {a.productName}: {a.note}</span>)}
+                {(pr.divisorSkipped || []).length > 0 && (() => { const s = pr.divisorSkipped[0]; const tot = s.groupTotal; return <span className="text-[#9a5a10] bg-amber-50 border border-[#C65911]/40 rounded-full px-2 py-0.5">⚠️ เข้ากฎ÷{s.divisor} แต่รวม {tot} {'<'} {s.divisor} — ไม่หาร (เก็บตามจริง)</span>; })()}
               </div>
             )}
             {pr?.requiresManualBox && (

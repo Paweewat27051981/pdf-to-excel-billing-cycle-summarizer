@@ -370,13 +370,16 @@ export function computeReceipt(
   const manualBoxQty = typeof extracted.manualBoxQty === 'number' ? extracted.manualBoxQty : null;
 
   const adjustments: ReceiptAdjustment[] = [];
+  const divisorSkipped: { productName: string; qty: number; divisor: number; groupTotal: number }[] = [];
   let billingQty = normalQty; // คิดค่าเที่ยวงานปกติเท่านั้น (เก็บคืน/Peat คิดแยก)
 
   // ถ้าผู้ส่งต้องกรอกกล่องเอง: ใช้จำนวนกล่อง เป็น billingQty (ไม่ใช้ตัวหาร)
   if (requiresManualBox) {
     billingQty = manualBoxQty ?? 0;
   } else {
-    // หารแยก "ทีละรายการ" (เฉพาะงานปกติ): qty ÷ divisor แล้วปัด (ROUND_HALF_UP)
+    // รวม "ตระกูลเดียวกัน" ในใบรับ (เข้ากฎเดียวกัน) -> รวมจำนวนแล้วค่อยหาร
+    // เช่น ฟรุตคอกเทล 1 + กัมมี่พิซซ่า 4 = 5 ÷3 = 2 (แทนที่จะหารทีละตัว)
+    const groups = new Map<string, { rule: ProductConversionRule; items: ExtractedReceiptItem[]; sumQty: number }>();
     for (const item of normalItems) {
       const rule = findConversionRule(
         {
@@ -389,19 +392,28 @@ export function computeReceipt(
         ctx.rules
       );
       if (!rule) continue;
-      const specialQty = item.quantity || 0;
-      // จำนวนน้อยกว่าตัวหาร -> ไม่หาร เก็บค่าเดิม (เช่น 2 ชิ้น ÷3 = เก็บ 2)
-      if (specialQty < rule.divisor) continue;
-      const convertedQty = applyRounding(specialQty / rule.divisor, rule.roundingMethod);
-      billingQty = trunc2(billingQty - specialQty + convertedQty);
+      const g = groups.get(rule.id) || { rule, items: [], sumQty: 0 };
+      g.items.push(item); g.sumQty = trunc2(g.sumQty + (item.quantity || 0));
+      groups.set(rule.id, g);
+    }
+    for (const g of groups.values()) {
+      // รวมแล้วยังน้อยกว่าตัวหาร -> ไม่หาร แต่ติดธงไว้ให้ไฮไลท์
+      if (g.sumQty < g.rule.divisor) {
+        for (const it of g.items) divisorSkipped.push({ productName: it.productName, qty: it.quantity || 0, divisor: g.rule.divisor, groupTotal: g.sumQty });
+        continue;
+      }
+      const convertedQty = applyRounding(g.sumQty / g.rule.divisor, g.rule.roundingMethod);
+      billingQty = trunc2(billingQty - g.sumQty + convertedQty);
+      const names = g.items.map((i) => i.productName);
       adjustments.push({
-        productName: item.productName,
-        originalQty: specialQty,
-        specialQty,
-        divisor: rule.divisor,
+        productName: names.length === 1 ? names[0] : `${names[0]} +${names.length - 1} รายการ`,
+        originalQty: g.sumQty,
+        specialQty: g.sumQty,
+        divisor: g.rule.divisor,
         convertedQty,
-        ruleId: rule.id,
-        note: `${specialQty} ÷${rule.divisor} = ${convertedQty}`,
+        ruleId: g.rule.id,
+        note: names.length === 1 ? `${g.sumQty} ÷${g.rule.divisor} = ${convertedQty}` : `${g.items.map((i) => i.quantity || 0).join('+')} = ${g.sumQty} ÷${g.rule.divisor} = ${convertedQty}`,
+        items: names,
       });
     }
   }
@@ -421,6 +433,7 @@ export function computeReceipt(
     peatPrice,
     hasAdjustment: adjustments.length > 0,
     adjustments,
+    divisorSkipped,
     items: extracted.items,
     provinceRaw,
     districtRaw,
