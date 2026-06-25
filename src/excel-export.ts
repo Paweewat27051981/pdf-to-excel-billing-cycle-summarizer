@@ -457,7 +457,7 @@ export async function exportPerVehicleReport(
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `รายงานต่อทะเบียน_${branchName}_${cycle.name.replace(/[\s/]/g, '_')}.xlsx`;
+  a.download = `รายงานสรุปค่าเที่ยว_${branchName}_${cycle.name.replace(/[\s/]/g, '_')}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
 }
