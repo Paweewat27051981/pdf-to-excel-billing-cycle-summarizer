@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Noto+Sans+Thai:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -24,6 +24,14 @@
 
   --font-sans: "Noto Sans Thai", "Inter", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-display: "Anton", "Inter", sans-serif;
+}
+
+/* แบรนด์เวิร์ดมาร์ก NEOSIAM */
+.brand-wordmark {
+  font-family: var(--font-display);
+  letter-spacing: 0.04em;
+  font-weight: 400;
 }
 
 body {

@@ -137,7 +137,7 @@ export default function App() {
         <div className={`py-4 border-b border-white/10 flex items-center gap-2.5 ${navCollapsed ? 'md:px-3 md:justify-center px-5' : 'px-5'}`}>
           <img src="/iconneo.png" alt="NEOSIAM" className="w-10 h-10 rounded-lg object-cover shadow-md shrink-0" />
           <div className={`leading-tight ${navCollapsed ? 'md:hidden' : ''}`}>
-            <div className="font-extrabold tracking-wide text-lg italic">NEOSIAM</div>
+            <div className="brand-wordmark text-xl">NEOSIAM</div>
             <div className="text-[10px] text-brand-gold font-semibold">ส่งด่วน · ส่งไว · แน่นอน</div>
           </div>
           <button type="button" aria-label="ปิดเมนู" onClick={() => setNavOpen(false)} className="ml-auto md:hidden text-white/70 hover:text-white"><X className="w-5 h-5" /></button>
@@ -243,7 +243,7 @@ function BranchLogin({ branches, api, onLogin }: any) {
     <div className="min-h-screen bg-gradient-to-br from-brand-navy to-[#081627] flex items-center justify-center p-6">
       <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm flex flex-col items-center">
         <img src="/iconneo.png" alt="NEOSIAM" className="w-16 h-16 rounded-2xl shadow-md mb-3 object-cover" />
-        <div className="font-extrabold text-2xl italic text-brand-navy tracking-wide">NEOSIAM</div>
+        <div className="brand-wordmark text-3xl text-brand-navy">NEOSIAM</div>
         <div className="text-[11px] text-brand-red font-bold tracking-wide">ส่งด่วน · ส่งไว · แน่นอน</div>
         <p className="text-xs text-natural-muted mt-1 mb-5">ระบบค่าเที่ยว + ค่าน้ำมันรถร่วม</p>
         <label className="w-full text-xs font-semibold text-natural-dark-muted mb-1">สาขา</label>
