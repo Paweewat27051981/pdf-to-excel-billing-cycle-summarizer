@@ -1234,6 +1234,7 @@ function DriverKpiTab({ db, cycle }: any) {
   });
   useEffect(() => { localStorage.setItem('kpiCfg', JSON.stringify(cfg)); }, [cfg]);
   const [openBranch, setOpenBranch] = useState<Record<string, boolean>>({});
+  const [incomeMode, setIncomeMode] = useState<'net' | 'gross'>('net');
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
 
@@ -1297,15 +1298,15 @@ function DriverKpiTab({ db, cycle }: any) {
 
   // จัดกลุ่มคนรถตามสาขา (สำหรับตารางย่อ/ขยาย) เรียงตาม %ถึงเป้า มาก->น้อย
   const driverGroups = (() => {
-    const m = new Map<string, { branch: string; list: any[]; boxes: number; net: number }>();
+    const m = new Map<string, { branch: string; list: any[]; boxes: number; net: number; gross: number }>();
     for (const d of drivers) {
-      const g = m.get(d.branch) || { branch: d.branch, list: [], boxes: 0, net: 0 };
-      g.list.push(d); g.boxes += d.boxes; g.net += d.net;
+      const g = m.get(d.branch) || { branch: d.branch, list: [], boxes: 0, net: 0, gross: 0 };
+      g.list.push(d); g.boxes += d.boxes; g.net += d.net; g.gross += d.trip;
       m.set(d.branch, g);
     }
     return [...m.values()].map((g) => {
       const tgt = g.list.length * targetBoxCycle;
-      return { ...g, pct: tgt > 0 ? g.boxes / tgt * 100 : 0, perBox: g.boxes > 0 ? g.net / g.boxes : 0, nHit: g.list.filter((d) => d.boxes >= targetBoxCycle).length };
+      return { ...g, pct: tgt > 0 ? g.boxes / tgt * 100 : 0, nHit: g.list.filter((d) => d.boxes >= targetBoxCycle).length };
     }).sort((a, b) => b.pct - a.pct);
   })();
   const expandAll = () => setOpenBranch(Object.fromEntries(driverGroups.map((g) => [g.branch, true])));
@@ -1365,35 +1366,41 @@ function DriverKpiTab({ db, cycle }: any) {
       <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
         <div className="px-4 pt-3 flex items-center justify-between flex-wrap gap-2">
           <span className="font-bold text-brand-navy text-sm">👤 รายได้ต่อคนรถ (จัดกลุ่มตามสาขา) · {cycle.name}</span>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex rounded-lg border border-natural-border overflow-hidden text-xs">
+              <button type="button" onClick={() => setIncomeMode('net')} className={`px-2.5 py-1 ${incomeMode === 'net' ? 'bg-brand-navy text-white font-semibold' : 'hover:bg-natural-secondary'}`}>รับสุทธิ</button>
+              <button type="button" onClick={() => setIncomeMode('gross')} className={`px-2.5 py-1 border-l border-natural-border ${incomeMode === 'gross' ? 'bg-brand-navy text-white font-semibold' : 'hover:bg-natural-secondary'}`}>ค่าเที่ยว (ก่อนหัก)</button>
+            </div>
             <button type="button" onClick={expandAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1 hover:bg-natural-secondary">ขยายทั้งหมด</button>
             <button type="button" onClick={collapseAll} className="text-xs border border-natural-border rounded-lg px-2.5 py-1 hover:bg-natural-secondary">ย่อทั้งหมด</button>
           </div>
         </div>
         <table className="w-full text-xs min-w-[760px] mt-2">
           <thead className="bg-brand-navy text-white"><tr>
-            {['ทะเบียน', 'คนขับ', 'กล่องวิ่ง', '%เป้า', 'รับสุทธิ', 'บาท/กล่อง', 'สถานะ'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+            {['ทะเบียน', 'คนขับ', 'กล่องวิ่ง', '%เป้า', incomeMode === 'net' ? 'รับสุทธิ' : 'ค่าเที่ยว (ก่อนหัก)', 'บาท/กล่อง', 'สถานะ'].map((h, i) => <th key={i} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {driverGroups.map((g) => {
               const open = !!openBranch[g.branch];
               const gc = g.pct >= 100 ? 'text-emerald-700' : g.pct >= 80 ? 'text-amber-600' : 'text-rose-600';
+              const gIncome = incomeMode === 'net' ? g.net : g.gross;
               return (
                 <Fragment key={g.branch}>
                   <tr onClick={() => setOpenBranch({ ...openBranch, [g.branch]: !open })} className="cursor-pointer bg-brand-navy/5 hover:bg-brand-navy/10 font-bold text-brand-navy border-t border-natural-border">
                     <td className="p-2" colSpan={2}>{open ? '▾' : '▸'} 🏢 {g.branch} <span className="text-natural-muted font-normal">· {g.list.length} คน</span></td>
                     <td className="p-2 text-right">{bx(g.boxes)}</td>
                     <td className={`p-2 text-right ${gc}`}>{g.pct.toFixed(0)}%</td>
-                    <td className="p-2 text-right">{money(g.net)}</td>
-                    <td className="p-2 text-right">{money(g.perBox)}</td>
+                    <td className="p-2 text-right">{money(gIncome)}</td>
+                    <td className="p-2 text-right">{money(g.boxes > 0 ? gIncome / g.boxes : 0)}</td>
                     <td className={`p-2 text-right ${gc}`}>{g.nHit}/{g.list.length} ถึงเป้า</td>
                   </tr>
                   {open && g.list.map((d: any, i: number) => {
-                    const st = statusOf(d.boxes); const pct = d.boxes / Math.max(1, targetBoxCycle) * 100; const perBox = d.boxes > 0 ? d.net / d.boxes : 0;
+                    const st = statusOf(d.boxes); const pct = d.boxes / Math.max(1, targetBoxCycle) * 100;
+                    const income = incomeMode === 'net' ? d.net : d.trip; const perBox = d.boxes > 0 ? income / d.boxes : 0;
                     return (<tr key={d.plate + i} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
                       <td className="p-2 pl-6 font-semibold text-brand-navy">{d.plate}</td><td className="p-2">{d.driver}</td>
                       <td className="p-2 text-right">{bx(d.boxes)}</td><td className={`p-2 text-right font-semibold ${st.c}`}>{pct.toFixed(0)}%</td>
-                      <td className="p-2 text-right font-bold">{money(d.net)}</td><td className="p-2 text-right">{money(perBox)}</td>
+                      <td className="p-2 text-right font-bold">{money(income)}</td><td className="p-2 text-right">{money(perBox)}</td>
                       <td className={`p-2 text-right font-semibold ${st.c}`}>{st.t}</td>
                     </tr>);
                   })}
