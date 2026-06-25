@@ -751,8 +751,10 @@ export async function exportDriverKpi(
     ws.addRow([]);
     styleHeaderRow(ws.addRow(['อันดับ', 'สาขา', 'กล่องรวม', 'เที่ยว', 'กล่อง/เที่ยว', 'กล่อง/คนรถ', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', '%ถึงเป้า']));
     let z = false;
-    branchRows.forEach((g, i) => {
-      const r = ws.addRow([i + 1, g.branch, Math.round(g.boxes), Math.round(g.nTrips || 0), Math.round(g.boxPerTrip || 0), Math.round(g.boxPerDriver || 0), round2(g.trip), round2(g.perBox), (g.pctHit || 0) / 100]);
+    // Excel: ใช้ค่าเที่ยว (ก่อนหัก) เสมอ + เรียงตาม ค่ากระจาย/กล่อง (gross) ให้คงที่ ไม่ขึ้นกับสวิตช์บนจอ
+    const gRows = [...branchRows].map((g) => ({ ...g, _per: g.boxes > 0 ? g.trip / g.boxes : 0 })).sort((a, b) => a._per - b._per);
+    gRows.forEach((g, i) => {
+      const r = ws.addRow([i + 1, g.branch, Math.round(g.boxes), Math.round(g.nTrips || 0), Math.round(g.boxPerTrip || 0), Math.round(g.boxPerDriver || 0), round2(g.trip), round2(g._per), (g.pctHit || 0) / 100]);
       r.eachCell((cell, c) => bodyCell(cell, { align: c <= 1 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: c === 8, color: c === 8 ? (i === 0 ? 'FF0E9F6E' : C.title) : undefined }));
       [3, 4, 5, 6].forEach((c) => (r.getCell(c).numFmt = INT));
       r.getCell(7).numFmt = NUM; r.getCell(8).numFmt = NUM; r.getCell(9).numFmt = '0%';

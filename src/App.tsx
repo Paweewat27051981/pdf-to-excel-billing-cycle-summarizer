@@ -1285,15 +1285,16 @@ function DriverKpiTab({ db, cycle }: any) {
   }
   drivers.sort((a, b) => b.net - a.net);
 
-  const byBranch = new Map<string, { branch: string; boxes: number; trip: number; nDrivers: number; nHit: number }>();
+  const byBranch = new Map<string, { branch: string; boxes: number; trip: number; net: number; nDrivers: number; nHit: number }>();
   for (const d of drivers) {
-    const g = byBranch.get(d.branch) || { branch: d.branch, boxes: 0, trip: 0, nDrivers: 0, nHit: 0 };
-    g.boxes += d.boxes; g.trip += d.trip; g.nDrivers++; if (d.boxes >= targetBoxCycle) g.nHit++;
+    const g = byBranch.get(d.branch) || { branch: d.branch, boxes: 0, trip: 0, net: 0, nDrivers: 0, nHit: 0 };
+    g.boxes += d.boxes; g.trip += d.trip; g.net += d.net; g.nDrivers++; if (d.boxes >= targetBoxCycle) g.nHit++;
     byBranch.set(d.branch, g);
   }
   const branchRows = [...byBranch.values()].map((g) => {
     const nTrips = tripCountBy.get(g.branch) || 0;
-    return { ...g, nTrips, perBox: g.boxes > 0 ? g.trip / g.boxes : 0, boxPerTrip: nTrips > 0 ? g.boxes / nTrips : 0, boxPerDriver: g.nDrivers > 0 ? g.boxes / g.nDrivers : 0, pctHit: g.nDrivers > 0 ? g.nHit / g.nDrivers * 100 : 0 };
+    const income = incomeMode === 'net' ? g.net : g.trip;
+    return { ...g, nTrips, income, perBox: g.boxes > 0 ? income / g.boxes : 0, boxPerTrip: nTrips > 0 ? g.boxes / nTrips : 0, boxPerDriver: g.nDrivers > 0 ? g.boxes / g.nDrivers : 0, pctHit: g.nDrivers > 0 ? g.nHit / g.nDrivers * 100 : 0 };
   }).filter((g) => g.boxes > 0).sort((a, b) => a.perBox - b.perBox);
 
   // จัดกลุ่มคนรถตามสาขา (สำหรับตารางย่อ/ขยาย) เรียงตาม %ถึงเป้า มาก->น้อย
@@ -1416,7 +1417,7 @@ function DriverKpiTab({ db, cycle }: any) {
         <div className="px-4 pt-3 font-bold text-brand-navy text-sm">🏆 KPI สาขา — การจัดงานคนรถ (ค่ากระจาย บาท/กล่อง ต่ำสุด = อัดงานเก่งสุด)</div>
         <table className="w-full text-xs min-w-[920px] mt-2">
           <thead className="bg-brand-navy text-white"><tr>
-            {['อันดับ', 'สาขา', 'กล่องรวม', 'เที่ยว', 'กล่อง/เที่ยว', 'กล่อง/คนรถ', 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', '%ถึงเป้า'].map((h, i) => <th key={h} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
+            {['อันดับ', 'สาขา', 'กล่องรวม', 'เที่ยว', 'กล่อง/เที่ยว', 'กล่อง/คนรถ', incomeMode === 'net' ? 'รับสุทธิรวม' : 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', '%ถึงเป้า'].map((h, i) => <th key={i} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
           </tr></thead>
           <tbody>
             {branchRows.map((g, i) => (<tr key={g.branch} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
@@ -1424,7 +1425,7 @@ function DriverKpiTab({ db, cycle }: any) {
               <td className="p-2 font-semibold text-brand-navy">{g.branch}</td>
               <td className="p-2 text-right">{bx(g.boxes)}</td><td className="p-2 text-right">{bx(g.nTrips)}</td>
               <td className="p-2 text-right font-semibold">{bx(g.boxPerTrip)}</td><td className="p-2 text-right font-semibold">{bx(g.boxPerDriver)}</td>
-              <td className="p-2 text-right">{money(g.trip)}</td>
+              <td className="p-2 text-right">{money(g.income)}</td>
               <td className={`p-2 text-right font-bold ${i === 0 ? 'text-emerald-700' : ''}`}>฿{money(g.perBox)}</td>
               <td className={`p-2 text-right font-semibold ${g.pctHit >= 100 ? 'text-emerald-700' : g.pctHit >= 50 ? 'text-amber-600' : 'text-rose-600'}`}>{g.pctHit.toFixed(0)}% <span className="text-natural-muted font-normal">({g.nHit}/{g.nDrivers})</span></td>
             </tr>))}
