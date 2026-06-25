@@ -577,3 +577,39 @@ export async function downloadFuelTemplate(
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ===========================================================================
+// Export สรุปภาพรวมทุกสาขา (HQ Dashboard) -> Excel
+// ===========================================================================
+export async function exportBranchSummary(
+  cycleName: string,
+  rows: { branchName: string; docs: number; trucks: number; trip: number; fuel: number; income: number; deduct: number; net: number }[]
+) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('สรุปทุกสาขา');
+  styleTitle(ws, 'สรุปภาพรวมทุกสาขา — NEOSIAM', 8, `รอบ ${cycleName}`);
+  ws.addRow([]);
+  styleHeaderRow(ws.addRow(['สาขา', 'ใบกระจาย', 'รถ', 'ค่าเที่ยว', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมหัก', 'รับสุทธิ']));
+  let z = false;
+  const g = { docs: 0, trip: 0, fuel: 0, income: 0, deduct: 0, net: 0 };
+  for (const r of rows) {
+    const row = ws.addRow([r.branchName, r.docs, r.trucks, round2(r.trip), round2(r.fuel), round2(r.income), round2(r.deduct), round2(r.net)]);
+    row.eachCell((cell, col) => bodyCell(cell, { align: col === 1 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: col === 8, color: col === 8 ? C.billingText : undefined }));
+    [4, 5, 6, 7, 8].forEach((c) => (row.getCell(c).numFmt = NUM));
+    z = !z;
+    g.docs += r.docs; g.trip += r.trip; g.fuel += r.fuel; g.income += r.income; g.deduct += r.deduct; g.net += r.net;
+  }
+  const tr = ws.addRow(['รวมทุกสาขา', g.docs, '', round2(g.trip), round2(g.fuel), round2(g.income), round2(g.deduct), round2(g.net)]);
+  tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col === 1 ? 'left' : 'right', bg: C.totalBg, color: C.title }));
+  [4, 5, 6, 7, 8].forEach((c) => (tr.getCell(c).numFmt = NUM));
+  [18, 12, 8, 15, 15, 15, 13, 15].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `สรุปทุกสาขา_${cycleName.replace(/[\s/]/g, '_')}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}

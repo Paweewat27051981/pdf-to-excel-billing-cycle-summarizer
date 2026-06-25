@@ -8,7 +8,7 @@ import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender,
 } from './types';
-import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
@@ -1154,8 +1154,10 @@ function HQDashboard({ db, cycle }: any) {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2 text-sm font-semibold text-emerald-800 flex items-center gap-2">
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2 text-sm font-semibold text-emerald-800 flex flex-wrap items-center gap-2">
         <Building2 className="w-4 h-4" /> ภาพรวมทุกสาขา · {cycle.name}
+        <button type="button" onClick={() => exportBranchSummary(cycle.name, rows.map((r) => ({ branchName: r.branch.name, docs: r.docs, trucks: r.trucks, trip: r.trip, fuel: r.fuel, income: r.income, deduct: r.deduct, net: r.net })))}
+          className="ml-auto bg-brand-red hover:bg-brand-red-hover text-white rounded-full px-3.5 py-1.5 text-xs font-bold flex items-center gap-1.5"><FileSpreadsheet className="w-3.5 h-3.5" />Export Excel</button>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Stat label="ใบกระจายรวม" value={`${g.docs}`} />
