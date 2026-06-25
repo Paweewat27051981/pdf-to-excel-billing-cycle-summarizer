@@ -691,7 +691,6 @@ export function summarizeByVehicle(
     const v = vehicles.find((x) => normPlate(x.plateNo) === key);
     const plateTrips = trips.filter((t) => t.cycleId === cycleId && normPlate(t.plateNo) === key);
     const totalTripAmount = round2(plateTrips.reduce((s, t) => s + t.tripAmount, 0));
-    const deduction1Percent = round2(totalTripAmount * 0.01);
 
     const fuelTotal = round2(
       fuel
@@ -702,6 +701,13 @@ export function summarizeByVehicle(
     const plateDeductions = deductions.filter(
       (d) => d.cycleId === cycleId && normPlate(d.plateNo) === key
     );
+
+    // หัก 1%: คิดจากค่าเที่ยว + รายได้เพิ่มทุกประเภท ยกเว้น "ค่าอัพเดทบิล"
+    const isBillUpdate = (d: DeductionEntry) => d.categoryId === 'cat-bill_update' || /อัพ.*บิล/.test(d.label || '');
+    const taxableIncome = plateDeductions
+      .filter((d) => (d.kind ?? (d.type === 'bill_update' ? 'income' : 'deduction')) === 'income' && !isBillUpdate(d))
+      .reduce((s, d) => s + d.amount, 0);
+    const deduction1Percent = round2((totalTripAmount + taxableIncome) * 0.01);
 
     // รวมตามประเภท (category) แบบ data-driven
     const lineMap = new Map<string, SummaryLine>();

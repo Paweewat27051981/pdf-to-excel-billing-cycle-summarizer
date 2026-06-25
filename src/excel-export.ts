@@ -414,7 +414,7 @@ export async function exportPerVehicleReport(
   // ===== Sheet สรุปภาษีหัก ณ ที่จ่าย 1% (รายได้ก่อน/หลังหัก) =====
   if (summaries.length) {
     const ws = wb.addWorksheet('ภาษีหัก ณ ที่จ่าย 1%');
-    styleTitle(ws, `สรุปภาษีหัก ณ ที่จ่าย 1% — สาขา${branchName}`, 5, `รอบ ${cycle.name} · คิด 1% จากค่าเที่ยว`);
+    styleTitle(ws, `สรุปภาษีหัก ณ ที่จ่าย 1% — สาขา${branchName}`, 5, `รอบ ${cycle.name} · คิด 1% จากค่าเที่ยว + รายได้เพิ่ม (ยกเว้นค่าอัพเดทบิล)`);
     ws.addRow([]);
     styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'รายได้ก่อนหัก (ค่าเที่ยว)', 'ภาษีหัก ณ ที่จ่าย 1%', 'รายได้หลังหัก 1%']));
     let z = false; const g = { gross: 0, tax: 0, net: 0 };
