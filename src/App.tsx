@@ -587,6 +587,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
         t.documentNo, t.plateNo, t.driverName, t.provinceRaw, t.districtRaw,
         ...t.receipts.map((r) => r.receiptNo),
         ...t.receipts.map((r) => r.receiverName),
+        ...t.receipts.flatMap((r) => (r.items || []).map((it) => it.productName)),
       ].filter(Boolean).join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
@@ -671,7 +672,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
           <Search className="w-4 h-4 text-natural-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="ค้นหา: เลขใบกระจาย / ทะเบียน / คนขับ / เลขใบรับ / ผู้รับ"
+            placeholder="ค้นหา: เลขใบกระจาย / ทะเบียน / คนขับ / เลขใบรับ / ผู้รับ / ชื่อสินค้า"
             className="border border-natural-border rounded-full pl-8 pr-8 py-1.5 text-xs w-72 focus:outline-none focus:border-brand-navy"
           />
           {search && <button onClick={() => setSearch('')} title="ล้าง" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-natural-muted hover:text-rose-600 font-bold">×</button>}
@@ -915,6 +916,10 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
 
 const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip, onDelete }) => {
   const hasDiv = trip.receipts.some((r) => r.hasAdjustment);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const totalItems = trip.receipts.reduce((s, r) => s + (r.items || []).length, 0);
+  const allOpen = trip.receipts.every((r) => open[r.id]);
+  const toggleAll = () => setOpen(allOpen ? {} : Object.fromEntries(trip.receipts.map((r) => [r.id, true])));
   return (
     <div className={`bg-white rounded-2xl border p-4 ${trip.warnings.length ? 'border-l-4 border-l-[#9C0006]' : hasDiv ? 'border-l-4 border-l-[#C65911]' : 'border-natural-border'}`}>
       <div className="flex items-center justify-between">
@@ -923,25 +928,43 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
           <span className="text-natural-muted text-xs ml-2">{trip.documentDate} · {trip.plateNo} {trip.driverName && `(${trip.driverName})`} · {trip.rateType === 'flat' ? 'เหมา' : 'ชิ้น'}</span>
         </div>
         <div className="flex items-center gap-3">
+          <button type="button" onClick={toggleAll} className="text-[11px] border border-natural-border rounded-full px-2.5 py-1 text-brand-navy hover:bg-natural-secondary font-semibold">{allOpen ? '▾ ย่อสินค้า' : `▸ ดูสินค้า (${totalItems})`}</button>
           <span className="text-sm font-bold text-[#C00000]">฿{money(trip.tripAmount)}</span>
           <button type="button" aria-label="ลบใบกระจาย" title="ลบใบกระจาย" onClick={onDelete} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-4 h-4" /></button>
         </div>
       </div>
       {trip.warnings.length > 0 && <div className="mt-1 text-[11px] text-[#9C0006]">⚠️ {trip.warnings.join(' · ')}</div>}
       <div className="mt-2 overflow-x-auto">
-        <table className="w-full text-xs min-w-[560px]">
-          <thead><tr className="text-natural-muted text-left border-b border-natural-border"><th className="py-1">ใบรับสินค้า</th><th>ผู้รับ</th><th>ปลายทาง</th><th className="text-center w-16">จำนวนจริง</th><th className="text-center w-16">คิดค่าเที่ยว</th><th className="text-right w-20">ค่าเที่ยวจุด</th></tr></thead>
+        <table className="w-full text-xs min-w-[620px]">
+          <thead><tr className="text-natural-muted text-left border-b border-natural-border"><th className="py-1">ใบรับสินค้า</th><th>ผู้รับ</th><th>ปลายทาง</th><th className="text-center w-16">จำนวนจริง</th><th className="text-center w-16">คิดค่าเที่ยว</th><th className="text-right w-20">ค่าเที่ยวจุด</th><th className="text-center w-14">รายการ</th></tr></thead>
           <tbody>
-            {trip.receipts.map((r) => (
-              <tr key={r.id} className={r.hasAdjustment ? 'bg-[#FFF2CC]' : ''}>
-                <td className="py-1">{r.hasAdjustment && r.adjustments?.[0] && <span className="text-[#C65911] font-bold">🟧÷{r.adjustments[0].divisor} </span>}{r.receiptNo}</td>
-                <td>{r.receiverName}</td>
-                <td>{r.districtRaw} {r.provinceRaw}</td>
-                <td className="text-center">{qtyFmt(r.totalQty)}</td>
-                <td className="text-center font-bold text-[#C00000]" title={(r.adjustments || []).map((a) => a.note).join(' | ')}>{qtyFmt(r.billingQty)}</td>
-                <td className="text-right">{trip.rateType === 'piece' ? money(r.receiptAmount) : (r.flatPrice != null ? money(r.flatPrice) : '-')}</td>
-              </tr>
-            ))}
+            {trip.receipts.map((r) => {
+              const o = !!open[r.id]; const nItems = (r.items || []).length;
+              return (
+                <Fragment key={r.id}>
+                  <tr onClick={() => setOpen({ ...open, [r.id]: !o })} className={`cursor-pointer ${r.hasAdjustment ? 'bg-[#FFF2CC]' : ''} hover:bg-natural-secondary/50`}>
+                    <td className="py-1">{r.hasAdjustment && r.adjustments?.[0] && <span className="text-[#C65911] font-bold">🟧÷{r.adjustments[0].divisor} </span>}{r.receiptNo}</td>
+                    <td>{r.receiverName}</td>
+                    <td>{r.districtRaw} {r.provinceRaw}</td>
+                    <td className="text-center">{qtyFmt(r.totalQty)}</td>
+                    <td className="text-center font-bold text-[#C00000]" title={(r.adjustments || []).map((a) => a.note).join(' | ')}>{qtyFmt(r.billingQty)}</td>
+                    <td className="text-right">{trip.rateType === 'piece' ? money(r.receiptAmount) : (r.flatPrice != null ? money(r.flatPrice) : '-')}</td>
+                    <td className="text-center text-brand-navy font-semibold whitespace-nowrap">{o ? '▾' : '▸'} {nItems}</td>
+                  </tr>
+                  {o && (
+                    <tr className="bg-natural-secondary/30">
+                      <td colSpan={7} className="px-3 py-1.5">
+                        {nItems === 0 ? <span className="text-natural-muted">— ไม่มีรายการสินค้า —</span> : (
+                          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-0.5">
+                            {(r.items || []).map((it, k) => <div key={k} className="flex justify-between gap-2"><span className="truncate">{it.productName || '(ไม่ระบุชื่อ)'}</span><span className="font-semibold whitespace-nowrap">{qtyFmt(it.quantity)} {it.unit || ''}</span></div>)}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
