@@ -635,11 +635,12 @@ export function computeTripDocument(
   // ----- ค่าเหมาบวกเพิ่มตายตัว (เช่น ท่าสองยาง +700) — ครั้งเดียวต่อปลายทาง ไม่เข้า max -----
   let addonAmount = 0;
   const addonSeen = new Set<string>();
+  const addonByDest: { prov: string; dist: string; amount: number }[] = [];
   for (const r of receipts) {
     const key = (r.provinceRaw || '') + '|' + (r.districtRaw || '');
     if (addonSeen.has(key)) continue;
     const a = matchRate({ provinceRaw: r.provinceRaw, districtRaw: r.districtRaw, refDate }, ctx.rates, ctx.rateOverrides, 'fixed_addon').flat;
-    if (a) { addonAmount += a.rateValue; addonSeen.add(key); }
+    if (a) { addonAmount += a.rateValue; addonSeen.add(key); addonByDest.push({ prov: r.provinceRaw || '', dist: r.districtRaw || '', amount: a.rateValue }); }
   }
 
   const tripAmount = round2(normalAmount + collectAmount + peatAmount + addonAmount);
@@ -667,6 +668,7 @@ export function computeTripDocument(
     billingQty,
     tripAmount: round2(tripAmount),
     breakdown: { normal: round2(normalAmount), collect: round2(collectAmount), peat: round2(peatAmount), addon: round2(addonAmount) },
+    addonByDest,
     receipts,
     warnings,
     fileName: ctx.fileName,

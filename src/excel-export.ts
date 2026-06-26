@@ -293,27 +293,34 @@ export interface TripSubRow { date: string; dest: string; docNo: string; qty: nu
 export function tripSubRows(t: TripDocument): TripSubRow[] {
   const splittable = t.rateType === 'piece' && (t.breakdown?.collect || 0) === 0 && (t.breakdown?.peat || 0) === 0;
   if (splittable) {
-    const groups = new Map<string, { dist: string; prov: string; qty: number; amount: number; price: number | null; hasDiv: boolean }>();
+    const groups = new Map<string, { dist: string; prov: string; qty: number; amount: number; price: number | null; hasDiv: boolean; addon: number }>();
+    const getG = (dist: string, prov: string) => {
+      const key = (dist || '') + '|' + (prov || '');
+      const g = groups.get(key) || { dist: dist || '', prov: prov || '', qty: 0, amount: 0, price: null, hasDiv: false, addon: 0 };
+      groups.set(key, g); return g;
+    };
     for (const r of t.receipts || []) {
       if ((r.normalQty || 0) <= 0) continue;
-      const key = (r.districtRaw || '') + '|' + (r.provinceRaw || '');
-      const g = groups.get(key) || { dist: r.districtRaw || '', prov: r.provinceRaw || '', qty: 0, amount: 0, price: null, hasDiv: false };
+      const g = getG(r.districtRaw || '', r.provinceRaw || '');
       g.qty += r.billingQty || 0;
       g.amount += r.receiptAmount || 0;
       if (r.piecePrice != null) g.price = r.piecePrice;
       if (r.hasAdjustment) g.hasDiv = true;
-      groups.set(key, g);
+    }
+    // ค่าเหมาบวกเพิ่มตายตัว (เช่น ท่าสองยาง +700) -> ลงบรรทัดปลายทางนั้นเลย (เหมา 700)
+    for (const ad of t.addonByDest || []) {
+      const g = getG(ad.dist, ad.prov);
+      g.amount += ad.amount; g.addon += ad.amount;
     }
     const arr = [...groups.values()];
     if (arr.length > 1) {
-      const rows: TripSubRow[] = arr.map((g, i) => ({
-        date: i === 0 ? t.documentDate : '', dest: `${g.dist ? 'อ.' + g.dist : ''}${g.prov ? ' จ.' + g.prov : ''}`.trim(),
-        docNo: i === 0 ? t.documentNo : '', qty: g.qty, rateType: 'piece', price: g.price, amount: round2(g.amount), hasDiv: g.hasDiv, first: i === 0,
-      }));
-      // ค่าเหมาบวกเพิ่มตายตัว (เช่น ท่าสองยาง +700) — เพิ่มบรรทัดให้ยอดรวมตรง
-      const addon = t.breakdown?.addon || 0;
-      if (addon > 0) rows.push({ date: '', dest: 'ค่าเหมาเพิ่มตายตัว', docNo: '', qty: 0, rateType: '', price: null, amount: round2(addon), hasDiv: false, first: false });
-      return rows;
+      return arr.map((g, i) => {
+        const pureAddon = g.addon > 0 && round2(g.amount) === round2(g.addon); // ยอดมาจาก addon ล้วน -> แสดงเป็นเหมา
+        return {
+          date: i === 0 ? t.documentDate : '', dest: `${g.dist ? 'อ.' + g.dist : ''}${g.prov ? ' จ.' + g.prov : ''}`.trim(),
+          docNo: i === 0 ? t.documentNo : '', qty: g.qty, rateType: pureAddon ? 'flat' : 'piece', price: pureAddon ? round2(g.addon) : g.price, amount: round2(g.amount), hasDiv: g.hasDiv, first: i === 0,
+        };
+      });
     }
   }
   return [{ date: t.documentDate, dest: tripDestinations(t), docNo: t.documentNo, qty: t.billingQty, rateType: t.rateType || '', price: tripUnitRate(t), amount: t.tripAmount, hasDiv: !!t.receipts?.some((r) => r.hasAdjustment), first: true }];

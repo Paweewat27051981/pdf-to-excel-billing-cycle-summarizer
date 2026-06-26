@@ -266,6 +266,7 @@ export interface TripDocument {
   billingQty: number;       // รวมจำนวนคิดค่าเที่ยว
   tripAmount: number;       // ค่าเที่ยว = billingQty * piece OR flat
   breakdown: { normal: number; collect: number; peat: number; addon?: number }; // แยกยอด งานปกติ/เก็บคืน/Peat mass/ค่าเหมาบวกเพิ่ม
+  addonByDest?: { prov: string; dist: string; amount: number }[]; // ค่าเหมาบวกเพิ่มตายตัว แยกตามปลายทาง (เช่น ท่าสองยาง +700)
   receipts: TripReceipt[];
   warnings: string[];       // รายการแจ้งเตือน/ต้องตรวจสอบ
   fileName: string;
