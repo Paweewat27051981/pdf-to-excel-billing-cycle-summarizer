@@ -30,6 +30,29 @@ const EMPTY: DatabaseState = {
   receiverGroupAliases: [], conversionRules: [], manualBoxSenders: [], destinationOverrides: [], moneyCategories: [], tripDocuments: [], fuelEntries: [], deductions: [],
 };
 
+// ---- พื้นที่ให้บริการของสาขา (ตรวจตอนบันทึก) ----
+const _normP = (s: string) => (s || '').replace(/\s/g, '');
+function parseServiceAreas(text?: string): { prov: string; dists: string[] | null }[] {
+  return (text || '').split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
+    const idx = line.search(/[:：]/);
+    if (idx < 0) return { prov: line.trim(), dists: null };
+    const dists = line.slice(idx + 1).split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+    return { prov: line.slice(0, idx).trim(), dists: dists.length ? dists : null };
+  });
+}
+function inServiceArea(areas: { prov: string; dists: string[] | null }[], prov: string, dist: string): boolean {
+  if (!areas.length) return true; // ไม่ตั้งพื้นที่ = ไม่ตรวจ
+  const np = _normP(prov), nd = _normP(dist);
+  for (const a of areas) {
+    const ap = _normP(a.prov);
+    if (np && ap && (np.includes(ap) || ap.includes(np))) {
+      if (!a.dists) return true; // ทั้งจังหวัด
+      return a.dists.some((d) => { const ad = _normP(d); return nd && ad && (nd.includes(ad) || ad.includes(nd)); });
+    }
+  }
+  return false;
+}
+
 type BranchAuth = { id: string; name: string; isHQ: boolean };
 type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
@@ -281,6 +304,23 @@ function BranchesTab({ db, api, reload, showToast }: any) {
   const defaultSource = realBranches[0]?.id || '';
   const blank = { name: '', password: '1234', cloneFrom: defaultSource };
   const [form, setForm] = useState(blank);
+  const [areaEdit, setAreaEdit] = useState<string | null>(null);
+  const [areaText, setAreaText] = useState('');
+  const openArea = (b: Branch) => { setAreaEdit(b.id); setAreaText(b.serviceAreaText || ''); };
+  const autoArea = (b: Branch) => {
+    const provMap = new Map<string, Set<string>>();
+    for (const r of (db.rateMasters as RateMaster[]).filter((x) => x.branchId === b.id && x.status === 'active')) {
+      const prov = (r.provinceName || '').trim(), dist = (r.districtName || '').trim();
+      if (!prov) continue;
+      if (!provMap.has(prov)) provMap.set(prov, new Set());
+      if (dist && !dist.includes('+')) provMap.get(prov)!.add(dist);
+    }
+    setAreaText([...provMap.entries()].map(([p, ds]) => ds.size ? `${p}: ${[...ds].join(', ')}` : p).join('\n'));
+  };
+  const saveArea = async (b: Branch) => {
+    await api(`/api/branches/${b.id}`, 'PUT', { serviceAreaText: areaText });
+    showToast('success', `บันทึกพื้นที่สาขา ${b.name} แล้ว`); setAreaEdit(null); reload();
+  };
 
   const countMaster = (bid: string) =>
     db.conversionRules.filter((r: ProductConversionRule) => r.branchId === bid).length;
@@ -356,17 +396,32 @@ function BranchesTab({ db, api, reload, showToast }: any) {
           </thead>
           <tbody>
             {(db.branches as Branch[]).map((b) => (
-              <tr key={b.id} className="border-t border-natural-border">
-                <td className="px-4 py-2 font-semibold text-brand-navy">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}</td>
+              <Fragment key={b.id}>
+              <tr className="border-t border-natural-border">
+                <td className="px-4 py-2 font-semibold text-brand-navy">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}{!b.isHQ && (b.serviceAreaText || '').trim() && <span className="text-[10px] bg-brand-navy text-white rounded-full px-1.5 py-0.5 ml-1" title={b.serviceAreaText}>📍 ตั้งพื้นที่แล้ว</span>}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.vehicles.filter((v: Vehicle) => v.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{countMaster(b.id)}</td>
                 <td className="px-4 py-2 text-right whitespace-nowrap">
+                  {!b.isHQ && <button type="button" onClick={() => (areaEdit === b.id ? setAreaEdit(null) : openArea(b))} className="text-xs text-brand-navy font-semibold mr-3">📍 พื้นที่</button>}
                   {!b.isHQ && <button type="button" onClick={() => cloneInto(b)} className="text-xs text-emerald-700 font-semibold mr-3">⬇ คัดลอกกฎ</button>}
                   <button onClick={() => setPwd(b)} className="text-xs text-brand-navy font-semibold mr-3">ตั้งรหัสผ่าน</button>
                   {!b.isHQ && <button type="button" title="ลบสาขา" onClick={() => del(b)} className="text-red-500"><Trash2 className="w-4 h-4 inline" /></button>}
                 </td>
               </tr>
+              {areaEdit === b.id && (
+                <tr className="border-t border-natural-border bg-natural-secondary/40"><td colSpan={5} className="px-4 py-3">
+                  <div className="text-xs font-semibold text-brand-navy mb-1">📍 พื้นที่ให้บริการของสาขา {b.name} (ตรวจตอนบันทึกใบกระจาย)</div>
+                  <p className="text-[11px] text-natural-muted mb-2">บรรทัดละ 1 จังหวัด · ใส่ทั้งจังหวัด เช่น <b>พิจิตร</b> หรือเจาะอำเภอ เช่น <b>เพชรบูรณ์: ชนแดน, เมือง</b> (นครสวรรค์/พิษณุโลกมีเพชรบูรณ์เหมือนกัน ใส่อำเภอแยก) · เว้นว่าง = ไม่ตรวจ</p>
+                  <textarea value={areaText} onChange={(e) => setAreaText(e.target.value)} rows={6} placeholder={'นครสวรรค์\nพิจิตร\nเพชรบูรณ์: ชนแดน, เมือง'} className="w-full border border-natural-border rounded-lg px-2 py-1.5 text-sm font-mono" />
+                  <div className="flex gap-2 mt-2">
+                    <button type="button" onClick={() => autoArea(b)} className="text-xs border border-emerald-500 text-emerald-700 rounded-lg px-3 py-1.5 font-semibold">⚡ สร้างจากราคาที่มี ({db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length})</button>
+                    <button type="button" onClick={() => saveArea(b)} className="text-xs bg-brand-red text-white rounded-lg px-4 py-1.5 font-bold">บันทึก</button>
+                    <button type="button" onClick={() => setAreaEdit(null)} className="text-xs text-natural-muted border border-natural-border rounded-lg px-3 py-1.5">ยกเลิก</button>
+                  </div>
+                </td></tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -661,7 +716,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
       </div>
 
       {/* review */}
-      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} />}
+      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
 
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
@@ -688,7 +743,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
 }
 
 // Review board — แก้ไข extracted + แสดงผล preview พร้อม badge
-function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '' }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
@@ -707,7 +762,13 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   // 🔒 ด่านตรวจก่อนยืนยัน — ต้องแก้ให้ครบก่อนบันทึก
   const noVehicle = (prev.warnings || []).some((w) => /ไม่อยู่ใน Master รายชื่อรถ/.test(w));
   const noPrice = (prev.warnings || []).some((w) => /ไม่เจอ.*ราคา/.test(w));
+  // ปลายทางไม่อยู่ในพื้นที่ของสาขา (ตรวจระดับจังหวัด/อำเภอ)
+  const areas = parseServiceAreas(serviceAreaText);
+  const offArea = [...new Set(prev.receipts
+    .filter((r) => (r.totalQty || 0) > 0 && !inServiceArea(areas, r.provinceRaw, r.districtRaw))
+    .map((r) => `${r.districtRaw ? 'อ.' + r.districtRaw + ' ' : ''}จ.${r.provinceRaw || '?'}`))];
   const blockReasons: string[] = [];
+  if (offArea.length) blockReasons.push(`ปลายทางไม่อยู่ในพื้นที่ของสาขา${branchLabel ? ' ' + branchLabel : ''}: ${offArea.join(', ')} — ตรวจปลายทาง/แก้ปลายทาง หรือเพิ่มพื้นที่ในเมนูจัดการสาขา`);
   if (cycleClosed) blockReasons.push('รอบถูกปิด — ให้ HQ เปิดรอบก่อน');
   if (isDup) blockReasons.push(`เลขใบกระจายซ้ำ (มีอยู่แล้วใน ${dupCycleName})`);
   if (needsBox) blockReasons.push('ยังไม่กรอกจำนวนกล่อง (ผู้ส่งส่งเป็นชิ้น)');
