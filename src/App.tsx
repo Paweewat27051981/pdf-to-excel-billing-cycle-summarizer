@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
-  ProductConversionRule, TripDocument, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
+  ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
@@ -914,69 +914,71 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   );
 }
 
-// พิมพ์/บันทึก PDF ใบกระจาย 1 ใบ (A4) — เปิดหน้าต่างใหม่ + สั่งพิมพ์
-function printTripDocument(trip: TripDocument, branchName: string, cycleName: string) {
+// พิมพ์/บันทึก PDF ใบกระจาย 1 ใบ (A4) — รูปแบบ "สรุปการจัดส่ง" ของ NEOSIAM (เป๊ะตามต้นฉบับ)
+function printTripDocument(trip: TripDocument, _branchName: string, _cycleName: string) {
   const esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
   const fmtD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
-  const m = (n: number) => money(n);
-  let total = 0;
-  const rows = (trip.receipts || []).map((r, i) => {
-    total += trip.rateType === 'piece' ? (r.receiptAmount || 0) : 0;
-    const amt = trip.rateType === 'piece' ? (r.receiptAmount || 0) : (r.flatPrice ?? null);
-    const divTag = r.hasAdjustment && r.adjustments?.[0] ? `<span style="color:#C65911;font-weight:bold">÷${r.adjustments[0].divisor} </span>` : '';
-    const items = (r.items || []).map((it) => {
-      const isDiv = (r.adjustments || []).some((a) => (a.items || [a.productName]).includes(it.productName)) || (r.divisorSkipped || []).some((s) => s.productName === it.productName);
-      return `<span style="${isDiv ? 'background:#FFE0B2;padding:0 3px;border-radius:3px;' : ''}">${esc(it.productName)} <b>${qtyFmt(it.quantity)}</b>${it.unit ? ' ' + esc(it.unit) : ''}</span>`;
-    }).join(' &nbsp; ');
-    return `<tr>
-      <td style="text-align:center">${i + 1}</td>
-      <td>${divTag}${esc(r.receiptNo)}</td>
-      <td>${esc(r.receiverName)}</td>
-      <td>${esc((r.districtRaw ? 'อ.' + r.districtRaw : '') + (r.provinceRaw ? ' จ.' + r.provinceRaw : ''))}</td>
-      <td style="text-align:center">${qtyFmt(r.totalQty)}</td>
-      <td style="text-align:center;font-weight:bold;color:#C00000">${qtyFmt(r.billingQty)}</td>
-      <td style="text-align:right">${amt != null ? m(amt) : '-'}</td>
-    </tr>
-    <tr><td></td><td colspan="6" style="font-size:10px;color:#555;padding-top:0">${items || '<i>—</i>'}</td></tr>`;
-  }).join('');
-  if (trip.rateType !== 'piece') total = trip.tripAmount;
+  const today = new Date(); const printDate = `${today.getDate()}/${today.getMonth() + 1}/${today.getFullYear()}`;
+  // จัดกลุ่มใบรับตามปลายทาง (จังหวัด/อำเภอ) แล้วลิสต์รายการสินค้า
+  const groups = new Map<string, { prov: string; dist: string; receipts: TripReceipt[] }>();
+  for (const r of trip.receipts || []) {
+    const key = (r.provinceRaw || '') + '|' + (r.districtRaw || '');
+    if (!groups.has(key)) groups.set(key, { prov: r.provinceRaw || '', dist: r.districtRaw || '', receipts: [] });
+    groups.get(key)!.receipts.push(r);
+  }
+  let no = 0, grandQty = 0;
+  let body = '';
+  for (const g of groups.values()) {
+    body += `<tr><td></td><td colspan="6" style="padding-top:8px"><b>จังหวัด : ${esc(g.prov)}</b> &nbsp;&nbsp;&nbsp; <b>อำเภอ : ${esc(g.dist)}</b></td></tr>`;
+    for (const r of g.receipts) {
+      no++;
+      const items = (r.items || []).length ? r.items : [{ productName: '', quantity: r.totalQty, unit: '' } as any];
+      items.forEach((it: any, j: number) => {
+        grandQty += it.quantity || 0;
+        const isDiv = (r.adjustments || []).some((a) => (a.items || [a.productName]).includes(it.productName)) || (r.divisorSkipped || []).some((s) => s.productName === it.productName);
+        body += `<tr>
+          <td style="text-align:center">${j === 0 ? no : ''}</td>
+          <td>${j === 0 ? esc(r.receiverName) : ''}</td>
+          <td>${j === 0 ? esc(r.senderName) : ''}</td>
+          <td style="text-align:center">${qtyFmt(it.quantity)}</td>
+          <td>${esc(it.unit || '')}</td>
+          <td${isDiv ? ' style="background:#FFE0B2"' : ''}>${esc(it.productName)}</td>
+          <td style="text-align:right">${j === 0 ? esc(r.receiptNo) : ''}</td>
+        </tr>`;
+      });
+    }
+  }
   const html = `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${esc(trip.documentNo)}</title>
   <style>
-    @page { size: A4; margin: 14mm; }
-    * { font-family: Tahoma, "TH Sarabun New", "Sarabun", sans-serif; }
-    body { color:#111; font-size:13px; }
-    .hd { text-align:center; border-bottom:2px solid #0E2240; padding-bottom:6px; margin-bottom:8px; }
-    .hd .co { font-size:18px; font-weight:bold; color:#0E2240; }
-    .hd .ti { font-size:14px; color:#E10026; font-weight:bold; }
-    .meta { width:100%; margin:8px 0; font-size:13px; }
-    .meta td { padding:2px 4px; }
-    .meta b { color:#0E2240; }
-    table.main { width:100%; border-collapse:collapse; margin-top:6px; }
-    table.main th { background:#0E2240; color:#fff; font-size:12px; padding:5px 4px; }
-    table.main td { border-bottom:1px solid #ddd; padding:4px; font-size:12px; vertical-align:top; }
-    .tot { text-align:right; font-size:15px; font-weight:bold; color:#C00000; margin-top:8px; }
-    .sign { display:flex; justify-content:space-around; margin-top:40px; font-size:13px; }
-    .sign div { text-align:center; }
-    .ln { border-top:1px dotted #333; width:200px; margin:0 auto 4px; padding-top:28px; }
-    .ft { text-align:center; color:#888; font-size:10px; margin-top:24px; }
-    @media print { .noprint { display:none } }
+    @page { size: A4; margin: 16mm; }
+    * { font-family: Tahoma, "TH Sarabun New", "Sarabun", sans-serif; box-sizing:border-box; }
+    body { color:#000; font-size:13px; margin:0; }
+    .co { font-weight:bold; font-size:13px; }
+    .ver { text-align:right; font-size:11px; margin-top:-14px; }
+    .title { text-align:center; font-weight:bold; font-size:20px; margin:4px 0 12px; }
+    .row { display:flex; justify-content:space-between; font-size:13px; margin:2px 0; }
+    .lbl { font-weight:bold; }
+    table.main { width:100%; border-collapse:collapse; margin-top:10px; }
+    table.main th { font-weight:bold; font-size:12px; padding:3px 4px; border-bottom:1px solid #000; text-align:left; }
+    table.main td { padding:2px 4px; font-size:12px; vertical-align:top; }
+    .total { margin-top:8px; padding-left:120px; font-size:13px; }
+    .total b { font-size:14px; }
+    .xnote { font-weight:bold; padding-left:120px; margin-top:2px; }
+    .sign { display:flex; justify-content:space-between; margin-top:48px; padding:0 30px; font-size:13px; }
+    .ft { text-align:right; font-size:11px; margin-top:36px; }
   </style></head><body onload="window.print()">
-    <div class="hd"><div class="co">บริษัท นีโอสยาม โลจิสติกส์แอนด์ทรานสปอร์ต จำกัด</div><div class="ti">ใบสรุปการจัดส่ง / ค่าเที่ยว</div></div>
-    <table class="meta"><tr>
-      <td><b>เลขที่ใบกระจาย:</b> ${esc(trip.documentNo)}</td>
-      <td><b>วันที่:</b> ${fmtD(trip.documentDate)}</td>
-      <td><b>แบบ:</b> ${trip.rateType === 'flat' ? 'ราคาเหมา' : 'ราคาชิ้น'}</td>
-    </tr><tr>
-      <td><b>ทะเบียนรถ:</b> ${esc(trip.plateNo)}${trip.driverName ? ' (' + esc(trip.driverName) + ')' : ''}</td>
-      <td><b>สาขา:</b> ${esc(branchName)}</td>
-      <td><b>รอบ:</b> ${esc(cycleName)}</td>
-    </tr></table>
+    <div class="co">บริษัท นีโอสยาม โลจิสติกส์แอนด์ทรานสปอร์ต จำกัด</div>
+    <div class="ver">v 1.00</div>
+    <div class="title">สรุปการจัดส่ง</div>
+    <div class="row"><span><span class="lbl">ใบกระจายเลขที่</span> &nbsp; ${esc(trip.documentNo)} &nbsp;&nbsp;&nbsp;&nbsp; <span class="lbl">วันที่ออก</span> &nbsp; ${fmtD(trip.documentDate)}</span></div>
+    <div class="row"><span><span class="lbl">ทะเบียนรถ</span> &nbsp; ${esc(trip.plateNo)}${trip.driverName ? ' (' + esc(trip.driverName) + ')' : ''}</span><span><span class="lbl">วันที่พิมพ์</span> &nbsp; ${printDate}</span></div>
     <table class="main"><thead><tr>
-      <th style="width:30px">ลำดับ</th><th>เลขใบรับสินค้า</th><th>ผู้รับสินค้า</th><th>ปลายทาง</th><th style="width:55px">จำนวนจริง</th><th style="width:55px">คิดค่าเที่ยว</th><th style="width:70px">ค่าเที่ยว (บาท)</th>
-    </tr></thead><tbody>${rows}</tbody></table>
-    <div class="tot">ยอดรวมค่าเที่ยว: ฿${m(total)}</div>
-    <div class="sign"><div><div class="ln"></div>ผู้ออกเอกสาร</div><div><div class="ln"></div>พนักงานขับรถ</div></div>
-    <div class="ft">FM-OP01-05 REV.00 &nbsp;·&nbsp; พิมพ์จากระบบ NEOSIAM &nbsp;·&nbsp; 🟧 = สินค้าตัวหาร</div>
+      <th style="width:32px">ลำดับ</th><th style="width:21%">ผู้รับสินค้า</th><th style="width:21%">ผู้ส่งสินค้า</th><th style="width:55px;text-align:center">จำนวน</th><th style="width:55px">หน่วย</th><th style="width:18%">รายการ</th><th style="text-align:right">เลขที่ใบรับสินค้า</th>
+    </tr></thead><tbody>${body}</tbody></table>
+    <div class="total"><span class="lbl">ยอดรวมสินค้า</span> &nbsp;&nbsp; <b>${qtyFmt(grandQty)}</b> &nbsp; ชิ้น</div>
+    <div class="xnote">X - ยังไม่บันทึกส่งเสร็จ</div>
+    <div class="sign"><span>ผู้ออกเอกสาร</span><span>พนักงานขับ</span></div>
+    <div class="ft">FM-OP01-05 REV.00</div>
   </body></html>`;
   const w = window.open('', '_blank', 'width=900,height=1000');
   if (!w) { alert('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ — อนุญาต popup แล้วลองใหม่'); return; }
