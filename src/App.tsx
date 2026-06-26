@@ -956,7 +956,20 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
                       <td colSpan={7} className="px-3 py-1.5">
                         {nItems === 0 ? <span className="text-natural-muted">— ไม่มีรายการสินค้า —</span> : (
                           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-0.5">
-                            {(r.items || []).map((it, k) => <div key={k} className="flex justify-between gap-2"><span className="truncate">{it.productName || '(ไม่ระบุชื่อ)'}</span><span className="font-semibold whitespace-nowrap">{qtyFmt(it.quantity)} {it.unit || ''}</span></div>)}
+                            {(r.items || []).map((it, k) => {
+                              const adj = (r.adjustments || []).find((a) => (a.items || [a.productName]).includes(it.productName));
+                              const skip = !adj && (r.divisorSkipped || []).find((s) => s.productName === it.productName);
+                              return (
+                                <div key={k} className={`flex justify-between gap-2 items-center rounded px-1 ${adj ? 'bg-[#FFE0B2]' : skip ? 'bg-[#FFF2CC]' : ''}`}>
+                                  <span className="truncate flex items-center gap-1 min-w-0">
+                                    {adj && <span className="shrink-0 text-[9px] font-extrabold bg-[#C65911] text-white rounded px-1">÷{adj.divisor}</span>}
+                                    {skip && <span className="shrink-0 text-[9px] font-bold text-[#C65911] border border-[#C65911] rounded px-1" title={`เข้ากฎ÷${skip.divisor} แต่รวมไม่ถึง`}>÷{skip.divisor}</span>}
+                                    <span className={`truncate ${adj || skip ? 'text-[#7a3a00] font-semibold' : ''}`}>{it.productName || '(ไม่ระบุชื่อ)'}</span>
+                                  </span>
+                                  <span className="font-semibold whitespace-nowrap">{qtyFmt(it.quantity)} {it.unit || ''}</span>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </td>
