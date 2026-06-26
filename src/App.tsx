@@ -704,6 +704,21 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   const cycleClosed: boolean = !!(prev as any)._cycleClosed;
   const cycleNew: boolean = !!(prev as any)._cycleCreated;
 
+  // 🔒 ด่านตรวจก่อนยืนยัน — ต้องแก้ให้ครบก่อนบันทึก
+  const noVehicle = (prev.warnings || []).some((w) => /ไม่อยู่ใน Master รายชื่อรถ/.test(w));
+  const noPrice = (prev.warnings || []).some((w) => /ไม่เจอ.*ราคา/.test(w));
+  const blockReasons: string[] = [];
+  if (cycleClosed) blockReasons.push('รอบถูกปิด — ให้ HQ เปิดรอบก่อน');
+  if (isDup) blockReasons.push(`เลขใบกระจายซ้ำ (มีอยู่แล้วใน ${dupCycleName})`);
+  if (needsBox) blockReasons.push('ยังไม่กรอกจำนวนกล่อง (ผู้ส่งส่งเป็นชิ้น)');
+  if (noVehicle) blockReasons.push('ไม่มีทะเบียนรถนี้ใน Master — เพิ่มรถที่เมนู "รถ & คนขับ" ก่อน');
+  if (noPrice) blockReasons.push('ไม่เจอราคาขนส่งของปลายทาง — เพิ่มราคาใน Master / แก้ปลายทางให้ตรง');
+  const blocked = blockReasons.length > 0;
+  const trySave = () => {
+    if (blocked) { alertBox('🔒 บันทึกไม่ได้ — ต้องแก้ให้ครบก่อน', blockReasons.map((r, i) => `${i + 1}. ${r}`).join('\n'), 'error'); return; }
+    onSave();
+  };
+
   const update = (patch: Partial<ExtractedTripDocument>) => onPreview({ ...ext, ...patch }, pending.fileName);
   const updReceipt = (ri: number, patch: any) => {
     const receipts = ext.receipts.map((r, i) => i === ri ? { ...r, ...patch } : r);
@@ -720,9 +735,15 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
         <h3 className="font-bold text-sm text-brand-navy truncate">ขั้นตอนตรวจสอบก่อนยืนยัน — {pending.fileName}</h3>
         <div className="flex items-center gap-2 shrink-0">
           <button onClick={() => setPending(null)} className="text-xs text-natural-muted hover:text-rose-600 font-semibold border border-natural-border rounded-full px-3 py-1.5">ยกเลิก</button>
-          <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-brand-red disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-4 py-1.5 text-xs font-bold flex items-center gap-1.5"><Save className="w-3.5 h-3.5" />ยืนยันบันทึก</button>
+          <button onClick={trySave} title={blockReasons.join(' · ')} className={`${blocked ? 'bg-natural-muted' : 'bg-brand-red'} text-white rounded-full px-4 py-1.5 text-xs font-bold flex items-center gap-1.5`}><Save className="w-3.5 h-3.5" />ยืนยันบันทึก</button>
         </div>
       </div>
+      {blocked && (
+        <div className="rounded-xl bg-rose-50 border border-rose-300 px-3 py-2 text-xs text-rose-800">
+          <div className="font-bold mb-0.5">🔒 บันทึกไม่ได้ — ต้องแก้ให้ครบก่อน:</div>
+          <ul className="list-disc ml-5">{blockReasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+        </div>
+      )}
 
       {/* 📅 รอบที่ใบนี้จะเข้า (อัตโนมัติจากวันที่ในใบ) */}
       {tgtCycle && (
@@ -906,10 +927,9 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
               {(prev.breakdown.collect || 0) > 0 && <> + เก็บคืน ฿{money(prev.breakdown.collect)}</>}
             </span>
           )}
-          {needsBox && <span className="block text-rose-600 text-xs font-semibold mt-0.5">⚠️ มีใบรับที่ต้องกรอกจำนวนกล่องก่อนบันทึก</span>}
-          {isDup && <span className="block text-rose-600 text-xs font-semibold mt-0.5">🔒 เลขใบกระจายซ้ำ — บันทึกไม่ได้</span>}
+          {blocked && <span className="block text-rose-600 text-xs font-semibold mt-0.5">🔒 บันทึกไม่ได้ — {blockReasons.length} ปัญหา (กดปุ่มเพื่อดูรายละเอียด)</span>}
         </div>
-        <button onClick={onSave} disabled={needsBox || isDup || cycleClosed} title={cycleClosed ? 'รอบถูกปิด' : isDup ? 'เลขใบกระจายซ้ำ' : needsBox ? 'กรอกจำนวนกล่องให้ครบก่อน' : ''} className="bg-brand-red disabled:bg-natural-muted disabled:cursor-not-allowed text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5"><Save className="w-4 h-4" />ยืนยันบันทึก</button>
+        <button onClick={trySave} title={blockReasons.join(' · ')} className={`${blocked ? 'bg-natural-muted' : 'bg-brand-red'} text-white rounded-full px-5 py-2 text-sm font-semibold flex items-center gap-1.5`}><Save className="w-4 h-4" />ยืนยันบันทึก</button>
       </div>
     </div>
   );
