@@ -1492,20 +1492,31 @@ function computeCostAreas(db: any, cycle: BillingCycle, branches: Branch[]) {
       dg.boxes += boxes; dg.cost += cost; dg.docs.add(docId); g.dists.set(dist, dg);
       provMap.set(prov, g);
     };
+    // จุดหลักของใบ = อำเภอ/จังหวัดที่กล่อง "งานปกติ" มากสุด (กันที่อยู่ สนญ. ของเก็บคืน/ปลายทางแปลก)
+    const pickPrimary = (list: any[]) => {
+      const m = new Map<string, number>();
+      for (const r of list) { const k = ((r.provinceRaw || '').trim()) + '|' + ((r.districtRaw || '').trim()); m.set(k, (m.get(k) || 0) + (r.totalQty || 0)); }
+      let pk = '|', mx = -1;
+      for (const [k, q] of m) if (q > mx) { mx = q; pk = k; }
+      const [p, d] = pk.split('|');
+      return { prov: p.trim() || '(ไม่ระบุจังหวัด)', dist: d.trim() || '(ไม่ระบุอำเภอ)' };
+    };
     for (const t of trips) {
       const recs = t.receipts || [];
+      const normalRecs = recs.filter((r: any) => (r.collectQty || 0) === 0 && (r.peatQty || 0) === 0);
+      const primary = pickPrimary(normalRecs.length ? normalRecs : recs);
       if (t.rateType === 'piece') {
-        // ราคาชิ้น: คิดต่อใบรับ (แต่ละจุดมีราคาจริง)
-        for (const r of recs) add((r.provinceRaw || '').trim() || '(ไม่ระบุจังหวัด)', (r.districtRaw || '').trim() || '(ไม่ระบุอำเภอ)', r.totalQty || 0, r.receiptAmount || 0, t.id);
+        // ราคาชิ้น: งานปกติคิดต่อใบรับ · เก็บคืน/Peat (ส่งคืน สนญ.) -> ยกไปจุดหลักของใบ
+        for (const r of recs) {
+          const isReturn = (r.collectQty || 0) > 0 || (r.peatQty || 0) > 0;
+          const prov = isReturn ? primary.prov : ((r.provinceRaw || '').trim() || '(ไม่ระบุจังหวัด)');
+          const dist = isReturn ? primary.dist : ((r.districtRaw || '').trim() || '(ไม่ระบุอำเภอ)');
+          add(prov, dist, r.totalQty || 0, r.receiptAmount || 0, t.id);
+        }
       } else {
-        // ราคาเหมา: ยกค่าเที่ยว+กล่องทั้งใบไป "จุดหลัก" (กล่องมากสุด) — กันที่อยู่ สนญ./ปลายทางแปลกรั่ว
-        const keyBoxes = new Map<string, number>();
-        for (const r of recs) { const k = ((r.provinceRaw || '').trim()) + '|' + ((r.districtRaw || '').trim()); keyBoxes.set(k, (keyBoxes.get(k) || 0) + (r.totalQty || 0)); }
-        let pk = '|', mx = -1;
-        for (const [k, bxq] of keyBoxes) if (bxq > mx) { mx = bxq; pk = k; }
-        const [pp, pd] = pk.split('|');
+        // ราคาเหมา: ยกค่าเที่ยว+กล่องทั้งใบไปจุดหลัก
         const boxes = recs.reduce((a: number, r: any) => a + (r.totalQty || 0), 0);
-        add(pp.trim() || '(ไม่ระบุจังหวัด)', pd.trim() || '(ไม่ระบุอำเภอ)', boxes, t.tripAmount, t.id);
+        add(primary.prov, primary.dist, boxes, t.tripAmount, t.id);
       }
     }
     const provs = [...provMap.values()].map((g) => ({
