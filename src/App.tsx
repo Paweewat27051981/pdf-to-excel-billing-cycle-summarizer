@@ -1223,7 +1223,12 @@ function HQDashboard({ db, cycle }: any) {
                 <td className="p-2 text-right text-emerald-700">{money(r.income)}</td>
                 <td className="p-2 text-right text-rose-700">{money(r.deduct)}</td>
                 <td className="p-2 text-right font-bold text-[#C00000]">{money(r.net)}</td>
-                <td className="p-2 w-32"><div className="bg-natural-bg rounded-full h-2 overflow-hidden"><div className="bg-brand-navy h-2 rounded-full" style={{ width: `${(r.trip / maxTrip) * 100}%` }} /></div></td>
+                <td className="p-2 w-40">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-natural-bg rounded-full h-2 overflow-hidden"><div className="bg-brand-navy h-2 rounded-full" style={{ width: `${maxTrip > 0 ? (r.trip / maxTrip) * 100 : 0}%` }} /></div>
+                    <span className="text-[11px] font-bold text-brand-navy w-9 text-right">{g.trip > 0 ? Math.round((r.trip / g.trip) * 100) : 0}%</span>
+                  </div>
+                </td>
               </tr>
             ))}
             <tr className="border-t-2 border-brand-navy font-bold bg-[#FFF2CC]">
@@ -1235,12 +1240,12 @@ function HQDashboard({ db, cycle }: any) {
               <td className="p-2"></td>
               <td className="p-2"></td>
               <td className="p-2 text-right text-[#C00000]">{money(g.net)}</td>
-              <td className="p-2"></td>
+              <td className="p-2 text-right text-[11px] font-bold text-brand-navy">100%</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p className="text-[11px] text-natural-muted">💡 เลือกสาขาที่มุมบนเพื่อดู/แก้ไขรายละเอียดของแต่ละสาขา</p>
+      <p className="text-[11px] text-natural-muted">💡 "สัดส่วน" = ส่วนแบ่ง<b>ค่าเที่ยว</b>ของแต่ละสาขา (% ของค่าเที่ยวรวมทุกสาขา) · แถบยาว = สาขาที่ค่าเที่ยวมากสุด · เลือกสาขาที่มุมบนเพื่อดู/แก้ไขรายละเอียด</p>
     </div>
   );
 }
