@@ -355,7 +355,8 @@ export function computeReceipt(
   // แยกประเภทสินค้า (เฉพาะเมื่อมีราคาประเภทนั้นของปลายทาง ไม่งั้นถือเป็นงานปกติ)
   // จับได้ทั้ง "เก็บสินค้าคืน" (พิษณุโลก) และ "สินค้าเก็บคืน" (กำแพงเพชร)
   const isCollect = (it: ExtractedReceiptItem) => collectPrice != null && /เก็บ(สินค้า)?คืน/.test(it.productName);
-  const isPeat = (it: ExtractedReceiptItem) => peatPrice != null && textContains(it.productName, 'Peat mass');
+  // Peat: ครอบ "Peat mass" + "Peat Ash" (ขาว-ฟ้า) — ใช้ราคา/เส้นทางเดียวกัน (เฉพาะปลายทางที่มีราคา peat_mass)
+  const isPeat = (it: ExtractedReceiptItem) => peatPrice != null && /peat\s*(mass|ash)/i.test(it.productName || '');
   const normalItems = extracted.items.filter((it) => !isCollect(it) && !isPeat(it));
   const collectQty = extracted.items.filter(isCollect).reduce((s, it) => s + (it.quantity || 0), 0);
   const peatQty = extracted.items.filter(isPeat).reduce((s, it) => s + (it.quantity || 0), 0);
