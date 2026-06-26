@@ -682,7 +682,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
 
       {/* saved trips */}
       {visibleTrips.length === 0 ? <EmptyHint text={q ? `ไม่พบใบกระจายที่ตรงกับ "${search}"` : 'ยังไม่มีใบกระจายในรอบนี้'} /> :
-        visibleTrips.map((t: TripDocument) => <TripCard key={t.id} trip={t} onDelete={() => { void del(t.id); }} />)}
+        visibleTrips.map((t: TripDocument) => <TripCard key={t.id} trip={t} onDelete={() => { void del(t.id); }} branchName={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} cycleName={cycle?.name || ''} />)}
     </div>
   );
 }
@@ -914,7 +914,76 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   );
 }
 
-const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip, onDelete }) => {
+// พิมพ์/บันทึก PDF ใบกระจาย 1 ใบ (A4) — เปิดหน้าต่างใหม่ + สั่งพิมพ์
+function printTripDocument(trip: TripDocument, branchName: string, cycleName: string) {
+  const esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+  const fmtD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
+  const m = (n: number) => money(n);
+  let total = 0;
+  const rows = (trip.receipts || []).map((r, i) => {
+    total += trip.rateType === 'piece' ? (r.receiptAmount || 0) : 0;
+    const amt = trip.rateType === 'piece' ? (r.receiptAmount || 0) : (r.flatPrice ?? null);
+    const divTag = r.hasAdjustment && r.adjustments?.[0] ? `<span style="color:#C65911;font-weight:bold">÷${r.adjustments[0].divisor} </span>` : '';
+    const items = (r.items || []).map((it) => {
+      const isDiv = (r.adjustments || []).some((a) => (a.items || [a.productName]).includes(it.productName)) || (r.divisorSkipped || []).some((s) => s.productName === it.productName);
+      return `<span style="${isDiv ? 'background:#FFE0B2;padding:0 3px;border-radius:3px;' : ''}">${esc(it.productName)} <b>${qtyFmt(it.quantity)}</b>${it.unit ? ' ' + esc(it.unit) : ''}</span>`;
+    }).join(' &nbsp; ');
+    return `<tr>
+      <td style="text-align:center">${i + 1}</td>
+      <td>${divTag}${esc(r.receiptNo)}</td>
+      <td>${esc(r.receiverName)}</td>
+      <td>${esc((r.districtRaw ? 'อ.' + r.districtRaw : '') + (r.provinceRaw ? ' จ.' + r.provinceRaw : ''))}</td>
+      <td style="text-align:center">${qtyFmt(r.totalQty)}</td>
+      <td style="text-align:center;font-weight:bold;color:#C00000">${qtyFmt(r.billingQty)}</td>
+      <td style="text-align:right">${amt != null ? m(amt) : '-'}</td>
+    </tr>
+    <tr><td></td><td colspan="6" style="font-size:10px;color:#555;padding-top:0">${items || '<i>—</i>'}</td></tr>`;
+  }).join('');
+  if (trip.rateType !== 'piece') total = trip.tripAmount;
+  const html = `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${esc(trip.documentNo)}</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    * { font-family: Tahoma, "TH Sarabun New", "Sarabun", sans-serif; }
+    body { color:#111; font-size:13px; }
+    .hd { text-align:center; border-bottom:2px solid #0E2240; padding-bottom:6px; margin-bottom:8px; }
+    .hd .co { font-size:18px; font-weight:bold; color:#0E2240; }
+    .hd .ti { font-size:14px; color:#E10026; font-weight:bold; }
+    .meta { width:100%; margin:8px 0; font-size:13px; }
+    .meta td { padding:2px 4px; }
+    .meta b { color:#0E2240; }
+    table.main { width:100%; border-collapse:collapse; margin-top:6px; }
+    table.main th { background:#0E2240; color:#fff; font-size:12px; padding:5px 4px; }
+    table.main td { border-bottom:1px solid #ddd; padding:4px; font-size:12px; vertical-align:top; }
+    .tot { text-align:right; font-size:15px; font-weight:bold; color:#C00000; margin-top:8px; }
+    .sign { display:flex; justify-content:space-around; margin-top:40px; font-size:13px; }
+    .sign div { text-align:center; }
+    .ln { border-top:1px dotted #333; width:200px; margin:0 auto 4px; padding-top:28px; }
+    .ft { text-align:center; color:#888; font-size:10px; margin-top:24px; }
+    @media print { .noprint { display:none } }
+  </style></head><body onload="window.print()">
+    <div class="hd"><div class="co">บริษัท นีโอสยาม โลจิสติกส์แอนด์ทรานสปอร์ต จำกัด</div><div class="ti">ใบสรุปการจัดส่ง / ค่าเที่ยว</div></div>
+    <table class="meta"><tr>
+      <td><b>เลขที่ใบกระจาย:</b> ${esc(trip.documentNo)}</td>
+      <td><b>วันที่:</b> ${fmtD(trip.documentDate)}</td>
+      <td><b>แบบ:</b> ${trip.rateType === 'flat' ? 'ราคาเหมา' : 'ราคาชิ้น'}</td>
+    </tr><tr>
+      <td><b>ทะเบียนรถ:</b> ${esc(trip.plateNo)}${trip.driverName ? ' (' + esc(trip.driverName) + ')' : ''}</td>
+      <td><b>สาขา:</b> ${esc(branchName)}</td>
+      <td><b>รอบ:</b> ${esc(cycleName)}</td>
+    </tr></table>
+    <table class="main"><thead><tr>
+      <th style="width:30px">ลำดับ</th><th>เลขใบรับสินค้า</th><th>ผู้รับสินค้า</th><th>ปลายทาง</th><th style="width:55px">จำนวนจริง</th><th style="width:55px">คิดค่าเที่ยว</th><th style="width:70px">ค่าเที่ยว (บาท)</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    <div class="tot">ยอดรวมค่าเที่ยว: ฿${m(total)}</div>
+    <div class="sign"><div><div class="ln"></div>ผู้ออกเอกสาร</div><div><div class="ln"></div>พนักงานขับรถ</div></div>
+    <div class="ft">FM-OP01-05 REV.00 &nbsp;·&nbsp; พิมพ์จากระบบ NEOSIAM &nbsp;·&nbsp; 🟧 = สินค้าตัวหาร</div>
+  </body></html>`;
+  const w = window.open('', '_blank', 'width=900,height=1000');
+  if (!w) { alert('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ — อนุญาต popup แล้วลองใหม่'); return; }
+  w.document.write(html); w.document.close();
+}
+
+const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void; branchName?: string; cycleName?: string }> = ({ trip, onDelete, branchName = '', cycleName = '' }) => {
   const hasDiv = trip.receipts.some((r) => r.hasAdjustment);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const totalItems = trip.receipts.reduce((s, r) => s + (r.items || []).length, 0);
@@ -929,6 +998,7 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void }> = ({ trip
         </div>
         <div className="flex items-center gap-3">
           <button type="button" onClick={toggleAll} className="text-[11px] border border-natural-border rounded-full px-2.5 py-1 text-brand-navy hover:bg-natural-secondary font-semibold">{allOpen ? '▾ ย่อสินค้า' : `▸ ดูสินค้า (${totalItems})`}</button>
+          <button type="button" onClick={() => printTripDocument(trip, branchName, cycleName)} title="พิมพ์ / บันทึก PDF (A4)" className="text-[11px] border border-natural-border rounded-full px-2.5 py-1 text-brand-navy hover:bg-natural-secondary font-semibold">🖨️ พิมพ์/PDF</button>
           <span className="text-sm font-bold text-[#C00000]">฿{money(trip.tripAmount)}</span>
           <button type="button" aria-label="ลบใบกระจาย" title="ลบใบกระจาย" onClick={onDelete} className="text-natural-muted hover:text-rose-600"><Trash2 className="w-4 h-4" /></button>
         </div>
