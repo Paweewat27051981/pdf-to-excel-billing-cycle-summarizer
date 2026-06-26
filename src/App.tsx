@@ -1773,7 +1773,7 @@ function DestFixTab({ db, api, branchId, reload, showToast }: any) {
     <div className="flex flex-col gap-4">
       <Section title="แก้ปลายทาง (ใบกระจายระบุจังหวัด/อำเภอผิด)" icon={MapPin}>
         <p className="text-xs text-natural-dark-muted bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 leading-relaxed">
-          กรณีใบกระจายระบุปลายทางผิด เช่น เขียน <b>อุตรดิตถ์</b> แต่จริงๆ ส่ง <b>พิษณุโลก</b> — ตั้งคีย์เวิร์ด (เช่น <b>เจ๊ไพร</b>) ที่อยู่ใน<b>ชื่อผู้รับ</b> หรือ <b>บรรทัดโน้ต *...*</b> ระบบจะคิดราคาตาม<b>ปลายทางจริง</b>ให้อัตโนมัติ + ติดป้าย 📍 ทั้งในระบบและ Excel
+          กรณีใบกระจายระบุปลายทางผิด เช่น เขียน <b>อุตรดิตถ์</b> แต่จริงๆ ส่ง <b>พิษณุโลก</b> — ตั้งคีย์เวิร์ด (เช่น <b>เจ๊ไพร</b>) ที่อยู่ใน<b>ชื่อผู้รับ</b> · <b>ชื่อผู้ส่ง</b> (งานเก็บคืน) · หรือ <b>บรรทัดโน้ต *...*</b> ระบบจะคิดราคาตาม<b>ปลายทางจริง</b>ให้อัตโนมัติ + ติดป้าย 📍 ทั้งในระบบและ Excel
         </p>
         <div className="flex flex-wrap gap-2 mb-3">
           <input value={form.keyword} onChange={(e) => setForm({ ...form, keyword: e.target.value })} placeholder="คีย์เวิร์ด เช่น เจ๊ไพร" aria-label="คีย์เวิร์ด" className={inputCls + ' w-44'} />

@@ -325,7 +325,8 @@ export function computeReceipt(
   let districtRaw = (extracted.districtRaw || '').trim() || ctx.fallbackDistrict;
   // แก้ปลายทาง: ใบกระจายระบุผิด — จับคีย์เวิร์ดจากชื่อผู้รับ + ทุกบรรทัดสินค้า/โน้ต (*...*)
   let destCorrected = false, origProvince: string | undefined, origDistrict: string | undefined, destFixKeyword: string | undefined;
-  const destHay = [extracted.receiverName, ...(extracted.items || []).map((it) => it.productName)].join('  ');
+  // จับจากชื่อผู้รับ + ผู้ส่ง (งานเก็บคืนใช้ผู้ส่งเป็นปลายทางจริง) + ทุกบรรทัดสินค้า/โน้ต
+  const destHay = [extracted.receiverName, extracted.senderName, ...(extracted.items || []).map((it) => it.productName)].join('  ');
   // โน้ตเปลี่ยนปลายทาง "*ส่ง...*" (เตือนให้ตรวจ แม้ยังไม่มีกฎ)
   const destNote = (extracted.items || []).map((it) => (it.productName || '').trim()).find((p) => /\*\s*ส่ง/.test(p));
   const ov = (ctx.destOverrides || []).find((o) => o.status === 'active' && o.keyword && textContains(destHay, o.keyword));
