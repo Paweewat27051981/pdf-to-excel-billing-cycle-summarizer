@@ -377,9 +377,9 @@ export function computeReceipt(
   if (requiresManualBox) {
     billingQty = manualBoxQty ?? 0;
   } else {
-    // รวม "ตระกูลเดียวกัน" ในใบรับ (เข้ากฎเดียวกัน) -> รวมจำนวนแล้วค่อยหาร
-    // เช่น ฟรุตคอกเทล 1 + กัมมี่พิซซ่า 4 = 5 ÷3 = 2 (แทนที่จะหารทีละตัว)
-    const groups = new Map<string, { rule: ProductConversionRule; items: ExtractedReceiptItem[]; sumQty: number }>();
+    // รวมสินค้าที่เข้ากฎ "ตัวหารเดียวกัน" ในใบรับ (ข้ามแบรนด์ เช่น ยูปี้ + พริงเกิลส์ ที่หาร 3)
+    // -> รวมจำนวนทั้งหมดที่หาร 3 แล้วค่อยหารทีเดียว เช่น 1 + 4 = 5 ÷3 = 2
+    const groups = new Map<number, { rule: ProductConversionRule; items: ExtractedReceiptItem[]; sumQty: number }>();
     for (const item of normalItems) {
       const rule = findConversionRule(
         {
@@ -392,9 +392,9 @@ export function computeReceipt(
         ctx.rules
       );
       if (!rule) continue;
-      const g = groups.get(rule.id) || { rule, items: [], sumQty: 0 };
+      const g = groups.get(rule.divisor) || { rule, items: [], sumQty: 0 };
       g.items.push(item); g.sumQty = trunc2(g.sumQty + (item.quantity || 0));
-      groups.set(rule.id, g);
+      groups.set(rule.divisor, g);
     }
     for (const g of groups.values()) {
       // รวมแล้วยังน้อยกว่าตัวหาร -> ไม่หาร แต่ติดธงไว้ให้ไฮไลท์
