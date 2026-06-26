@@ -1365,6 +1365,33 @@ function DriverKpiTab({ db, cycle }: any) {
 
   const doExport = () => exportDriverKpi(cycle.name, { totalExpense, boxesPerMonth, targetPerBox, targetPerCycle, targetBoxCycle, items }, drivers, branchRows);
 
+  // ตาราง KPI สาขา (ใช้ซ้ำ 2 แบบ: เรียงค่ากระจายต่ำสุด / เรียงอัดงานเก่งสุด)
+  const renderKpiTable = (title: string, sorted: typeof branchRows, metric: 'cost' | 'pack') => (
+    <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
+      <div className="px-4 pt-3 font-bold text-brand-navy text-sm">{title}</div>
+      <table className="w-full text-xs min-w-[920px] mt-2">
+        <thead className="bg-brand-navy text-white"><tr>
+          {['อันดับ', 'สาขา', 'กล่องรวม', 'เที่ยว', 'กล่อง/เที่ยว', 'กล่อง/คนรถ', incomeMode === 'net' ? 'รับสุทธิรวม' : 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', '%ถึงเป้า'].map((h, i) => <th key={i} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'} ${(metric === 'pack' && i === 4) || (metric === 'cost' && i === 7) ? 'bg-brand-red/30' : ''}`}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {sorted.map((g, i) => (<tr key={g.branch} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
+            <td className="p-2 font-bold">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
+            <td className="p-2 font-semibold text-brand-navy">{g.branch}</td>
+            <td className="p-2 text-right">{bx(g.boxes)}</td><td className="p-2 text-right">{bx(g.nTrips)}</td>
+            <td className={`p-2 text-right font-semibold ${metric === 'pack' ? `bg-amber-50 ${i === 0 ? 'text-emerald-700 font-bold' : ''}` : ''}`}>{bx(g.boxPerTrip)}</td>
+            <td className="p-2 text-right font-semibold">{bx(g.boxPerDriver)}</td>
+            <td className="p-2 text-right">{money(g.income)}</td>
+            <td className={`p-2 text-right font-bold ${metric === 'cost' ? `bg-amber-50 ${i === 0 ? 'text-emerald-700' : ''}` : ''}`}>฿{money(g.perBox)}</td>
+            <td className={`p-2 text-right font-semibold ${g.pctHit >= 100 ? 'text-emerald-700' : g.pctHit >= 50 ? 'text-amber-600' : 'text-rose-600'}`}>{g.pctHit.toFixed(0)}% <span className="text-natural-muted font-normal">({g.nHit}/{g.nDrivers})</span></td>
+          </tr>))}
+          {sorted.length === 0 && <tr><td colSpan={9} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูล (เลือก "ทุกสาขา" ที่มุมบนเพื่อเทียบทุกสาขา)</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+  const costRanked = branchRows; // เรียงค่ากระจายต่ำ->สูงอยู่แล้ว
+  const packRanked = [...branchRows].sort((a, b) => b.boxPerTrip - a.boxPerTrip);
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex justify-end">
@@ -1457,27 +1484,9 @@ function DriverKpiTab({ db, cycle }: any) {
         </table>
       </div>
 
-      <div className="bg-white rounded-2xl border border-natural-border overflow-x-auto">
-        <div className="px-4 pt-3 font-bold text-brand-navy text-sm">🏆 KPI สาขา — การจัดงานคนรถ (ค่ากระจาย บาท/กล่อง ต่ำสุด = อัดงานเก่งสุด)</div>
-        <table className="w-full text-xs min-w-[920px] mt-2">
-          <thead className="bg-brand-navy text-white"><tr>
-            {['อันดับ', 'สาขา', 'กล่องรวม', 'เที่ยว', 'กล่อง/เที่ยว', 'กล่อง/คนรถ', incomeMode === 'net' ? 'รับสุทธิรวม' : 'ค่าเที่ยวรวม', 'ค่ากระจาย บาท/กล่อง', '%ถึงเป้า'].map((h, i) => <th key={i} className={`p-2 font-semibold ${i <= 1 ? 'text-left' : 'text-right'}`}>{h}</th>)}
-          </tr></thead>
-          <tbody>
-            {branchRows.map((g, i) => (<tr key={g.branch} className={i % 2 ? 'bg-natural-secondary/40' : ''}>
-              <td className="p-2 font-bold">{i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</td>
-              <td className="p-2 font-semibold text-brand-navy">{g.branch}</td>
-              <td className="p-2 text-right">{bx(g.boxes)}</td><td className="p-2 text-right">{bx(g.nTrips)}</td>
-              <td className="p-2 text-right font-semibold">{bx(g.boxPerTrip)}</td><td className="p-2 text-right font-semibold">{bx(g.boxPerDriver)}</td>
-              <td className="p-2 text-right">{money(g.income)}</td>
-              <td className={`p-2 text-right font-bold ${i === 0 ? 'text-emerald-700' : ''}`}>฿{money(g.perBox)}</td>
-              <td className={`p-2 text-right font-semibold ${g.pctHit >= 100 ? 'text-emerald-700' : g.pctHit >= 50 ? 'text-amber-600' : 'text-rose-600'}`}>{g.pctHit.toFixed(0)}% <span className="text-natural-muted font-normal">({g.nHit}/{g.nDrivers})</span></td>
-            </tr>))}
-            {branchRows.length === 0 && <tr><td colSpan={9} className="p-6 text-center text-natural-muted">ยังไม่มีข้อมูล (เลือก "ทุกสาขา" ที่มุมบนเพื่อเทียบทุกสาขา)</td></tr>}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-[11px] text-natural-muted">🔒 ความลับ (เฉพาะ HQ + รหัส) · 💡 "ค่ากระจาย บาท/กล่อง" ยิ่งต่ำ = อัดงานหนาแน่น คนรถได้ปริมาณมาก รายได้สูงขึ้น (ผกผัน) · รหัสเริ่มต้น 2468 (เปลี่ยนได้ในโค้ด KPI_PW)</p>
+      {renderKpiTable('🏆 KPI สาขา — ค่ากระจาย บาท/กล่อง ต่ำสุด (ต้นทุนถูกสุด)', costRanked, 'cost')}
+      {renderKpiTable('💪 KPI สาขา — อัดงานเก่งสุด (กล่อง/เที่ยว มากสุด)', packRanked, 'pack')}
+      <p className="text-[11px] text-natural-muted">🔒 ความลับ (เฉพาะ HQ + รหัส) · 💡 ตาราง 1 เรียง <b>ค่ากระจาย/กล่อง ต่ำสุด</b> (ต้นทุนถูก) · ตาราง 2 เรียง <b>กล่อง/เที่ยว มากสุด</b> (อัดงานหนาแน่น) — คนละมุม อาจคนละสาขาชนะ · รหัสเริ่มต้น 2468 (เปลี่ยนได้ในโค้ด KPI_PW)</p>
     </div>
   );
 }
