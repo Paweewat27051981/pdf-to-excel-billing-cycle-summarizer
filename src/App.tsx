@@ -914,22 +914,22 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   );
 }
 
-// พิมพ์/บันทึก PDF ใบกระจาย 1 ใบ (A4) — รูปแบบ "สรุปการจัดส่ง" ของ NEOSIAM (เป๊ะตามต้นฉบับ)
-function printTripDocument(trip: TripDocument, _branchName: string, _cycleName: string) {
-  const esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
-  const fmtD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
+// ---- พิมพ์/บันทึก PDF ใบกระจาย รูปแบบ "สรุปการจัดส่ง" ของ NEOSIAM (เป๊ะตามต้นฉบับ) ----
+const _esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[c]);
+const _fmtPD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
+
+// สร้าง HTML 1 ใบ (1 หน้า A4)
+function tripDocSection(trip: TripDocument): string {
   const today = new Date(); const printDate = `${today.getDate()}/${today.getMonth() + 1}/${today.getFullYear()}`;
-  // จัดกลุ่มใบรับตามปลายทาง (จังหวัด/อำเภอ) แล้วลิสต์รายการสินค้า
   const groups = new Map<string, { prov: string; dist: string; receipts: TripReceipt[] }>();
   for (const r of trip.receipts || []) {
     const key = (r.provinceRaw || '') + '|' + (r.districtRaw || '');
     if (!groups.has(key)) groups.set(key, { prov: r.provinceRaw || '', dist: r.districtRaw || '', receipts: [] });
     groups.get(key)!.receipts.push(r);
   }
-  let no = 0, grandQty = 0;
-  let body = '';
+  let no = 0, grandQty = 0, body = '';
   for (const g of groups.values()) {
-    body += `<tr><td></td><td colspan="6" style="padding-top:8px"><b>จังหวัด : ${esc(g.prov)}</b> &nbsp;&nbsp;&nbsp; <b>อำเภอ : ${esc(g.dist)}</b></td></tr>`;
+    body += `<tr><td></td><td colspan="6" style="padding-top:8px"><b>จังหวัด : ${_esc(g.prov)}</b> &nbsp;&nbsp;&nbsp; <b>อำเภอ : ${_esc(g.dist)}</b></td></tr>`;
     for (const r of g.receipts) {
       no++;
       const items = (r.items || []).length ? r.items : [{ productName: '', quantity: r.totalQty, unit: '' } as any];
@@ -938,40 +938,22 @@ function printTripDocument(trip: TripDocument, _branchName: string, _cycleName: 
         const isDiv = (r.adjustments || []).some((a) => (a.items || [a.productName]).includes(it.productName)) || (r.divisorSkipped || []).some((s) => s.productName === it.productName);
         body += `<tr>
           <td style="text-align:center">${j === 0 ? no : ''}</td>
-          <td>${j === 0 ? esc(r.receiverName) : ''}</td>
-          <td>${j === 0 ? esc(r.senderName) : ''}</td>
+          <td>${j === 0 ? _esc(r.receiverName) : ''}</td>
+          <td>${j === 0 ? _esc(r.senderName) : ''}</td>
           <td style="text-align:center">${qtyFmt(it.quantity)}</td>
-          <td>${esc(it.unit || '')}</td>
-          <td${isDiv ? ' style="background:#FFE0B2"' : ''}>${esc(it.productName)}</td>
-          <td style="text-align:right">${j === 0 ? esc(r.receiptNo) : ''}</td>
+          <td>${_esc(it.unit || '')}</td>
+          <td${isDiv ? ' style="background:#FFE0B2"' : ''}>${_esc(it.productName)}</td>
+          <td style="text-align:right">${j === 0 ? _esc(r.receiptNo) : ''}</td>
         </tr>`;
       });
     }
   }
-  const html = `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${esc(trip.documentNo)}</title>
-  <style>
-    @page { size: A4; margin: 16mm; }
-    * { font-family: Tahoma, "TH Sarabun New", "Sarabun", sans-serif; box-sizing:border-box; }
-    body { color:#000; font-size:13px; margin:0; }
-    .co { font-weight:bold; font-size:13px; }
-    .ver { text-align:right; font-size:11px; margin-top:-14px; }
-    .title { text-align:center; font-weight:bold; font-size:20px; margin:4px 0 12px; }
-    .row { display:flex; justify-content:space-between; font-size:13px; margin:2px 0; }
-    .lbl { font-weight:bold; }
-    table.main { width:100%; border-collapse:collapse; margin-top:10px; }
-    table.main th { font-weight:bold; font-size:12px; padding:3px 4px; border-bottom:1px solid #000; text-align:left; }
-    table.main td { padding:2px 4px; font-size:12px; vertical-align:top; }
-    .total { margin-top:8px; padding-left:120px; font-size:13px; }
-    .total b { font-size:14px; }
-    .xnote { font-weight:bold; padding-left:120px; margin-top:2px; }
-    .sign { display:flex; justify-content:space-between; margin-top:48px; padding:0 30px; font-size:13px; }
-    .ft { text-align:right; font-size:11px; margin-top:36px; }
-  </style></head><body onload="window.print()">
+  return `<div class="doc">
     <div class="co">บริษัท นีโอสยาม โลจิสติกส์แอนด์ทรานสปอร์ต จำกัด</div>
     <div class="ver">v 1.00</div>
     <div class="title">สรุปการจัดส่ง</div>
-    <div class="row"><span><span class="lbl">ใบกระจายเลขที่</span> &nbsp; ${esc(trip.documentNo)} &nbsp;&nbsp;&nbsp;&nbsp; <span class="lbl">วันที่ออก</span> &nbsp; ${fmtD(trip.documentDate)}</span></div>
-    <div class="row"><span><span class="lbl">ทะเบียนรถ</span> &nbsp; ${esc(trip.plateNo)}${trip.driverName ? ' (' + esc(trip.driverName) + ')' : ''}</span><span><span class="lbl">วันที่พิมพ์</span> &nbsp; ${printDate}</span></div>
+    <div class="row"><span><span class="lbl">ใบกระจายเลขที่</span> &nbsp; ${_esc(trip.documentNo)} &nbsp;&nbsp;&nbsp;&nbsp; <span class="lbl">วันที่ออก</span> &nbsp; ${_fmtPD(trip.documentDate)}</span></div>
+    <div class="row"><span><span class="lbl">ทะเบียนรถ</span> &nbsp; ${_esc(trip.plateNo)}${trip.driverName ? ' (' + _esc(trip.driverName) + ')' : ''}</span><span><span class="lbl">วันที่พิมพ์</span> &nbsp; ${printDate}</span></div>
     <table class="main"><thead><tr>
       <th style="width:32px">ลำดับ</th><th style="width:21%">ผู้รับสินค้า</th><th style="width:21%">ผู้ส่งสินค้า</th><th style="width:55px;text-align:center">จำนวน</th><th style="width:55px">หน่วย</th><th style="width:18%">รายการ</th><th style="text-align:right">เลขที่ใบรับสินค้า</th>
     </tr></thead><tbody>${body}</tbody></table>
@@ -979,10 +961,39 @@ function printTripDocument(trip: TripDocument, _branchName: string, _cycleName: 
     <div class="xnote">X - ยังไม่บันทึกส่งเสร็จ</div>
     <div class="sign"><span>ผู้ออกเอกสาร</span><span>พนักงานขับ</span></div>
     <div class="ft">FM-OP01-05 REV.00</div>
-  </body></html>`;
+  </div>`;
+}
+
+const PRINT_STYLE = `@page{size:A4;margin:16mm}
+  *{font-family:Tahoma,"TH Sarabun New","Sarabun",sans-serif;box-sizing:border-box}
+  body{color:#000;font-size:13px;margin:0}
+  .doc{page-break-after:always}
+  .doc:last-child{page-break-after:auto}
+  .co{font-weight:bold;font-size:13px}
+  .ver{text-align:right;font-size:11px;margin-top:-14px}
+  .title{text-align:center;font-weight:bold;font-size:20px;margin:4px 0 12px}
+  .row{display:flex;justify-content:space-between;font-size:13px;margin:2px 0}
+  .lbl{font-weight:bold}
+  table.main{width:100%;border-collapse:collapse;margin-top:10px}
+  table.main th{font-weight:bold;font-size:12px;padding:3px 4px;border-bottom:1px solid #000;text-align:left}
+  table.main td{padding:2px 4px;font-size:12px;vertical-align:top}
+  .total{margin-top:8px;padding-left:120px;font-size:13px}
+  .total b{font-size:14px}
+  .xnote{font-weight:bold;padding-left:120px;margin-top:2px}
+  .sign{display:flex;justify-content:space-between;margin-top:48px;padding:0 30px;font-size:13px}
+  .ft{text-align:right;font-size:11px;margin-top:36px}`;
+
+function openPrint(title: string, inner: string) {
+  const html = `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${_esc(title)}</title><style>${PRINT_STYLE}</style></head><body onload="window.print()">${inner}</body></html>`;
   const w = window.open('', '_blank', 'width=900,height=1000');
   if (!w) { alert('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ — อนุญาต popup แล้วลองใหม่'); return; }
   w.document.write(html); w.document.close();
+}
+
+function printTripDocument(trip: TripDocument, _b?: string, _c?: string) { openPrint(trip.documentNo, tripDocSection(trip)); }
+function printTripDocuments(trips: TripDocument[], title: string) {
+  if (!trips.length) { alert('ไม่มีใบกระจายให้พิมพ์'); return; }
+  openPrint(title, trips.map(tripDocSection).join(''));
 }
 
 const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void; branchName?: string; cycleName?: string }> = ({ trip, onDelete, branchName = '', cycleName = '' }) => {
@@ -1838,7 +1849,11 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
           const dedLines = s.lines.filter((l: any) => l.kind === 'deduction');
           return (
             <div key={s.plateNo} className="bg-white rounded-2xl border border-natural-border p-4">
-              <div className="font-bold text-brand-navy mb-2">🚚 {s.plateNo} <span className="text-natural-muted font-normal text-sm">· {s.driverName}</span></div>
+              <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                <div className="font-bold text-brand-navy">🚚 {s.plateNo} <span className="text-natural-muted font-normal text-sm">· {s.driverName}</span></div>
+                <button type="button" onClick={() => printTripDocuments(vTrips, `ใบกระจาย ${s.plateNo}`)} disabled={!vTrips.length}
+                  className="text-xs border border-brand-navy text-brand-navy rounded-full px-3 py-1.5 font-semibold hover:bg-brand-navy hover:text-white disabled:opacity-40 whitespace-nowrap">🖨️ พิมพ์ใบกระจายทั้งหมด ({vTrips.length} ใบ)</button>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs min-w-[720px]">
                   <thead className="bg-brand-navy text-white"><tr><TH>วันที่</TH><TH>ปลายทาง</TH><TH>เลขใบกระจาย</TH><TH r>จำนวน</TH><TH>แบบ</TH><TH r>ราคา</TH><TH r>เป็นเงิน</TH><TH r>พิเศษ</TH><TH r>รวม</TH><TH>หมายเหตุ</TH></tr></thead>
