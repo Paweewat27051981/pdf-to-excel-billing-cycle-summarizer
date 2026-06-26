@@ -306,10 +306,14 @@ export function tripSubRows(t: TripDocument): TripSubRow[] {
     }
     const arr = [...groups.values()];
     if (arr.length > 1) {
-      return arr.map((g, i) => ({
+      const rows: TripSubRow[] = arr.map((g, i) => ({
         date: i === 0 ? t.documentDate : '', dest: `${g.dist ? 'อ.' + g.dist : ''}${g.prov ? ' จ.' + g.prov : ''}`.trim(),
         docNo: i === 0 ? t.documentNo : '', qty: g.qty, rateType: 'piece', price: g.price, amount: round2(g.amount), hasDiv: g.hasDiv, first: i === 0,
       }));
+      // ค่าเหมาบวกเพิ่มตายตัว (เช่น ท่าสองยาง +700) — เพิ่มบรรทัดให้ยอดรวมตรง
+      const addon = t.breakdown?.addon || 0;
+      if (addon > 0) rows.push({ date: '', dest: 'ค่าเหมาเพิ่มตายตัว', docNo: '', qty: 0, rateType: '', price: null, amount: round2(addon), hasDiv: false, first: false });
+      return rows;
     }
   }
   return [{ date: t.documentDate, dest: tripDestinations(t), docNo: t.documentNo, qty: t.billingQty, rateType: t.rateType || '', price: tripUnitRate(t), amount: t.tripAmount, hasDiv: !!t.receipts?.some((r) => r.hasAdjustment), first: true }];
