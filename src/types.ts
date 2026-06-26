@@ -62,8 +62,8 @@ export interface RateMaster {
   districtName: string;    // อำเภอ เช่น "เมือง"
   priceType: PriceType;    // เหมา / ชิ้น
   price: number;
-  // ประเภทสินค้า: normal=งานปกติ, collect_back=เก็บสินค้าคืน(คิดชิ้น), peat_mass=Peat mass(คิดชิ้น)
-  productCategory?: 'normal' | 'collect_back' | 'peat_mass';
+  // ประเภทสินค้า: normal=งานปกติ, collect_back=เก็บสินค้าคืน(คิดชิ้น), peat_mass=Peat mass(คิดชิ้น), fixed_addon=ค่าเหมาบวกเพิ่มตายตัว(เช่น ท่าสองยาง +700)
+  productCategory?: 'normal' | 'collect_back' | 'peat_mass' | 'fixed_addon';
   pieceThreshold?: number | null; // จุดตัดจำนวน: <=จุดตัด ใช้เหมา, >จุดตัด ใช้ชิ้น (เฉพาะปลายทางที่มีทั้ง 2 ราคา)
   // ราคาขั้นบันไดตามจำนวนกล่อง (เช่น CP All ลำพูน 1-150=500, 151+=1200) + ผูกชื่อผู้รับ/ผู้ส่ง/สินค้า
   minQty?: number | null;          // จำนวนกล่องขั้นต่ำที่ใช้ราคานี้
@@ -263,7 +263,7 @@ export interface TripDocument {
   totalQty: number;         // รวมจำนวนจริงทุกใบรับ
   billingQty: number;       // รวมจำนวนคิดค่าเที่ยว
   tripAmount: number;       // ค่าเที่ยว = billingQty * piece OR flat
-  breakdown: { normal: number; collect: number; peat: number }; // แยกยอด งานปกติ/เก็บคืน/Peat mass
+  breakdown: { normal: number; collect: number; peat: number; addon?: number }; // แยกยอด งานปกติ/เก็บคืน/Peat mass/ค่าเหมาบวกเพิ่ม
   receipts: TripReceipt[];
   warnings: string[];       // รายการแจ้งเตือน/ต้องตรวจสอบ
   fileName: string;

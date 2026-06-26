@@ -796,6 +796,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
           งานปกติ ฿{money(prev.breakdown?.normal || 0)}
           {(prev.breakdown?.collect || 0) > 0 && <> + 🔄 เก็บคืน ฿{money(prev.breakdown.collect)}</>}
           {(prev.breakdown?.peat || 0) > 0 && <> + 🌱 Peat ฿{money(prev.breakdown.peat)}</>}
+          {(prev.breakdown?.addon || 0) > 0 && <> + 📌 ค่าเหมาเพิ่มตายตัว ฿{money(prev.breakdown.addon)}</>}
         </span>
       </div>
 
@@ -1970,7 +1971,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     // เก็บคืน/Peat mass คิดเป็นชิ้นเสมอ
-    const priceType = form.productCategory === 'normal' ? form.priceType : 'piece';
+    const priceType = (form.productCategory === 'collect_back' || form.productCategory === 'peat_mass') ? 'piece' : form.productCategory === 'fixed_addon' ? 'flat' : form.priceType;
     const payload = {
       ...form, branchId, priceType,
       pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null,
@@ -2008,7 +2009,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
     catch (e: any) { showToast('error', e.message); }
   };
   const branchGroups: string[] = ((db.branches as Branch[]).find((b) => b.id === branchId)?.rateGroups || []).map((g) => g.name);
-  const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : 'งานปกติ';
+  const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : c === 'fixed_addon' ? 'บวกเพิ่มตายตัว' : 'งานปกติ';
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
   const allRates: RateMaster[] = db.rateMasters;
@@ -2143,6 +2144,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
           <option value="normal">งานปกติ</option>
           <option value="collect_back">เก็บคืน</option>
           <option value="peat_mass">Peat mass</option>
+          <option value="fixed_addon">บวกเพิ่มตายตัว</option>
         </select>
         <select aria-label="กรองประเภท" value={fType} onChange={(e) => setFType(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1">
           <option value="">ทุกประเภท</option>
@@ -2160,7 +2162,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         <input aria-label="จังหวัด" placeholder="จังหวัด" value={form.provinceName} onChange={(e) => setForm({ ...form, provinceName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
         <input aria-label="อำเภอ" placeholder="อำเภอ" value={form.districtName} onChange={(e) => setForm({ ...form, districtName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
         <select aria-label="ประเภทสินค้า" value={form.productCategory} onChange={(e) => setForm({ ...form, productCategory: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">
-          <option value="normal">งานปกติ</option><option value="collect_back">เก็บคืน</option><option value="peat_mass">Peat mass</option>
+          <option value="normal">งานปกติ</option><option value="collect_back">เก็บคืน</option><option value="peat_mass">Peat mass</option><option value="fixed_addon">บวกเพิ่มตายตัว (+700)</option>
         </select>
         <select aria-label="ประเภทราคา" value={form.priceType} onChange={(e) => setForm({ ...form, priceType: e.target.value })} disabled={form.productCategory !== 'normal'} className="border border-natural-border rounded-lg px-2 py-1.5 disabled:opacity-50">
           <option value="flat">ราคาเหมา</option><option value="piece">ราคาชิ้น</option>
