@@ -117,7 +117,17 @@ function excelDate(serial: number | null): string {
   if (serial == null || Number.isNaN(serial)) return new Date().toISOString().slice(0, 10);
   // 1899-12-30 เป็นฐาน (ชดเชย bug ปี 1900 ของ Excel)
   const ms = Date.UTC(1899, 11, 30) + Math.round(serial) * 86400000;
-  return new Date(ms).toISOString().slice(0, 10);
+  const d = new Date(ms);
+  let y = d.getUTCFullYear();
+  // 🛠️ แก้ปีเพี้ยนจาก Excel แปลงวันที่ "พ.ศ." ที่พิมพ์ ให้เป็น date serial เอง:
+  //   - พ.ศ. เต็ม 4 หลัก (2569) -> ค.ศ. (ลบ 543) = 2026
+  //   - Excel ตีความเลขท้าย 2 หลัก "69" เป็น ค.ศ.1969 -> คืนเป็น พ.ศ.2569 -> ค.ศ.2026
+  //   (แอปใช้งานช่วงปี 2025+ จึงไม่มีวันที่จริงก่อน ค.ศ.2000)
+  if (y >= 2400) y -= 543;
+  else if (y < 2000) y = (y % 100) + 1957;
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${mm}-${dd}`;
 }
 
 // เลขที่ใบรับ เช่น B0926159948 (ตัวอักษร 1 ตัว + ตัวเลขยาว)
