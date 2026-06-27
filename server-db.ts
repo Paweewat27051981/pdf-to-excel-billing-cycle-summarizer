@@ -262,8 +262,8 @@ export async function saveDb(state: DatabaseState): Promise<void> {
   cache = state; // อัปเดต cache ในหน่วยความจำ
   const fb = initFirebase();
   if (fb) {
-    const out: any = deepClean(state);
-    for (const k of ID_KEYED) out[k as string] = arrToMap((state as any)[k] || []);
+    const out: any = deepClean(state); // ตัด undefined (RTDB ไม่รับ) ทั้งก้อนก่อน
+    for (const k of ID_KEYED) out[k as string] = arrToMap(out[k as string] || []); // re-key จาก array ที่ clean แล้ว
     await fb.ref('/').set(out); // write-through (การเขียนไม่ถูกคิดเป็น download)
   } else {
     await fs.writeFile(DB_FILE, JSON.stringify(deepClean(state), null, 2), 'utf-8');
@@ -309,7 +309,7 @@ export async function removeRecords(collKey: keyof DatabaseState, ids: string[])
 // เขียนทั้งคอลเลกชัน (คอลเลกชันเล็กที่เปลี่ยนพร้อม trip เช่น cycles)
 export async function flushCollection(collKey: keyof DatabaseState): Promise<void> {
   const fb = initFirebase();
-  const arr = (cache as any)?.[collKey] || [];
-  if (fb) await fb.ref(`/${String(collKey)}`).set(ID_KEYED.includes(collKey) ? arrToMap(arr) : deepClean(arr));
+  const arr = deepClean((cache as any)?.[collKey] || []); // clean ก่อน (ตัด undefined)
+  if (fb) await fb.ref(`/${String(collKey)}`).set(ID_KEYED.includes(collKey) ? arrToMap(arr) : arr);
   else await persistLocal();
 }

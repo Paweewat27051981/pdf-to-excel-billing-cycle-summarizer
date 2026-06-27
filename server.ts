@@ -146,7 +146,7 @@ async function startServer() {
 
   // ===================== CONFIG =====================
   app.get('/api/config', (_req, res) => {
-    res.json({ aiEnabled: isAiEnabled(), storage: 'granular-v1' });
+    res.json({ aiEnabled: isAiEnabled(), storage: 'granular-v2' });
   });
 
   // ===================== SETTINGS =====================

@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(node -e ' *)",
-      "PowerShell(Set-Location \"d:\\\\pdf-to-excel-billing-cycle-summarizer\"; npx tsx _test-match2.mts 2>&1; Remove-Item _test-match2.mts -Force; Write-Host \"---\"; npm run lint 2>&1 | Select-Object -Last 4; Write-Host \"LINT_EXIT=$LASTEXITCODE\")"
+      "PowerShell(Set-Location \"d:\\\\pdf-to-excel-billing-cycle-summarizer\"; npx tsx _test-match2.mts 2>&1; Remove-Item _test-match2.mts -Force; Write-Host \"---\"; npm run lint 2>&1 | Select-Object -Last 4; Write-Host \"LINT_EXIT=$LASTEXITCODE\")",
+      "PowerShell(Set-Location \"d:\\\\pdf-to-excel-billing-cycle-summarizer\"; npm run lint 2>&1 | Select-Object -Last 4; Write-Host \"LINT=$LASTEXITCODE\"; if\\($LASTEXITCODE -eq 0\\){ npm run deploy -- \"fix saveDb: deep-clean records before id-keyed map \\(strip undefined\\) -> migration works\" 2>&1 | Select-Object -Last 6 })"
     ]
   }
 }
