@@ -314,6 +314,7 @@ export function computeReceipt(
     refDate: string;
     fallbackProvince: string;
     fallbackDistrict: string;
+    collectBackHalfPiece?: boolean; // true = เก็บคืนคิดครึ่งราคาชิ้นปกติ (นครสวรรค์)
   },
   idFactory: () => string
 ): TripReceipt {
@@ -341,21 +342,31 @@ export function computeReceipt(
   const flatPrice = rm.flat ? rm.flat.rateValue : null;
   const piecePrice = rm.piece ? rm.piece.rateValue : null;
   const pieceThreshold = rm.flat?.threshold ?? rm.piece?.threshold ?? null;
-  // ราคาเก็บคืน: จับตาม "ชื่อร้าน (ผู้ส่ง) / ผู้รับ" ก่อน (ทนที่อยู่ผิด) ไม่งั้นจับตามจังหวัด (พิษณุโลก)
-  const collectByKw = ctx.rates.find((r) => {
-    if (r.status !== 'active' || r.productCategory !== 'collect_back' || r.priceType !== 'piece') return false;
-    if (!isEffective(ctx.refDate, r.effectiveFrom, r.effectiveTo)) return false;
-    if (!r.senderKeyword && !r.receiverKeyword) return false; // ต้องระบุชื่ออย่างน้อย 1
-    if (r.senderKeyword && !textContains(extracted.senderName, r.senderKeyword)) return false;
-    if (r.receiverKeyword && !textContains(extracted.receiverName, r.receiverKeyword)) return false;
-    return true;
-  });
-  const collectPrice = collectByKw ? collectByKw.price : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null);
+  // ราคาเก็บคืน:
+  //  A) นครสวรรค์ (collectBackHalfPiece): = ครึ่งของราคาชิ้นปกติของปลายทางนั้น อัตโนมัติ
+  //     ไม่มีราคาชิ้น -> collectPrice=null -> เตือน+บันทึกไม่ได้ (จัดการที่ระดับใบกระจาย)
+  //  B) สาขาอื่น: ตาราง collect_back แยก — จับตามชื่อร้าน(ผู้ส่ง)/ผู้รับ ก่อน ไม่งั้นจับตามจังหวัด (พิษณุโลก)
+  let collectPrice: number | null;
+  if (ctx.collectBackHalfPiece) {
+    collectPrice = piecePrice != null ? round2(piecePrice / 2) : null;
+  } else {
+    const collectByKw = ctx.rates.find((r) => {
+      if (r.status !== 'active' || r.productCategory !== 'collect_back' || r.priceType !== 'piece') return false;
+      if (!isEffective(ctx.refDate, r.effectiveFrom, r.effectiveTo)) return false;
+      if (!r.senderKeyword && !r.receiverKeyword) return false; // ต้องระบุชื่ออย่างน้อย 1
+      if (r.senderKeyword && !textContains(extracted.senderName, r.senderKeyword)) return false;
+      if (r.receiverKeyword && !textContains(extracted.receiverName, r.receiverKeyword)) return false;
+      return true;
+    });
+    collectPrice = collectByKw ? collectByKw.price : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null);
+  }
   const peatPrice = matchRate(rateParams, ctx.rates, undefined, 'peat_mass').piece?.rateValue ?? null;
 
-  // แยกประเภทสินค้า (เฉพาะเมื่อมีราคาประเภทนั้นของปลายทาง ไม่งั้นถือเป็นงานปกติ)
-  // จับได้ทั้ง "เก็บสินค้าคืน" (พิษณุโลก) และ "สินค้าเก็บคืน" (กำแพงเพชร)
-  const isCollect = (it: ExtractedReceiptItem) => collectPrice != null && /เก็บ(สินค้า)?คืน/.test(it.productName);
+  // แยกประเภทสินค้า จับได้ทั้ง "เก็บสินค้าคืน" และ "สินค้าเก็บคืน"
+  //  - นครสวรรค์ (half): จับด้วยชื่อเสมอ แม้ไม่มีราคาชิ้น (เพื่อเตือน+บล็อกบันทึก ไม่ปล่อยเป็นงานปกติ)
+  //  - สาขาอื่น: ต้องมีราคา collect_back ก่อน ไม่งั้นถือเป็นงานปกติ (พฤติกรรมเดิม)
+  const isCollect = (it: ExtractedReceiptItem) =>
+    /เก็บ(สินค้า)?คืน/.test(it.productName) && (ctx.collectBackHalfPiece || collectPrice != null);
   // Peat: ครอบ "Peat mass" + "Peat Ash" (ขาว-ฟ้า) — ใช้ราคา/เส้นทางเดียวกัน (เฉพาะปลายทางที่มีราคา peat_mass)
   const isPeat = (it: ExtractedReceiptItem) => peatPrice != null && /peat\s*(mass|ash)/i.test(it.productName || '');
   const normalItems = extracted.items.filter((it) => !isCollect(it) && !isPeat(it));
@@ -470,6 +481,7 @@ export function computeTripDocument(
     manualBoxSenders: ManualBoxSender[];
     destOverrides?: DestinationOverride[];
     minBoxes?: number | null;
+    collectBackHalfPiece?: boolean; // true = เก็บคืนคิดครึ่งราคาชิ้นปกติ (นครสวรรค์)
     fileName: string;
   },
   idFactory: () => string
@@ -501,6 +513,7 @@ export function computeTripDocument(
         rateOverrides: ctx.rateOverrides,
         manualBoxSenders: ctx.manualBoxSenders, destOverrides: ctx.destOverrides, refDate,
         fallbackProvince: extracted.provinceRaw, fallbackDistrict: extracted.districtRaw,
+        collectBackHalfPiece: ctx.collectBackHalfPiece,
       },
       idFactory
     )
@@ -617,7 +630,12 @@ export function computeTripDocument(
       r.receiptAmount = round2(r.receiptAmount + a);
       collectAmount += a;
     } else if (r.collectQty > 0) {
-      warnings.push(`เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาเก็บคืนของ "${r.provinceRaw}"`);
+      // ไม่เจอราคา -> warning เข้าเงื่อนไข /ไม่เจอ.*ราคา/ ของ Review = บล็อกบันทึก
+      warnings.push(
+        ctx.collectBackHalfPiece
+          ? `เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาชิ้นปกติของ "${r.districtRaw ? 'อ.' + r.districtRaw + ' ' : ''}จ.${r.provinceRaw}" — คิดครึ่งราคาไม่ได้ (ต้องเพิ่มราคาชิ้นใน Master ก่อน)`
+          : `เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาเก็บคืนของ "${r.provinceRaw}"`
+      );
     }
   }
 

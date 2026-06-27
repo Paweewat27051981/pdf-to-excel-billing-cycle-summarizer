@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import path from 'path';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
@@ -93,6 +94,7 @@ function recomputeTrip(
       manualBoxSenders: db.manualBoxSenders.filter((m) => m.branchId === branchId),
       destOverrides: db.destinationOverrides.filter((d) => d.branchId === branchId),
       minBoxes,
+      collectBackHalfPiece: branch?.collectBackHalfPiece,
       fileName,
     },
     () => generateId('rcp')
@@ -136,6 +138,8 @@ function resolveCycleForDate(
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
+  // 📉 บีบอัด (gzip) ทุก response -> ลดแบนด์วิดท์ ~70% (ไฟล์ JS/CSS/JSON เล็กลงมาก)
+  app.use(compression());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -799,8 +803,15 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+    // ไฟล์ asset (js/css) ของ Vite มีรหัส hash ในชื่อ -> cache ถาวรได้ (1 ปี, immutable)
+    // เปิดเว็บซ้ำ = ไม่ต้องโหลดไฟล์ใหม่เลย (แบนด์วิดท์ ~0) จนกว่าจะ deploy เวอร์ชันใหม่
+    // index:false -> ไม่ให้ static เสิร์ฟ index.html (กันถูก cache ถาวรจนอัปเดตไม่เห็น)
+    app.use(express.static(distPath, { index: false, maxAge: '1y', immutable: true }));
+    // index.html ต้องไม่ cache (อ้างชื่อไฟล์ asset ใหม่ทุก deploy) -> โหลดสดเสมอ แต่เล็กมาก
+    app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running at http://0.0.0.0:${PORT}`));

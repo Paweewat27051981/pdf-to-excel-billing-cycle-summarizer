@@ -36,6 +36,9 @@ export interface Branch {
   rateGroups?: { name: string; minBoxes?: number | null }[];
   // พื้นที่ให้บริการ (ตรวจตอนบันทึก): บรรทัดละ "จังหวัด" (ทั้งจังหวัด) หรือ "จังหวัด: อำเภอ1, อำเภอ2" (เฉพาะอำเภอ) — ว่าง=ไม่ตรวจ
   serviceAreaText?: string;
+  // true = "เก็บสินค้าคืน" คิด = ครึ่งของราคาชิ้นปกติของปลายทาง อัตโนมัติ (เช่น นครสวรรค์)
+  //        ไม่มีราคาชิ้น -> เตือน+บันทึกไม่ได้. false/ไม่ตั้ง = ใช้ตาราง collect_back แยก (พิษณุโลก/กำแพงเพชร)
+  collectBackHalfPiece?: boolean;
   status: RecordStatus;
 }
 

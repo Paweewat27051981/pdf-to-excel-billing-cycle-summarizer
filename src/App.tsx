@@ -321,6 +321,13 @@ function BranchesTab({ db, api, reload, showToast }: any) {
     await api(`/api/branches/${b.id}`, 'PUT', { serviceAreaText: areaText });
     showToast('success', `บันทึกพื้นที่สาขา ${b.name} แล้ว`); setAreaEdit(null); reload();
   };
+  // สลับโหมด "เก็บสินค้าคืน = ครึ่งราคาชิ้นปกติ" (เช่น นครสวรรค์)
+  const toggleCollectHalf = async (b: Branch) => {
+    const next = !b.collectBackHalfPiece;
+    await api(`/api/branches/${b.id}`, 'PUT', { collectBackHalfPiece: next });
+    showToast('success', `${b.name}: เก็บคืนคิดครึ่งราคาชิ้น — ${next ? 'เปิด ✅' : 'ปิด'}`);
+    reload();
+  };
 
   const countMaster = (bid: string) =>
     db.conversionRules.filter((r: ProductConversionRule) => r.branchId === bid).length;
@@ -398,12 +405,13 @@ function BranchesTab({ db, api, reload, showToast }: any) {
             {(db.branches as Branch[]).map((b) => (
               <Fragment key={b.id}>
               <tr className="border-t border-natural-border">
-                <td className="px-4 py-2 font-semibold text-brand-navy">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}{!b.isHQ && (b.serviceAreaText || '').trim() && <span className="text-[10px] bg-brand-navy text-white rounded-full px-1.5 py-0.5 ml-1" title={b.serviceAreaText}>📍 ตั้งพื้นที่แล้ว</span>}</td>
+                <td className="px-4 py-2 font-semibold text-brand-navy">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}{!b.isHQ && (b.serviceAreaText || '').trim() && <span className="text-[10px] bg-brand-navy text-white rounded-full px-1.5 py-0.5 ml-1" title={b.serviceAreaText}>📍 ตั้งพื้นที่แล้ว</span>}{!b.isHQ && b.collectBackHalfPiece && <span className="text-[10px] bg-amber-500 text-white rounded-full px-1.5 py-0.5 ml-1" title="เก็บสินค้าคืน คิดครึ่งราคาชิ้นปกติอัตโนมัติ">♻ เก็บคืน½</span>}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.vehicles.filter((v: Vehicle) => v.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{countMaster(b.id)}</td>
                 <td className="px-4 py-2 text-right whitespace-nowrap">
                   {!b.isHQ && <button type="button" onClick={() => (areaEdit === b.id ? setAreaEdit(null) : openArea(b))} className="text-xs text-brand-navy font-semibold mr-3">📍 พื้นที่</button>}
+                  {!b.isHQ && <button type="button" title="เปิด/ปิด: เก็บสินค้าคืน คิด=ครึ่งราคาชิ้นปกติของปลายทาง อัตโนมัติ" onClick={() => toggleCollectHalf(b)} className={`text-xs font-semibold mr-3 ${b.collectBackHalfPiece ? 'text-amber-600' : 'text-natural-muted'}`}>♻ เก็บคืน½ {b.collectBackHalfPiece ? 'เปิด' : 'ปิด'}</button>}
                   {!b.isHQ && <button type="button" onClick={() => cloneInto(b)} className="text-xs text-emerald-700 font-semibold mr-3">⬇ คัดลอกกฎ</button>}
                   <button onClick={() => setPwd(b)} className="text-xs text-brand-navy font-semibold mr-3">ตั้งรหัสผ่าน</button>
                   {!b.isHQ && <button type="button" title="ลบสาขา" onClick={() => del(b)} className="text-red-500"><Trash2 className="w-4 h-4 inline" /></button>}

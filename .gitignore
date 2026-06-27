@@ -10,5 +10,8 @@ coverage/
 serviceAccountKey.json
 *serviceAccount*.json
 
+# ข้อมูล sandbox local (รัน dev) — ไม่ขึ้น production
+db.json
+
 # external agent skills (ไม่เกี่ยวกับโปรเจกต์)
 .agent/

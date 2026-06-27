@@ -2,7 +2,9 @@
 // Excel Export ด้วย ExcelJS — รองรับฟอนต์ Cordia New, สี, Border, หลาย Sheet
 // ตาม Requirement section 8-9
 // ============================================================================
-import ExcelJS from 'exceljs';
+// type เท่านั้น -> ถูกลบตอน build ไม่ฝัง ExcelJS (~1MB) ในบันเดิลหน้าเว็บ
+// ตัวจริงโหลดแบบ dynamic ใน newWorkbook() เฉพาะตอนผู้ใช้กด export
+import type ExcelJS from 'exceljs';
 import {
   BillingCycle,
   TripDocument,
@@ -78,6 +80,13 @@ function bodyCell(cell: ExcelJS.Cell, opts: { bold?: boolean; color?: string; al
 const NUM = '#,##0.00';
 const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
 
+// โหลด ExcelJS แบบ dynamic เฉพาะตอนผู้ใช้กด export จริง (code-splitting)
+// -> ExcelJS (~1MB) แยกเป็นไฟล์ย่อย ไม่อยู่ในบันเดิลหน้าแรก โหลดครั้งแรกที่ export
+async function newWorkbook(): Promise<ExcelJS.Workbook> {
+  const mod = await import('exceljs');
+  return new mod.default.Workbook();
+}
+
 // ===========================================================================
 export async function exportCycleToExcel(
   cycle: BillingCycle,
@@ -87,7 +96,7 @@ export async function exportCycleToExcel(
   vehicles: Vehicle[],
   rateMasters: RateMaster[]
 ) {
-  const wb = new ExcelJS.Workbook();
+  const wb = await newWorkbook();
   wb.creator = 'ระบบค่าเที่ยว+ค่าน้ำมันรถร่วม';
   wb.created = new Date();
 
@@ -358,7 +367,7 @@ export async function exportPerVehicleReport(
   deductions: DeductionEntry[],
   vehicles: Vehicle[]
 ) {
-  const wb = new ExcelJS.Workbook();
+  const wb = await newWorkbook();
   wb.creator = 'ระบบค่าเที่ยว+ค่าน้ำมันรถร่วม';
   wb.created = new Date();
 
@@ -571,7 +580,7 @@ export async function exportPerVehicleReport(
 // เทมเพลตนำเข้าราคาขนส่ง — 2 ชีต (เหมาคัน / รายชิ้น) พร้อมตัวอย่าง
 // ===========================================================================
 export async function downloadRateTemplate() {
-  const wb = new ExcelJS.Workbook();
+  const wb = await newWorkbook();
   // ชีต เหมาคัน
   const f = wb.addWorksheet('เหมาคัน');
   styleHeaderRow(f.addRow(['ลำดับ', 'จังหวัด', 'อำเภอ', 'ราคา เหมา']));
@@ -633,7 +642,7 @@ export async function downloadFuelTemplate(
   branchName: string,
   vehicles: { plateNo: string; driverName?: string }[]
 ) {
-  const wb = new ExcelJS.Workbook();
+  const wb = await newWorkbook();
   const used = new Set<string>();
   const sheetName = (p: string) => {
     let n = (p || 'รถ').replace(/[\/?*[\]:]/g, '-').slice(0, 28).trim();
@@ -690,7 +699,7 @@ export async function exportBranchSummary(
   cycleName: string,
   rows: { branchName: string; docs: number; trucks: number; trip: number; fuel: number; income: number; deduct: number; net: number }[]
 ) {
-  const wb = new ExcelJS.Workbook();
+  const wb = await newWorkbook();
   const ws = wb.addWorksheet('สรุปทุกสาขา');
   styleTitle(ws, 'สรุปภาพรวมทุกสาขา — NEOSIAM', 8, `รอบ ${cycleName}`);
   ws.addRow([]);
@@ -728,7 +737,7 @@ export async function exportDriverKpi(
   drivers: { plate: string; driver: string; branch: string; boxes: number; net: number; trip: number }[],
   branchRows: { branch: string; boxes: number; trip: number; perBox: number; nHit: number; nDrivers: number; nTrips?: number; boxPerTrip?: number; boxPerDriver?: number; pctHit?: number }[]
 ) {
-  const wb = new ExcelJS.Workbook();
+  const wb = await newWorkbook();
   const INT = '#,##0';
 
   // ---- เป้าหมาย ----
@@ -813,7 +822,7 @@ export async function exportCostAreas(
   data: { branch: string; total: number; provs: { prov: string; boxes: number; cost: number; docs: number; perBox: number; dists?: { dist: string; boxes: number; cost: number; docs: number; perBox: number }[] }[] }[],
   thr = 0
 ) {
-  const wb = new ExcelJS.Workbook();
+  const wb = await newWorkbook();
   const INT = '#,##0';
   const ws = wb.addWorksheet('พื้นที่ต้นทุนสูง');
   styleTitle(ws, 'พื้นที่ต้นทุนสูง — ต่อสาขา', 5, `รอบ ${cycleName} · เรียงตาม บาท/กล่อง มาก→น้อย${thr > 0 ? ` · กรองเฉพาะ ≥ ${thr} บ/กล่อง` : ''}`);
