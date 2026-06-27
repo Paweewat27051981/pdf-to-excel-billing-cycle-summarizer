@@ -138,6 +138,7 @@ function resolveCycleForDate(
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
+  // build marker: stripParen district match + แม่กลอง 7.5 (force fresh instance)
   // 📉 บีบอัด (gzip) ทุก response -> ลดแบนด์วิดท์ ~70% (ไฟล์ JS/CSS/JSON เล็กลงมาก)
   app.use(compression());
   app.use(express.json({ limit: '50mb' }));
