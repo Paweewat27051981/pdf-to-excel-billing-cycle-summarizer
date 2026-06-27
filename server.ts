@@ -3,7 +3,7 @@ import compression from 'compression';
 import path from 'path';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
-import { getDb, saveDb } from './server-db.js';
+import { getDb, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed } from './server-db.js';
 import {
   DatabaseState,
   BillingCycle,
@@ -146,7 +146,7 @@ async function startServer() {
 
   // ===================== CONFIG =====================
   app.get('/api/config', (_req, res) => {
-    res.json({ aiEnabled: isAiEnabled() });
+    res.json({ aiEnabled: isAiEnabled(), storage: 'granular-v1' });
   });
 
   // ===================== SETTINGS =====================
@@ -332,7 +332,7 @@ async function startServer() {
         const db = await getDb();
         const item = { ...req.body, id: generateId(idPrefix) } as T;
         (db[key] as unknown as T[]).push(item);
-        await saveDb(db);
+        if (isIdKeyed(key)) await saveRecord(key, item as any); else await saveDb(db);
         res.status(201).json(item);
       } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -345,7 +345,7 @@ async function startServer() {
         const idx = arr.findIndex((x) => x.id === req.params.id);
         if (idx === -1) return res.status(404).json({ error: 'ไม่พบรายการ' });
         arr[idx] = { ...arr[idx], ...req.body, id: req.params.id };
-        await saveDb(db);
+        if (isIdKeyed(key)) await saveRecord(key, arr[idx] as any); else await saveDb(db);
         res.json(arr[idx]);
       } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -355,7 +355,7 @@ async function startServer() {
       try {
         const db = await getDb();
         (db[key] as unknown as T[]) = (db[key] as unknown as T[]).filter((x) => x.id !== req.params.id) as any;
-        await saveDb(db);
+        if (isIdKeyed(key)) await removeRecord(key, req.params.id); else await saveDb(db);
         res.json({ success: true });
       } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -368,7 +368,7 @@ async function startServer() {
         const db = await getDb();
         const idset = new Set(ids);
         (db[key] as unknown as T[]) = (db[key] as unknown as T[]).filter((x) => !idset.has(x.id)) as any;
-        await saveDb(db);
+        if (isIdKeyed(key)) await removeRecords(key, ids); else await saveDb(db);
         res.json({ success: true, deleted: ids.length });
       } catch (err: any) {
         res.status(500).json({ error: err.message });
@@ -388,7 +388,7 @@ async function startServer() {
       }
       const item = { ...body, id: generateId('fuel') } as FuelEntry;
       db.fuelEntries.push(item);
-      await saveDb(db);
+      await saveRecord('fuelEntries', item);
       res.status(201).json(item);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -438,6 +438,7 @@ async function startServer() {
       let created = 0, skippedDup = 0;
       const closedCycles = new Set<string>();
       const createdCycles = new Set<string>();
+      const createdEntries: FuelEntry[] = [];
       // เลขใบสั่งเติมห้ามซ้ำในสาขา (เทียบกับของเดิม + ในไฟล์เดียวกัน)
       const seenRef = new Set(db.fuelEntries.filter((f) => f.branchId === branchId).map((f) => (f.refNo || '').trim()).filter(Boolean));
       for (const f of fuel) {
@@ -448,10 +449,13 @@ async function startServer() {
         if (rn && seenRef.has(rn)) { skippedDup++; continue; }
         if (rn) seenRef.add(rn);
         if (rv.created) createdCycles.add(rv.cycle.name);
-        db.fuelEntries.push({ id: generateId('fuel'), branchId, cycleId: rv.cycle.id, plateNo: f.plateNo, refNo: f.refNo, date: f.date, amount: f.amount });
+        const entry: FuelEntry = { id: generateId('fuel'), branchId, cycleId: rv.cycle.id, plateNo: f.plateNo, refNo: f.refNo, date: f.date, amount: f.amount };
+        db.fuelEntries.push(entry);
+        createdEntries.push(entry);
         created++;
       }
-      await saveDb(db);
+      await saveRecords('fuelEntries', createdEntries);
+      if (createdCycles.size) await flushCollection('cycles');
       if (createdCycles.size) summary.push(`เปิดรอบใหม่อัตโนมัติ: ${[...createdCycles].join(', ')}`);
       if (skippedDup) summary.push(`⚠️ ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ`);
       if (closedCycles.size) summary.push(`⚠️ ข้ามรายการของรอบที่ปิดอยู่: ${[...closedCycles].join(', ')} (ให้ HQ เปิดรอบก่อน)`);
@@ -621,7 +625,8 @@ async function startServer() {
       if (resolved.created) db.cycles.push(cycle);
       trip.isVerified = true;
       db.tripDocuments.push(trip);
-      await saveDb(db);
+      await saveRecord('tripDocuments', trip);           // เขียนแค่ใบเดียว (เร็ว)
+      if (resolved.created) await flushCollection('cycles'); // รอบใหม่ -> เขียน cycles (เล็ก)
       res.status(201).json({ ...trip, _cycle: cycle, _cycleCreated: resolved.created });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -632,7 +637,7 @@ async function startServer() {
     try {
       const db = await getDb();
       db.tripDocuments = db.tripDocuments.filter((t) => t.id !== req.params.id);
-      await saveDb(db);
+      await removeRecord('tripDocuments', req.params.id);
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -646,6 +651,7 @@ async function startServer() {
       const cycle = db.cycles.find((c) => c.id === req.params.id);
       if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
 
+      const changed: TripDocument[] = [];
       db.tripDocuments = db.tripDocuments.map((t) => {
         if (t.cycleId !== cycle.id) return t;
         // สร้าง extracted กลับจาก trip เดิม
@@ -667,9 +673,11 @@ async function startServer() {
           })),
         };
         const recomputed = recomputeTrip(db, cycle, extracted, t.fileName, t.branchId);
-        return { ...recomputed, id: t.id, isVerified: t.isVerified, createdAt: t.createdAt };
+        const out = { ...recomputed, id: t.id, isVerified: t.isVerified, createdAt: t.createdAt };
+        changed.push(out);
+        return out;
       });
-      await saveDb(db);
+      await saveRecords('tripDocuments', changed);
       res.json({ success: true, count: db.tripDocuments.filter((t) => t.cycleId === cycle.id).length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

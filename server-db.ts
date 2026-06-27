@@ -189,6 +189,25 @@ function normalizeTrips(list: any[]): any[] {
   }));
 }
 
+// ---------------------------------------------------------------------------
+// บันทึกแบบ "เฉพาะ record" (granular) — คอลเลกชันใหญ่เก็บใน Firebase แบบ id-keyed
+//   { "rcp-abc": {...}, "rcp-def": {...} }  แทน array [...]
+// -> บันทึก 1 ใบ = เขียนแค่ /tripDocuments/<id> (ไม่เขียนทั้ง DB) เร็วคงที่
+// อ่านได้ทั้ง 2 รูปแบบ (array เดิม + object ใหม่) ด้วย toArray() ของเก่าจึงไม่หาย
+// ---------------------------------------------------------------------------
+const ID_KEYED: (keyof DatabaseState)[] = ['tripDocuments', 'fuelEntries', 'deductions'];
+export function isIdKeyed(collKey: keyof DatabaseState): boolean {
+  return ID_KEYED.includes(collKey);
+}
+const deepClean = <T>(x: T): T => JSON.parse(JSON.stringify(x)); // ตัด undefined (RTDB ไม่รับ)
+const arrToMap = (arr: any[]): Record<string, any> => {
+  const m: Record<string, any> = {};
+  for (const r of arr || []) if (r && r.id) m[r.id] = r;
+  return m;
+};
+// รับได้ทั้ง array (รูปแบบเก่า) และ object id-keyed (รูปแบบใหม่) -> คืน array เสมอ
+const toArray = (x: any): any[] => (Array.isArray(x) ? x : x && typeof x === 'object' ? Object.values(x) : []);
+
 // migrate: เติม key ที่ขาดให้ db เก่า
 export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   const seed = seedState();
@@ -206,9 +225,9 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     manualBoxSenders: withBranch(state.manualBoxSenders, seed.manualBoxSenders),
     destinationOverrides: withBranch(state.destinationOverrides, []),
     moneyCategories: withBranch(state.moneyCategories, seed.moneyCategories),
-    tripDocuments: normalizeTrips(withBranch(state.tripDocuments, [])),
-    fuelEntries: withBranch(state.fuelEntries, []),
-    deductions: withBranch(migrateDeductions(state.deductions as any[]), []),
+    tripDocuments: normalizeTrips(withBranch(toArray(state.tripDocuments), [])),
+    fuelEntries: withBranch(toArray(state.fuelEntries), []),
+    deductions: withBranch(migrateDeductions(toArray(state.deductions)), []),
   };
 }
 
@@ -238,14 +257,59 @@ export async function getDb(): Promise<DatabaseState> {
   }
 }
 
+// เขียนทั้ง DB (ใช้ตอน seed / bulk / migrate) — คอลเลกชันใหญ่เขียนแบบ id-keyed
 export async function saveDb(state: DatabaseState): Promise<void> {
   cache = state; // อัปเดต cache ในหน่วยความจำ
-  // ตัด undefined ออก (RTDB ไม่รับ undefined) ด้วยการ round-trip JSON
-  const clean = JSON.parse(JSON.stringify(state));
   const fb = initFirebase();
   if (fb) {
-    await fb.ref('/').set(clean); // write-through (การเขียนไม่ถูกคิดเป็น download)
+    const out: any = deepClean(state);
+    for (const k of ID_KEYED) out[k as string] = arrToMap((state as any)[k] || []);
+    await fb.ref('/').set(out); // write-through (การเขียนไม่ถูกคิดเป็น download)
   } else {
-    await fs.writeFile(DB_FILE, JSON.stringify(clean, null, 2), 'utf-8');
+    await fs.writeFile(DB_FILE, JSON.stringify(deepClean(state), null, 2), 'utf-8');
   }
+}
+
+// fallback db.json: เขียนทั้งไฟล์ (sandbox local เล็ก เขียนเร็ว)
+async function persistLocal(): Promise<void> {
+  if (cache) await fs.writeFile(DB_FILE, JSON.stringify(deepClean(cache), null, 2), 'utf-8');
+}
+
+// บันทึก/แก้ 1 record — เขียนแค่ /<coll>/<id> (เร็วคงที่ ไม่ขึ้นกับขนาด DB)
+// ผู้เรียกต้องอัปเดต cache array แล้ว (db = getDb() เป็น reference เดียวกับ cache)
+export async function saveRecord(collKey: keyof DatabaseState, record: { id: string }): Promise<void> {
+  const fb = initFirebase();
+  if (fb) await fb.ref(`/${String(collKey)}/${record.id}`).set(deepClean(record));
+  else await persistLocal();
+}
+// บันทึกหลาย record ครั้งเดียว (multi-path update — 1 round-trip)
+export async function saveRecords(collKey: keyof DatabaseState, records: { id: string }[]): Promise<void> {
+  if (!records.length) return;
+  const fb = initFirebase();
+  if (fb) {
+    const upd: Record<string, any> = {};
+    for (const r of records) upd[r.id] = deepClean(r);
+    await fb.ref(`/${String(collKey)}`).update(upd);
+  } else await persistLocal();
+}
+export async function removeRecord(collKey: keyof DatabaseState, id: string): Promise<void> {
+  const fb = initFirebase();
+  if (fb) await fb.ref(`/${String(collKey)}/${id}`).remove();
+  else await persistLocal();
+}
+export async function removeRecords(collKey: keyof DatabaseState, ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const fb = initFirebase();
+  if (fb) {
+    const upd: Record<string, any> = {};
+    for (const id of ids) upd[id] = null; // null ใน update = ลบ node นั้น
+    await fb.ref(`/${String(collKey)}`).update(upd);
+  } else await persistLocal();
+}
+// เขียนทั้งคอลเลกชัน (คอลเลกชันเล็กที่เปลี่ยนพร้อม trip เช่น cycles)
+export async function flushCollection(collKey: keyof DatabaseState): Promise<void> {
+  const fb = initFirebase();
+  const arr = (cache as any)?.[collKey] || [];
+  if (fb) await fb.ref(`/${String(collKey)}`).set(ID_KEYED.includes(collKey) ? arrToMap(arr) : deepClean(arr));
+  else await persistLocal();
 }
