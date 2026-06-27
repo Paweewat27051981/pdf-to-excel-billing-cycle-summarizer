@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e ' *)",
+      "PowerShell(Set-Location \"d:\\\\pdf-to-excel-billing-cycle-summarizer\"; npx tsx _test-match2.mts 2>&1; Remove-Item _test-match2.mts -Force; Write-Host \"---\"; npm run lint 2>&1 | Select-Object -Last 4; Write-Host \"LINT_EXIT=$LASTEXITCODE\")"
+    ]
+  }
+}

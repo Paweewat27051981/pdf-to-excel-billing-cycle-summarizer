@@ -50,6 +50,12 @@ function norm(s: string): string {
   return (s || '').toString().toLowerCase().replace(/\s+/g, '').trim();
 }
 
+// ตัด "(...)" ท้าย/กลางชื่ออำเภอออกก่อนจับคู่ราคา — วงเล็บเป็นโน้ตเส้นทาง ไม่ใช่ชื่ออำเภอจริง
+// เช่น "เขาคิชฌกูฏ(จากอำเภอเมือง)" -> "เขาคิชฌกูฏ" (รองรับวงเล็บไทย （）ด้วย)
+function stripParen(s: string): string {
+  return (s || '').replace(/[(（][^)）]*[)）]/g, '').trim();
+}
+
 // เทียบทะเบียนรถแบบยืดหยุ่น: ตัดคำว่า "ตู้" (ชนิดรถ) และช่องว่างออกก่อนเทียบ
 // เช่น "3ฒต-983 ตู้" (Master) = "3ฒต-983" (อ่านจาก PDF)
 export function normPlate(s: string): string {
@@ -214,10 +220,12 @@ export function matchRate(
       textContains(params.provinceRaw, r.provinceName) ||
       textContains(params.provinceRaw, r.provinceShort) ||
       textContains(r.provinceName, params.provinceRaw);
+    // ตัดวงเล็บออกจากชื่ออำเภอ master ก่อนเทียบ -> ทนทานต่อ "อ." นำหน้า/จังหวัดต่อท้ายในใบ
+    const rDist = stripParen(r.districtName || '');
     const distOk =
-      !r.districtName ||
-      textContains(params.districtRaw, r.districtName) ||
-      textContains(r.districtName, params.districtRaw);
+      !rDist ||
+      textContains(params.districtRaw, rDist) ||
+      textContains(rDist, params.districtRaw);
     return provOk && distOk;
   });
 
@@ -257,7 +265,7 @@ export function matchCombinedFlat(
       textContains(province, r.provinceShort) ||
       textContains(r.provinceName, province);
     if (!provOk) continue;
-    const rDistricts = r.districtName.split('+').map((s) => s.trim()).filter(Boolean);
+    const rDistricts = r.districtName.split('+').map((s) => stripParen(s)).filter(Boolean);
     if (rDistricts.length !== docDistricts.length) continue;
     // ทุกอำเภอในชุดต้องจับกับอำเภอในใบได้ครบ (และจำนวนเท่ากัน)
     const ok = rDistricts.every((rd) => docDistricts.some((dd) => dm(dd, rd)));
