@@ -771,9 +771,13 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   const noVehicle = (prev.warnings || []).some((w) => /ไม่อยู่ใน Master รายชื่อรถ/.test(w));
   const noPrice = (prev.warnings || []).some((w) => /ไม่เจอ.*ราคา/.test(w));
   // ปลายทางไม่อยู่ในพื้นที่ของสาขา (ตรวจระดับจังหวัด/อำเภอ)
+  // ปลายทางที่จับราคาได้ (เหมา/ชิ้น/เก็บคืน/Peat) = สาขาวิ่งจริง -> ถือว่าอยู่ในพื้นที่อัตโนมัติ
+  // (ราคาเป็นแหล่งความจริงแหล่งเดียว ไม่ต้อง sync รายการพื้นที่ตามทุกครั้งที่เพิ่มราคา)
   const areas = parseServiceAreas(serviceAreaText);
+  const hasRate = (r: TripReceipt) =>
+    r.flatPrice != null || r.piecePrice != null || r.collectPrice != null || r.collectFlatPrice != null || r.peatPrice != null;
   const offArea = [...new Set(prev.receipts
-    .filter((r) => (r.totalQty || 0) > 0 && !inServiceArea(areas, r.provinceRaw, r.districtRaw))
+    .filter((r) => (r.totalQty || 0) > 0 && !hasRate(r) && !inServiceArea(areas, r.provinceRaw, r.districtRaw))
     .map((r) => `${r.districtRaw ? 'อ.' + r.districtRaw + ' ' : ''}จ.${r.provinceRaw || '?'}`))];
   const blockReasons: string[] = [];
   if (offArea.length) blockReasons.push(`ปลายทางไม่อยู่ในพื้นที่ของสาขา${branchLabel ? ' ' + branchLabel : ''}: ${offArea.join(', ')} — ตรวจปลายทาง/แก้ปลายทาง หรือเพิ่มพื้นที่ในเมนูจัดการสาขา`);
@@ -2043,7 +2047,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
     if (!/\.xlsx?$/i.test(file.name)) return showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)');
     const existing = (db.rateMasters as RateMaster[]).filter((r) => (r.productCategory || 'normal') === 'normal').length;
     if (existing > 0) {
-      const ok = await confirmAction({ title: 'นำเข้าราคาจาก Excel', text: `จะลบราคาเดิม ${existing} แถวของสาขานี้ แล้วแทนที่ด้วยไฟล์นี้ (เฉพาะราคางานปกติ)`, confirmText: 'ลบของเดิม + นำเข้า', danger: true });
+      const ok = await confirmAction({ title: 'นำเข้าราคาจาก Excel', text: `จะลบราคาเดิมของสาขานี้เฉพาะหมวดที่อยู่ในไฟล์ (งานปกติ + ชีต "พิเศษ" ถ้ามี เช่น เก็บคืน/Peat/บวกเพิ่ม) แล้วแทนที่ด้วยไฟล์นี้`, confirmText: 'ลบของเดิม + นำเข้า', danger: true });
       if (!ok) return;
     }
     const replaceExisting = existing > 0;

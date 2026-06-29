@@ -260,8 +260,13 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
 // ============================================================================
 export interface ParsedRate {
   provinceName: string; provinceShort: string; districtName: string; destinationName: string;
-  priceType: 'flat' | 'piece'; price: number; productCategory: 'normal'; status: 'active';
+  priceType: 'flat' | 'piece'; price: number;
+  productCategory: 'normal' | 'collect_back' | 'peat_mass' | 'fixed_addon'; status: 'active';
   effectiveFrom: string; effectiveTo: null;
+  // เงื่อนไขพิเศษ (จากชีต "พิเศษ") — เว้นว่างได้ทั้งหมด
+  rateGroup?: string; pieceThreshold?: number | null;
+  minQty?: number | null; maxQty?: number | null;
+  receiverKeyword?: string; senderKeyword?: string; productKeyword?: string; remark?: string;
 }
 const normTxt = (s: any) => String(s ?? '').toLowerCase().replace(/\s+/g, '').trim();
 const stripAmphoe = (s: any) => String(s ?? '').replace(/^\s*อำเภอ\s*/, '').trim();
@@ -275,8 +280,10 @@ function colOf(header: Row, ...kws: string[]): number {
 export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: string[] } {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const findSheet = (kw: string) => wb.SheetNames.find((n) => n.includes(kw));
-  const flatName = findSheet('เหมา') || wb.SheetNames[0];
   const pieceName = findSheet('ชิ้น');
+  const advName = findSheet('พิเศษ');
+  // ชีตราคาเหมา: เลือกชีตที่ชื่อมี "เหมา" ก่อน ไม่งั้นชีตแรกที่ไม่ใช่ ชิ้น/พิเศษ/วิธีใช้
+  const flatName = findSheet('เหมา') || wb.SheetNames.find((n) => n !== pieceName && n !== advName && !String(n).includes('วิธีใช้')) || '';
   const summary: string[] = [];
 
   // ---- ราคาชิ้น: default ต่อจังหวัด + override ต่ออำเภอ ----
@@ -305,36 +312,90 @@ export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: 
   };
 
   // ---- ราคาเหมา ต่ออำเภอ (+ สร้างราคาชิ้นคู่กัน ถ้าหาเจอ) ----
-  const flatRows: Row[] = XLSX.utils.sheet_to_json(wb.Sheets[flatName], { header: 1, defval: '' });
-  const fh = findHeaderRow(flatRows, 'จังหวัด');
-  if (fh < 0) throw new Error('ชีตราคาเหมาไม่พบหัวคอลัมน์ "จังหวัด"');
-  const fheader = flatRows[fh];
-  const fp = colOf(fheader, 'จังหวัด'), fd = colOf(fheader, 'อำเภอ'), fr = colOf(fheader, 'ราคา', 'เหมา');
-  if (fp < 0 || fd < 0 || fr < 0) throw new Error('ชีตราคาเหมาต้องมีคอลัมน์ จังหวัด / อำเภอ / ราคา');
-
   const rates: ParsedRate[] = [];
   let nFlat = 0, nPiece = 0, nCombined = 0;
   const provNoPiece = new Set<string>();
-  for (const row of flatRows.slice(fh + 1)) {
-    const prov = String(row[fp] ?? '').trim();
-    const dist = stripAmphoe(row[fd]);
-    const flatPrice = Number(row[fr]);
-    if (!prov || !dist || !(flatPrice > 0)) continue;
-    const base = {
-      provinceName: prov, provinceShort: '', districtName: dist, destinationName: `${dist} จ.${prov}`,
-      productCategory: 'normal' as const, status: 'active' as const, effectiveFrom: '2020-01-01', effectiveTo: null,
-    };
-    rates.push({ ...base, priceType: 'flat', price: flatPrice });
-    nFlat++;
-    // ส่งหลายอำเภอ (มี +) = ราคาเหมารวม ไม่มีราคาชิ้น
-    if (dist.includes('+')) { nCombined++; continue; }
-    const pc = pieceFor(prov, dist);
-    if (pc != null) { rates.push({ ...base, priceType: 'piece', price: pc }); nPiece++; }
-    else provNoPiece.add(prov);
+  if (flatName && flatName !== advName) {
+    const flatRows: Row[] = XLSX.utils.sheet_to_json(wb.Sheets[flatName], { header: 1, defval: '' });
+    const fh = findHeaderRow(flatRows, 'จังหวัด');
+    if (fh < 0) throw new Error('ชีตราคาเหมาไม่พบหัวคอลัมน์ "จังหวัด"');
+    const fheader = flatRows[fh];
+    const fp = colOf(fheader, 'จังหวัด'), fd = colOf(fheader, 'อำเภอ'), fr = colOf(fheader, 'ราคา', 'เหมา');
+    if (fp < 0 || fd < 0 || fr < 0) throw new Error('ชีตราคาเหมาต้องมีคอลัมน์ จังหวัด / อำเภอ / ราคา');
+    for (const row of flatRows.slice(fh + 1)) {
+      const prov = String(row[fp] ?? '').trim();
+      const dist = stripAmphoe(row[fd]);
+      const flatPrice = Number(row[fr]);
+      if (!prov || !dist || !(flatPrice > 0)) continue;
+      const base = {
+        provinceName: prov, provinceShort: '', districtName: dist, destinationName: `${dist} จ.${prov}`,
+        productCategory: 'normal' as const, status: 'active' as const, effectiveFrom: '2020-01-01', effectiveTo: null,
+      };
+      rates.push({ ...base, priceType: 'flat', price: flatPrice });
+      nFlat++;
+      // ส่งหลายอำเภอ (มี +) = ราคาเหมารวม ไม่มีราคาชิ้น
+      if (dist.includes('+')) { nCombined++; continue; }
+      const pc = pieceFor(prov, dist);
+      if (pc != null) { rates.push({ ...base, priceType: 'piece', price: pc }); nPiece++; }
+      else provNoPiece.add(prov);
+    }
+    summary.push(`ราคาเหมา ${nFlat} อำเภอ (ในนี้เป็นราคาชุดส่งหลายอำเภอ ${nCombined})`);
+    summary.push(`ราคาชิ้น ${nPiece} อำเภอ`);
+    if (provNoPiece.size) summary.push(`จังหวัดที่ไม่มีราคาชิ้น (คิดเหมาล้วน): ${[...provNoPiece].join(', ')}`);
   }
-  summary.push(`ราคาเหมา ${nFlat} อำเภอ (ในนี้เป็นราคาชุดส่งหลายอำเภอ ${nCombined})`);
-  summary.push(`ราคาชิ้น ${nPiece} อำเภอ`);
-  if (provNoPiece.size) summary.push(`จังหวัดที่ไม่มีราคาชิ้น (คิดเหมาล้วน): ${[...provNoPiece].join(', ')}`);
+
+  // ---- ชีต "พิเศษ": ทุกหมวด/เงื่อนไข (เก็บคืน·Peat·บวกเพิ่ม·กลุ่มราคา·จุดตัด·ขั้นบันได·keyword ผู้รับ/ผู้ส่ง/สินค้า) ----
+  if (advName) {
+    const rows: Row[] = XLSX.utils.sheet_to_json(wb.Sheets[advName], { header: 1, defval: '' });
+    const h = findHeaderRow(rows, 'จังหวัด');
+    if (h >= 0) {
+      const H = rows[h];
+      const ci = {
+        cat: colOf(H, 'หมวด'), prov: colOf(H, 'จังหวัด'), dist: colOf(H, 'อำเภอ'),
+        type: colOf(H, 'ประเภท'),
+        price: H.findIndex((c) => { const s = String(c); return s.includes('ราคา') && !s.includes('ประเภท'); }), // กัน match "ประเภทราคา"
+        group: colOf(H, 'กลุ่ม'),
+        thr: colOf(H, 'จุดตัด'), min: colOf(H, 'ตั้งแต่', 'กล่อง≥'), max: colOf(H, 'ถึง', 'กล่อง≤'),
+        recv: colOf(H, 'ผู้รับ'), send: colOf(H, 'ผู้ส่ง'), prod: colOf(H, 'สินค้า'), note: colOf(H, 'หมายเหตุ'),
+      };
+      const cellS = (row: Row, i: number) => (i >= 0 ? String(row[i] ?? '').trim() : '');
+      const numN = (row: Row, i: number) => { if (i < 0) return null; const v = row[i]; const x = Number(v); return v !== '' && v != null && !Number.isNaN(x) ? x : null; };
+      const catOf = (s: string): ParsedRate['productCategory'] => {
+        const n = s.toLowerCase();
+        if (s.includes('เก็บ')) return 'collect_back';
+        if (n.includes('peat') || s.includes('พีท')) return 'peat_mass';
+        if (s.includes('บวก') || n.includes('addon')) return 'fixed_addon';
+        return 'normal';
+      };
+      let nAdv = 0;
+      for (const row of rows.slice(h + 1)) {
+        const prov = cellS(row, ci.prov);
+        const price = numN(row, ci.price);
+        if (!prov || !(price != null && price > 0)) continue;
+        const cat = catOf(cellS(row, ci.cat));
+        // เก็บคืน/งานปกติ เลือกเหมา/ชิ้นได้ · Peat = ชิ้นเสมอ · บวกเพิ่ม = เหมาเสมอ
+        let pt: 'flat' | 'piece' = cellS(row, ci.type).includes('ชิ้น') ? 'piece' : 'flat';
+        if (cat === 'peat_mass') pt = 'piece';
+        if (cat === 'fixed_addon') pt = 'flat';
+        const dist = stripAmphoe(cellS(row, ci.dist));
+        rates.push({
+          provinceName: prov, provinceShort: '', districtName: dist,
+          destinationName: `${dist || 'ทั้งจังหวัด'} จ.${prov}`,
+          productCategory: cat, priceType: pt, price, status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null,
+          rateGroup: cellS(row, ci.group) || undefined,
+          pieceThreshold: numN(row, ci.thr),
+          minQty: numN(row, ci.min), maxQty: numN(row, ci.max),
+          receiverKeyword: cellS(row, ci.recv) || undefined,
+          senderKeyword: cellS(row, ci.send) || undefined,
+          productKeyword: cellS(row, ci.prod) || undefined,
+          remark: cellS(row, ci.note) || undefined,
+        });
+        nAdv++;
+      }
+      if (nAdv) summary.push(`ราคาพิเศษ (เก็บคืน/Peat/บวกเพิ่ม/กลุ่ม/เงื่อนไข) ${nAdv} แถว`);
+    }
+  }
+
   return { rates, summary };
 }
 

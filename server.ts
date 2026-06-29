@@ -478,8 +478,10 @@ async function startServer() {
       const db = await getDb();
       let removed = 0;
       if (replaceExisting) {
+        // ลบเฉพาะหมวดที่อยู่ในไฟล์นำเข้า (งานปกติ/เก็บคืน/Peat/บวกเพิ่ม) แล้วแทนที่ด้วยไฟล์
+        const cats = new Set(rates.map((r) => r.productCategory || 'normal'));
         const before = db.rateMasters.length;
-        db.rateMasters = db.rateMasters.filter((r) => !(r.branchId === branchId && (r.productCategory || 'normal') === 'normal'));
+        db.rateMasters = db.rateMasters.filter((r) => !(r.branchId === branchId && cats.has(r.productCategory || 'normal')));
         removed = before - db.rateMasters.length;
       }
       const now = new Date().toISOString();
