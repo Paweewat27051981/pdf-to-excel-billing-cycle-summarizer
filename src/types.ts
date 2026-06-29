@@ -229,6 +229,7 @@ export interface TripReceipt {
   normalQty: number;               // จำนวนงานปกติ (ก่อนหาร)
   collectQty: number;              // จำนวน "เก็บสินค้าคืน"
   collectPrice: number | null;     // ราคาเก็บคืน/ชิ้น (ตามจังหวัด)
+  collectFlatPrice: number | null; // ราคาเก็บคืน "เหมา" ของปลายทาง (ใช้เมื่อเก็บคืนอย่างเดียว เทียบกับชิ้นแล้วเลือกสูงกว่า)
   peatQty: number;                 // จำนวน "Peat mass"
   peatPrice: number | null;        // ราคา Peat mass/ชิ้น (ตามอำเภอ, เมื่อ Peat อย่างเดียว)
   hasAdjustment: boolean;          // มีรายการตัวหารหรือไม่

@@ -368,6 +368,11 @@ export function computeReceipt(
     });
     collectPrice = collectByKw ? collectByKw.price : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').piece?.rateValue ?? null);
   }
+  // ราคาเก็บคืน "เหมา" ของปลายทาง (ถ้ามี) — ใช้เฉพาะเที่ยวเก็บคืนอย่างเดียว เทียบกับยอดชิ้นแล้วเลือกสูงกว่า
+  // (สาขาแบบครึ่งราคา/half ไม่ใช้ราคาเหมา)
+  const collectFlatPrice = ctx.collectBackHalfPiece
+    ? null
+    : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').flat?.rateValue ?? null);
   const peatPrice = matchRate(rateParams, ctx.rates, undefined, 'peat_mass').piece?.rateValue ?? null;
 
   // แยกประเภทสินค้า จับได้ทั้ง "เก็บสินค้าคืน" และ "สินค้าเก็บคืน"
@@ -450,6 +455,7 @@ export function computeReceipt(
     normalQty,
     collectQty,
     collectPrice,
+    collectFlatPrice,
     peatQty,
     peatPrice,
     hasAdjustment: adjustments.length > 0,
@@ -630,21 +636,46 @@ export function computeTripDocument(
     }
   }
 
-  // ----- เก็บสินค้าคืน (คิดชิ้นตามจังหวัด) -----
+  // ----- เก็บสินค้าคืน -----
+  // เที่ยว "เก็บคืนอย่างเดียว" (ไม่มีงานปกติ + ไม่มี Peat) และมีราคาเหมาเก็บคืน
+  //   -> เลือกยอดสูงกว่าระหว่าง "เหมา" (คิดครั้งเดียว/เที่ยว) กับ "รวมราคาชิ้นทุกจุด"
+  // ผสมงานปกติ / ไม่มีราคาเหมา -> คิดราคาชิ้นต่อจุดเหมือนเดิม
+  const hasCollect = receipts.some((r) => r.collectQty > 0);
+  const hasPeatWork = receipts.some((r) => r.peatQty > 0);
+  const collectOnly = hasCollect && !hasNormal && !hasPeatWork;
+  const collectFlatRates = receipts.filter((r) => r.collectQty > 0 && r.collectFlatPrice != null).map((r) => r.collectFlatPrice as number);
+  const collectFlat = collectFlatRates.length ? Math.max(...collectFlatRates) : 0; // ราคาเหมาสูงสุดต่อจุด คิดครั้งเดียว
+  const collectPieceTotal = round2(receipts.reduce((s, r) => s + (r.collectQty > 0 && r.collectPrice != null ? r.collectQty * r.collectPrice : 0), 0));
+
   let collectAmount = 0;
-  for (const r of receipts) {
-    if (r.collectQty > 0 && r.collectPrice != null) {
-      const a = round2(r.collectQty * r.collectPrice);
-      r.receiptAmount = round2(r.receiptAmount + a);
-      collectAmount += a;
-    } else if (r.collectQty > 0) {
-      // ไม่เจอราคา -> warning เข้าเงื่อนไข /ไม่เจอ.*ราคา/ ของ Review = บล็อกบันทึก
-      warnings.push(
-        ctx.collectBackHalfPiece
-          ? `เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาชิ้นปกติของ "${r.districtRaw ? 'อ.' + r.districtRaw + ' ' : ''}จ.${r.provinceRaw}" — คิดครึ่งราคาไม่ได้ (ต้องเพิ่มราคาชิ้นใน Master ก่อน)`
-          : `เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาเก็บคืนของ "${r.provinceRaw}"`
-      );
+  if (collectOnly && collectFlat > 0) {
+    const useFlat = collectFlat >= collectPieceTotal; // เสมอกัน -> ใช้เหมา
+    collectAmount = useFlat ? collectFlat : collectPieceTotal;
+    if (useFlat) {
+      // คิดเหมาครั้งเดียวต่อเที่ยว -> ลงยอดที่จุดเก็บคืนจุดแรก
+      const first = receipts.find((r) => r.collectQty > 0);
+      if (first) first.receiptAmount = round2(first.receiptAmount + collectFlat);
+    } else {
+      for (const r of receipts) {
+        if (r.collectQty > 0 && r.collectPrice != null) r.receiptAmount = round2(r.receiptAmount + round2(r.collectQty * r.collectPrice));
+      }
     }
+  } else {
+    for (const r of receipts) {
+      if (r.collectQty > 0 && r.collectPrice != null) {
+        const a = round2(r.collectQty * r.collectPrice);
+        r.receiptAmount = round2(r.receiptAmount + a);
+        collectAmount += a;
+      } else if (r.collectQty > 0) {
+        // ไม่เจอราคา -> warning เข้าเงื่อนไข /ไม่เจอ.*ราคา/ ของ Review = บล็อกบันทึก
+        warnings.push(
+          ctx.collectBackHalfPiece
+            ? `เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาชิ้นปกติของ "${r.districtRaw ? 'อ.' + r.districtRaw + ' ' : ''}จ.${r.provinceRaw}" — คิดครึ่งราคาไม่ได้ (ต้องเพิ่มราคาชิ้นใน Master ก่อน)`
+            : `เก็บสินค้าคืน ใบรับ ${r.receiptNo}: ไม่เจอราคาเก็บคืนของ "${r.provinceRaw}"`
+        );
+      }
+    }
+    collectAmount = round2(collectAmount);
   }
 
   // ----- Peat mass (ผสมงานอื่น=ชิ้นละ 20, อย่างเดียว=ราคาอำเภอ 26-47) -----

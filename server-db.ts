@@ -183,6 +183,7 @@ function normalizeTrips(list: any[]): any[] {
       normalQty: r.normalQty ?? r.totalQty ?? 0,
       collectQty: r.collectQty ?? 0,
       collectPrice: r.collectPrice ?? null,
+      collectFlatPrice: r.collectFlatPrice ?? null,
       peatQty: r.peatQty ?? 0,
       peatPrice: r.peatPrice ?? null,
     })),

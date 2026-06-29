@@ -919,7 +919,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
                 <span className="text-natural-muted text-[10px] font-bold uppercase">ราคา/ค่าเที่ยวจุดนี้</span>
                 <span className="font-semibold text-brand-navy">
                   {(pr?.collectQty > 0)
-                    ? <span className="text-emerald-700">🔄 เก็บคืน ฿{money(pr.collectPrice || 0)} × {qtyFmt(pr.collectQty)} = ฿{money((pr.collectPrice || 0) * pr.collectQty)}</span>
+                    ? <span className="text-emerald-700">🔄 เก็บคืน ฿{money(pr.collectPrice || 0)} × {qtyFmt(pr.collectQty)} = ฿{money((pr.collectPrice || 0) * pr.collectQty)}{pr.collectFlatPrice != null ? ` · เหมา ฿${money(pr.collectFlatPrice)}` : ''}</span>
                     : (pr?.peatQty > 0)
                     ? <span className="text-emerald-700">🌱 Peat ฿{money(pr.peatPrice || 0)} × {qtyFmt(pr.peatQty)} = ฿{money((pr.peatPrice || 0) * pr.peatQty)}</span>
                     : prev.rateType === 'piece'
@@ -977,7 +977,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
             <div className="mt-2 text-xs font-semibold flex flex-wrap gap-4">
               <span>จำนวนจริง: <b>{qtyFmt(pr?.totalQty)}</b>{pr?.requiresManualBox ? ' ชิ้น' : ''}</span>
               <span className="text-[#C00000]">คิดค่าเที่ยว: <b>{qtyFmt(pr?.billingQty)}</b>{pr?.requiresManualBox ? ' กล่อง' : ''}</span>
-              {pr?.collectQty > 0 && <span className="text-emerald-700">🔄 เก็บคืน: <b>{qtyFmt(pr.collectQty)} × {money(pr.collectPrice || 0)} = ฿{money((pr.collectPrice || 0) * pr.collectQty)}</b></span>}
+              {pr?.collectQty > 0 && <span className="text-emerald-700">🔄 เก็บคืน: <b>{qtyFmt(pr.collectQty)} × {money(pr.collectPrice || 0)} = ฿{money((pr.collectPrice || 0) * pr.collectQty)}</b>{pr.collectFlatPrice != null ? <> · เหมา <b>฿{money(pr.collectFlatPrice)}</b> (เก็บคืนอย่างเดียวเลือกสูงกว่า)</> : ''}</span>}
               {pr?.peatQty > 0 && <span className="text-emerald-700">🌱 Peat: <b>{qtyFmt(pr.peatQty)} × {money(pr.peatPrice || 0)} = ฿{money((pr.peatPrice || 0) * pr.peatQty)}</b></span>}
             </div>
           </div>
@@ -2059,8 +2059,8 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   };
   const add = async () => {
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
-    // เก็บคืน/Peat mass คิดเป็นชิ้นเสมอ
-    const priceType = (form.productCategory === 'collect_back' || form.productCategory === 'peat_mass') ? 'piece' : form.productCategory === 'fixed_addon' ? 'flat' : form.priceType;
+    // Peat mass คิดชิ้นเสมอ · บวกเพิ่มตายตัว = เหมา · เก็บคืน/งานปกติ เลือกเหมา/ชิ้นได้ (เก็บคืนเหมา = ใช้เมื่อเก็บคืนอย่างเดียว)
+    const priceType = form.productCategory === 'peat_mass' ? 'piece' : form.productCategory === 'fixed_addon' ? 'flat' : form.priceType;
     const payload = {
       ...form, branchId, priceType,
       pieceThreshold: form.pieceThreshold ? +form.pieceThreshold : null,
@@ -2253,7 +2253,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         <select aria-label="ประเภทสินค้า" value={form.productCategory} onChange={(e) => setForm({ ...form, productCategory: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5">
           <option value="normal">งานปกติ</option><option value="collect_back">เก็บคืน</option><option value="peat_mass">Peat mass</option><option value="fixed_addon">บวกเพิ่มตายตัว (+700)</option>
         </select>
-        <select aria-label="ประเภทราคา" value={form.priceType} onChange={(e) => setForm({ ...form, priceType: e.target.value })} disabled={form.productCategory !== 'normal'} className="border border-natural-border rounded-lg px-2 py-1.5 disabled:opacity-50">
+        <select aria-label="ประเภทราคา" value={form.priceType} onChange={(e) => setForm({ ...form, priceType: e.target.value })} disabled={form.productCategory === 'peat_mass' || form.productCategory === 'fixed_addon'} className="border border-natural-border rounded-lg px-2 py-1.5 disabled:opacity-50">
           <option value="flat">ราคาเหมา</option><option value="piece">ราคาชิ้น</option>
         </select>
         <input type="number" aria-label="ราคา" placeholder="ราคา" value={form.price || ''} onChange={(e) => setForm({ ...form, price: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-24" />
