@@ -2348,7 +2348,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
 // Tab: เงื่อนไขตัวหาร + กลุ่มผู้รับ
 // ===========================================================================
 function RulesTab({ db, api, branchId, reload, showToast }: any) {
-  const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverKeyword: '', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null };
+  const blank = { ruleName: '', senderKeyword: 'ซีโน', receiverKeyword: '', provinceKeyword: '', receiverGroupId: db.receiverGroups[0]?.id || '', productKeyword: '', productSizeKeyword: '', divisor: 3, roundingMethod: 'half_up', applyLevel: 'receipt', status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null };
   const [form, setForm] = useState<any>(blank);
   const [editId, setEditId] = useState<string | null>(null);
   const [fSender, setFSender] = useState('');
@@ -2368,7 +2368,7 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
   };
   const startEdit = async (r: ProductConversionRule) => {
     if (!(await confirmPassword('แก้ไขกฎตัวหาร'))) return;
-    setForm({ ruleName: r.ruleName, senderKeyword: r.senderKeyword, receiverKeyword: r.receiverKeyword || '', receiverGroupId: r.receiverGroupId, productKeyword: r.productKeyword, productSizeKeyword: r.productSizeKeyword, divisor: r.divisor, roundingMethod: r.roundingMethod, applyLevel: r.applyLevel, status: r.status, effectiveFrom: r.effectiveFrom, effectiveTo: r.effectiveTo });
+    setForm({ ruleName: r.ruleName, senderKeyword: r.senderKeyword, receiverKeyword: r.receiverKeyword || '', provinceKeyword: r.provinceKeyword || '', receiverGroupId: r.receiverGroupId, productKeyword: r.productKeyword, productSizeKeyword: r.productSizeKeyword, divisor: r.divisor, roundingMethod: r.roundingMethod, applyLevel: r.applyLevel, status: r.status, effectiveFrom: r.effectiveFrom, effectiveTo: r.effectiveTo });
     setEditId(r.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -2455,7 +2455,9 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
           </select>
           <input list="rule-products" aria-label="ชื่อสินค้า" placeholder="สินค้า (พิมพ์ใหม่ได้)" value={form.productKeyword} onChange={(e) => setForm({ ...form, productKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-32" />
           <input list="rule-sizes" aria-label="ขนาดสินค้า" placeholder="ขนาด เช่น 14 กรัม" value={form.productSizeKeyword} onChange={(e) => setForm({ ...form, productSizeKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-28" />
+          <input aria-label="จังหวัด (keyword)" placeholder="จังหวัด (ว่าง=ทุกจังหวัด)" title="ใส่ชื่อจังหวัดปลายทาง เช่น นครปฐม เพื่อหารเฉพาะจังหวัดนั้น (ว่าง=ทุกจังหวัด, หลายคำคั่น |)" value={form.provinceKeyword} onChange={(e) => setForm({ ...form, provinceKeyword: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-36" />
           <input type="number" aria-label="ตัวหาร" placeholder="ตัวหาร" value={form.divisor} onChange={(e) => setForm({ ...form, divisor: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 w-20" />
+          <label className="flex items-center gap-1 text-xs text-natural-muted">เริ่มใช้<input type="date" aria-label="วันเริ่มใช้กฎ" value={form.effectiveFrom} onChange={(e) => setForm({ ...form, effectiveFrom: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5" /></label>
           <button onClick={add} className={`${editId ? 'bg-amber-600' : 'bg-brand-navy'} text-white rounded-lg px-3 font-semibold`}>{editId ? '✎ บันทึกแก้ไข' : 'เพิ่ม'}</button>
           {editId && <button onClick={cancelEdit} className="border border-natural-border rounded-lg px-3 font-semibold">ยกเลิก</button>}
           <datalist id="rule-senders">{senderOpts.map((s) => <option key={s} value={s} />)}</datalist>
@@ -2478,8 +2480,8 @@ function RulesTab({ db, api, branchId, reload, showToast }: any) {
           <span className="text-xs text-natural-muted ml-auto">{filteredRules.length}/{db.conversionRules.length} กฎ</span>
         </div>
 
-        <SimpleTable cols={['ผู้ส่ง', 'ผู้รับ', 'กลุ่มผู้รับ', 'สินค้า', 'ขนาด', 'หาร', 'ปัดเศษ']}
-          rows={filteredRules.map((r: ProductConversionRule) => [r.senderKeyword, r.receiverKeyword || 'ทุกผู้รับ', db.receiverGroups.find((g: ReceiverGroup) => g.id === r.receiverGroupId)?.groupName || '-', r.productKeyword, r.productSizeKeyword, `÷${r.divisor}`, r.roundingMethod === 'half_up' ? '.5 ปัดขึ้น' : r.roundingMethod])}
+        <SimpleTable cols={['ผู้ส่ง', 'ผู้รับ', 'จังหวัด', 'กลุ่มผู้รับ', 'สินค้า', 'ขนาด', 'หาร', 'ปัดเศษ', 'เริ่มใช้']}
+          rows={filteredRules.map((r: ProductConversionRule) => [r.senderKeyword, r.receiverKeyword || 'ทุกผู้รับ', r.provinceKeyword || 'ทุกจังหวัด', db.receiverGroups.find((g: ReceiverGroup) => g.id === r.receiverGroupId)?.groupName || '-', r.productKeyword, r.productSizeKeyword, `÷${r.divisor}`, r.roundingMethod === 'half_up' ? '.5 ปัดขึ้น' : r.roundingMethod, r.effectiveFrom || '-'])}
           onEdit={(i: number) => startEdit(filteredRules[i])}
           onDelete={async (i: number) => { await api(`/api/conversion-rules/${filteredRules[i].id}`, 'DELETE'); reload(); }} />
       </Section>

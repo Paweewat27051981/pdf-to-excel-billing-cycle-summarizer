@@ -175,6 +175,7 @@ export function findConversionRule(
     receiverName?: string;
     receiverGroupId: string | null;
     productName: string;
+    province?: string;
     refDate: string;
   },
   rules: ProductConversionRule[]
@@ -183,6 +184,8 @@ export function findConversionRule(
     if (rule.status !== 'active') continue;
     if (!isEffective(params.refDate, rule.effectiveFrom, rule.effectiveTo)) continue;
     if (!textContainsAny(params.senderName, rule.senderKeyword)) continue;
+    // ถ้ากฎระบุจังหวัด (ว่าง=ทุกจังหวัด) ต้องเจอคำในจังหวัดปลายทาง (รองรับหลายคำคั่น |)
+    if (rule.provinceKeyword && !textContainsAny(params.province || '', rule.provinceKeyword)) continue;
     // ถ้ากฎระบุชื่อผู้รับ (ว่าง=ทุกผู้รับ) ต้องเจอคำในชื่อผู้รับ (รองรับหลายคำคั่น |)
     if (rule.receiverKeyword && !textContainsAny(params.receiverName || '', rule.receiverKeyword)) continue;
     // ถ้ากฎไม่ระบุกลุ่มผู้รับ (ว่าง) = ใช้กับทุกผู้รับ; ถ้าระบุ ต้องตรงกลุ่ม
@@ -413,6 +416,7 @@ export function computeReceipt(
           receiverName: extracted.receiverName,
           receiverGroupId: groupId,
           productName: item.productName,
+          province: provinceRaw,
           refDate: ctx.refDate,
         },
         ctx.rules

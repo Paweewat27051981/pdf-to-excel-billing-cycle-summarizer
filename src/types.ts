@@ -135,6 +135,7 @@ export interface ProductConversionRule {
   ruleName: string;
   senderKeyword: string;        // คำที่ต้องเจอในชื่อผู้ส่ง เช่น "ซีโน"
   receiverKeyword?: string;     // คำที่ต้องเจอในชื่อผู้รับ เช่น "สบายใจรีสอร์ท2" (ว่าง=ทุกผู้รับ, หลายคำคั่น |)
+  provinceKeyword?: string;     // คำที่ต้องเจอในจังหวัดปลายทาง เช่น "นครปฐม" (ว่าง=ทุกจังหวัด, หลายคำคั่น |)
   receiverGroupId: string;      // กลุ่มผู้รับที่ใช้กฎ (เช่น แม็คโคร/เซลส์)
   productKeyword: string;       // เช่น "ยูปี้" หรือ "พริงเกิล"
   productSizeKeyword: string;   // เช่น "14 กรัม" / "42 กรัม"
