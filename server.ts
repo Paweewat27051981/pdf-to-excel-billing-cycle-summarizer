@@ -724,6 +724,7 @@ async function startServer() {
       const promptPart = {
         text: `วิเคราะห์ไฟล์ PDF "ใบกระจายสินค้า" ภาษาไทยนี้ ดึงข้อมูลออกมาให้ครบ:
 - ระดับใบกระจาย: เลขที่ใบกระจาย (documentNo), วันที่ออก (documentDate รูปแบบ YYYY-MM-DD), ทะเบียนรถ (plateNo), จังหวัด (provinceRaw), อำเภอ (districtRaw)
+- โน้ตท้ายใบ (docNote): ข้อความหมายเหตุเส้นทาง/เงื่อนไขราคาที่อยู่ท้ายเอกสาร เช่น "วิ่งย่อยไม่เกิน 13 จุด" หรือ "วิ่งย่อยไม่เกิน 13 จุด (กลุ่ม2)" — ถ้ามีให้ดึงมาทั้งบรรทัดตามที่เห็น, ถ้าไม่มีเว้นว่าง
 - ระดับใบรับสินค้า (receipts): เลขที่ใบรับสินค้า (receiptNo), ผู้รับสินค้า (receiverName), ผู้ส่งสินค้า (senderName), ปลายทางของจุดส่งนี้ (provinceRaw=จังหวัด, districtRaw=อำเภอ ถ้าระบุในที่อยู่ผู้รับ), และรายการสินค้า (items) แต่ละชิ้นมี ชื่อสินค้า (productName), จำนวน (quantity), และหน่วยนับ (unit เช่น กล่อง/หีบ/ลัง จากคอลัมน์หน่วย)
 ให้ดึงทุกบรรทัดที่มีจำนวนในคอลัมน์จำนวน รวมบรรทัดที่ชื่อสินค้าเป็น "*** โปรดระบุ ***" ด้วย (ใส่ productName ตามที่เห็น) เพื่อให้ยอดรวมตรงกับเอกสาร.
 
@@ -748,6 +749,7 @@ async function startServer() {
               plateNo: { type: Type.STRING },
               provinceRaw: { type: Type.STRING },
               districtRaw: { type: Type.STRING },
+              docNote: { type: Type.STRING, description: 'โน้ตท้ายใบ เช่น "วิ่งย่อยไม่เกิน 13 จุด" (ถ้ามี)' },
               receipts: {
                 type: Type.ARRAY,
                 items: {
