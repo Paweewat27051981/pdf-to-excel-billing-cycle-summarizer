@@ -200,6 +200,7 @@ export interface ExtractedTripDocument {
   districtRaw: string;    // อำเภอ (ดิบ)
   receipts: ExtractedReceipt[];
   rateChoice?: PriceType; // ผู้ใช้เลือกใช้ราคาเหมา/ชิ้น (ถ้าปลายทางมีทั้งคู่)
+  docNote?: string;       // โน้ตท้ายใบ (เช่น "วิ่งย่อยไม่เกิน 13 จุด") — ใช้เป็น keyword จับราคาแบบมีเงื่อนไข
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +275,7 @@ export interface TripDocument {
   addonByDest?: { prov: string; dist: string; amount: number }[]; // ค่าเหมาบวกเพิ่มตายตัว แยกตามปลายทาง (เช่น ท่าสองยาง +700)
   receipts: TripReceipt[];
   warnings: string[];       // รายการแจ้งเตือน/ต้องตรวจสอบ
+  docNote?: string;         // โน้ตท้ายใบ (เก็บไว้เพื่อ recalculate + จับราคาแบบมีเงื่อนไข)
   fileName: string;
   isVerified: boolean;
   createdAt: string;

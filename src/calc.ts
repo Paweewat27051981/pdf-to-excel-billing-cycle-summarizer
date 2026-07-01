@@ -218,6 +218,9 @@ export function matchRate(
     if (r.status !== 'active') return false;
     if ((r.productCategory || 'normal') !== category) return false;
     if ((r.districtName || '').includes('+')) return false; // ราคาชุดอำเภอ (คิดระดับใบ ไม่ใช่ต่อจุด)
+    // ราคางานปกติที่มีเงื่อนไขพิเศษ (จำนวนกล่อง/ผู้รับ/ผู้ส่ง/สินค้า) -> จัดการโดย matchTieredFlat เท่านั้น
+    // ไม่ให้ถูกจับเป็นราคาต่อจุดแบบไม่มีเงื่อนไข (เช่น ราคาเหมามีคำว่า "วิ่งย่อยไม่เกิน 13 จุด")
+    if (category === 'normal' && (r.minQty != null || r.maxQty != null || r.receiverKeyword || r.senderKeyword || r.productKeyword)) return false;
     if (!isEffective(params.refDate, r.effectiveFrom, r.effectiveTo)) return false;
     const provOk =
       textContains(params.provinceRaw, r.provinceName) ||
@@ -581,7 +584,8 @@ export function computeTripDocument(
     totalBoxes,
     receiverNames: receipts.map((r) => r.receiverName),
     senderNames: receipts.map((r) => r.senderName),
-    productNames: receipts.flatMap((r) => r.items.map((it) => it.productName)),
+    // รวมโน้ตท้ายใบ (เช่น "วิ่งย่อยไม่เกิน 13 จุด") เข้าไปด้วย เพื่อจับราคาเหมาแบบมีเงื่อนไขจากโน้ต
+    productNames: [...receipts.flatMap((r) => r.items.map((it) => it.productName)), extracted.docNote || ''],
   }, ctx.rates, refDate);
 
   // เตือนจำนวนกล่องขั้นต่ำต่อเที่ยว (เช่น เชียงใหม่ ต้อง >=190) — ยกเว้นเที่ยวที่เข้าราคาขั้นบันได
@@ -732,6 +736,7 @@ export function computeTripDocument(
     addonByDest,
     receipts,
     warnings,
+    docNote: extracted.docNote || '',
     fileName: ctx.fileName,
     isVerified: false,
     createdAt: new Date().toISOString(),

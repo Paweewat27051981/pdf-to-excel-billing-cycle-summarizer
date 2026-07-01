@@ -143,7 +143,7 @@ function findReceiptNo(row: Row, cols: Cols): string {
 }
 
 function blankDoc(): ExtractedTripDocument {
-  return { documentNo: '', documentDate: '', plateNo: '', provinceRaw: '', districtRaw: '', receipts: [] };
+  return { documentNo: '', documentDate: '', plateNo: '', provinceRaw: '', districtRaw: '', receipts: [], docNote: '' };
 }
 
 /**
@@ -187,6 +187,12 @@ export function parseDistributionExcel(buffer: Buffer): ExtractedTripDocument[] 
         continue;
       }
       if (!doc) continue;
+
+      // --- โน้ตเส้นทาง/เงื่อนไขราคา (เช่น "วิ่งย่อยไม่เกิน 13 จุด") — เก็บเป็น keyword จับราคาแบบมีเงื่อนไข ---
+      if (joined.includes('วิ่ง')) {
+        const noteCell = row.map((c) => String(c).trim()).find((s) => s.includes('วิ่ง')) || joined.trim();
+        doc.docNote = (doc.docNote ? doc.docNote + ' ' : '') + noteCell;
+      }
 
       // --- ทะเบียนรถ ---
       if (joined.includes('ทะเบียนรถ')) {

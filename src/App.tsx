@@ -894,6 +894,13 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
         </span>
       </div>
 
+      {/* 📝 โน้ตท้ายใบ (เช่น "วิ่งย่อยไม่เกิน 13 จุด") — ใช้จับราคาแบบมีเงื่อนไข */}
+      {(prev.docNote || (ext as any).docNote) && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-1.5 text-xs font-semibold flex items-center gap-1.5">
+          📝 โน้ตท้ายใบ: {prev.docNote || (ext as any).docNote}
+        </div>
+      )}
+
       <datalist id="units">
         {['กล่อง', 'หีบ', 'ลัง', 'ชิ้น', 'แพ็ค', 'ถุง', 'โหล'].map((u) => <option key={u} value={u} />)}
       </datalist>

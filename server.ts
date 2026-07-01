@@ -664,6 +664,7 @@ async function startServer() {
           provinceRaw: t.provinceRaw,
           districtRaw: t.districtRaw,
           rateChoice: t.rateType ?? undefined,
+          docNote: t.docNote,
           receipts: t.receipts.map((r) => ({
             receiptNo: r.receiptNo,
             receiverName: r.receiverName,
