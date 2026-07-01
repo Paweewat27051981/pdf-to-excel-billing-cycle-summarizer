@@ -287,7 +287,8 @@ export function matchTieredFlat(
   rates: RateMaster[],
   refDate: string
 ): number | null {
-  const anyContains = (arr: string[], kw: string) => arr.some((n) => textContains(n, kw));
+  // รองรับหลายคำสะกดคั่นด้วย | เช่น "วิ่งย่อยไม่เกิน 13 จุด|วิ่งย่อย≤13จุด" (เหมือน keyword ของกฎตัวหาร)
+  const anyContains = (arr: string[], kw: string) => arr.some((n) => textContainsAny(n, kw));
   for (const r of rates) {
     if (r.status !== 'active' || r.priceType !== 'flat') continue;
     if ((r.productCategory || 'normal') !== 'normal') continue;
