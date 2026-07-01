@@ -568,6 +568,12 @@ export function computeTripDocument(
   // ราคาที่มีให้เลือก (ระดับใบกระจาย — รวมจากทุกจุด)
   const anyFlat = receipts.some((r) => r.flatPrice != null);
   const anyPiece = receipts.some((r) => r.piecePrice != null);
+  // ราคาชิ้นของเที่ยว = สูงสุดในบรรดาจุดที่มีราคาชิ้น
+  // ปลายทาง "เหมาอย่างเดียว" (มีราคาเหมา ไม่มีราคาชิ้น) ที่ถูกรวมในเที่ยวคิดชิ้น -> ยืมราคาชิ้นของเที่ยวมาคิด
+  // เช่น พรหมพิราม (เหมา 1000): ส่งเดี่ยว=เหมา 1000 · แต่ส่งรวมอุตรดิตถ์(คิดชิ้น) -> คิด 7.40/ชิ้น ตามเที่ยว
+  const docPiecePrice = anyPiece ? Math.max(...receipts.filter((r) => r.piecePrice != null).map((r) => r.piecePrice as number)) : 0;
+  const piecePriceFor = (r: TripReceipt): number | null =>
+    r.piecePrice != null ? r.piecePrice : (r.flatPrice != null && docPiecePrice > 0 ? docPiecePrice : null);
 
   // ราคาชุดอำเภอ: ถ้าใบส่งหลายอำเภอ (งานปกติ) ตรงชุดที่ตั้งไว้ ใช้ราคาเหมาของชุดแทนเหมาสูงสุด
   const docDistricts = [...new Set(
@@ -597,7 +603,7 @@ export function computeTripDocument(
   // ยอดถ้าคิดเหมา (ขั้นบันได > ชุดอำเภอ > เหมาสูงสุด) vs ยอดถ้าคิดชิ้น (รวมทุกจุด)
   const maxFlat = anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : 0;
   const flatTotal = tieredFlat ?? combinedFlat ?? maxFlat;
-  const pieceTotal = anyPiece ? receipts.reduce((s, r) => s + (r.piecePrice != null ? r.billingQty * r.piecePrice : 0), 0) : 0;
+  const pieceTotal = anyPiece ? receipts.reduce((s, r) => { const pp = piecePriceFor(r); return s + (pp != null ? r.billingQty * pp : 0); }, 0) : 0;
 
   // จุดตัดชิ้นของใบนี้ (ใช้ตัวแรกที่เจอ — ปกติทั้งใบเป็นจังหวัดเดียวกัน)
   const docThreshold = receipts.map((r) => r.pieceThreshold).find((t) => t != null) ?? null;
@@ -633,7 +639,8 @@ export function computeTripDocument(
     if (rateType === 'piece') {
       for (const r of receipts) {
         if (r.normalQty <= 0) continue;
-        if (r.piecePrice != null) { r.receiptAmount = round2(r.billingQty * r.piecePrice); normalAmount += r.receiptAmount; }
+        const pp = piecePriceFor(r); // ราคาชิ้นของจุดนี้ หรือยืมราคาชิ้นของเที่ยว (ปลายทางเหมาอย่างเดียวที่ถูกรวมในเที่ยวคิดชิ้น)
+        if (pp != null) { r.receiptAmount = round2(r.billingQty * pp); normalAmount += r.receiptAmount; }
         else if (receiptHasAddon(r)) warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}): คิดค่าเหมาบวกเพิ่มตายตัวเท่านั้น — กล่องไม่คิดชิ้น`);
         else warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}) ไม่เจอราคาชิ้น`);
       }
@@ -718,7 +725,7 @@ export function computeTripDocument(
 
   const rateOptions = {
     flat: anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : null,
-    piece: anyPiece ? round2(receipts.reduce((s, r) => s + (r.piecePrice != null ? r.billingQty * r.piecePrice : 0), 0)) : null,
+    piece: anyPiece ? round2(receipts.reduce((s, r) => { const pp = piecePriceFor(r); return s + (pp != null ? r.billingQty * pp : 0); }, 0)) : null,
   };
 
   return {
