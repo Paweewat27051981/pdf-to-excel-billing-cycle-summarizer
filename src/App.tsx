@@ -1135,15 +1135,16 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void; branchName?
               const isCollect = (r.collectQty || 0) > 0;        // เก็บสินค้าคืน
               const isPeat = (r.peatQty || 0) > 0;              // Peat mass
               const collectAmt = isCollect && r.collectPrice != null ? r.collectQty * r.collectPrice : 0;
+              const addon = (trip.addonByDest || []).find((a) => (a.prov || '') === (r.provinceRaw || '') && (a.dist || '') === (r.districtRaw || '')); // เหมาบวกเพิ่มตายตัว (ท่าสองยาง +700)
               return (
                 <Fragment key={r.id}>
-                  <tr onClick={() => setOpen({ ...open, [r.id]: !o })} className={`cursor-pointer ${isCollect ? 'bg-emerald-50' : isPeat ? 'bg-teal-50' : r.hasAdjustment ? 'bg-[#FFF2CC]' : ''} hover:bg-natural-secondary/50`}>
-                    <td className="py-1">{isCollect && <span className="text-emerald-700 font-bold">🔄 </span>}{isPeat && <span className="text-teal-700 font-bold">🌱 </span>}{r.hasAdjustment && r.adjustments?.[0] && <span className="text-[#C65911] font-bold">🟧÷{r.adjustments[0].divisor} </span>}{r.receiptNo}</td>
-                    <td>{r.receiverName}{isCollect && <span className="text-emerald-700 font-semibold"> · เก็บสินค้าคืน</span>}{isPeat && <span className="text-teal-700 font-semibold"> · Peat</span>}</td>
+                  <tr onClick={() => setOpen({ ...open, [r.id]: !o })} className={`cursor-pointer ${isCollect ? 'bg-emerald-50' : isPeat ? 'bg-teal-50' : addon ? 'bg-amber-50' : r.hasAdjustment ? 'bg-[#FFF2CC]' : ''} hover:bg-natural-secondary/50`}>
+                    <td className="py-1">{isCollect && <span className="text-emerald-700 font-bold">🔄 </span>}{isPeat && <span className="text-teal-700 font-bold">🌱 </span>}{addon && <span className="text-amber-700 font-bold">📌 </span>}{r.hasAdjustment && r.adjustments?.[0] && <span className="text-[#C65911] font-bold">🟧÷{r.adjustments[0].divisor} </span>}{r.receiptNo}</td>
+                    <td>{r.receiverName}{isCollect && <span className="text-emerald-700 font-semibold"> · เก็บสินค้าคืน</span>}{isPeat && <span className="text-teal-700 font-semibold"> · Peat</span>}{addon && <span className="text-amber-700 font-semibold"> · เหมาเพิ่มตายตัว</span>}</td>
                     <td>{r.districtRaw} {r.provinceRaw}</td>
                     <td className="text-center">{qtyFmt(r.totalQty)}</td>
                     <td className="text-center font-bold text-[#C00000]" title={(r.adjustments || []).map((a) => a.note).join(' | ')}>{qtyFmt(r.billingQty)}</td>
-                    <td className="text-right">{isCollect ? <span className="text-emerald-700 font-semibold whitespace-nowrap">🔄 {qtyFmt(r.collectQty)}×{money(r.collectPrice || 0)}=฿{money(collectAmt)}</span> : (trip.rateType === 'piece' ? money(r.receiptAmount) : (r.flatPrice != null ? money(r.flatPrice) : '-'))}</td>
+                    <td className="text-right">{isCollect ? <span className="text-emerald-700 font-semibold whitespace-nowrap">🔄 {qtyFmt(r.collectQty)}×{money(r.collectPrice || 0)}=฿{money(collectAmt)}</span> : (addon && r.receiptAmount === 0 && r.flatPrice == null) ? <span className="text-amber-700 font-semibold whitespace-nowrap">📌 +฿{money(addon.amount)}</span> : (trip.rateType === 'piece' ? money(r.receiptAmount) : (r.flatPrice != null ? money(r.flatPrice) : '-'))}</td>
                     <td className="text-center text-brand-navy font-semibold whitespace-nowrap">{o ? '▾' : '▸'} {nItems}</td>
                   </tr>
                   {o && (
@@ -1982,11 +1983,12 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                         if (sub.first) {
                           if ((t.breakdown?.collect || 0) > 0) parts.push(<span className="text-emerald-700 font-semibold">🔄 เก็บคืน ฿{money(t.breakdown.collect)}</span>);
                           if ((t.breakdown?.peat || 0) > 0) parts.push(<span className="text-teal-700 font-semibold">🌱 Peat ฿{money(t.breakdown.peat)}</span>);
+                          if ((t.breakdown?.addon || 0) > 0) parts.push(<span className="text-amber-700 font-semibold">📌 เหมาเพิ่ม ฿{money(t.breakdown.addon)}{(t.addonByDest || []).length ? ` (${(t.addonByDest || []).map((a) => a.dist || a.prov).filter(Boolean).join(', ')})` : ''}</span>);
                           docInc.forEach((d: DeductionEntry) => parts.push(<span className="text-emerald-700 font-semibold">➕{d.label} ฿{money(d.amount)}</span>));
                           docDed.forEach((d: DeductionEntry) => parts.push(<span className="text-rose-600 font-semibold">➖{d.label} ฿{money(d.amount)}</span>));
                         }
                         return (
-                          <tr key={t.id + '-' + i} className={(t.breakdown?.collect || 0) > 0 && sub.first ? 'bg-emerald-50' : sub.hasDiv ? 'bg-[#FFF2CC]' : ''}>
+                          <tr key={t.id + '-' + i} className={(t.breakdown?.collect || 0) > 0 && sub.first ? 'bg-emerald-50' : (t.breakdown?.addon || 0) > 0 && sub.first ? 'bg-amber-50' : sub.hasDiv ? 'bg-[#FFF2CC]' : ''}>
                             <TD>{fmtD(sub.date)}</TD><TD>{sub.dest}</TD><TD>{sub.docNo}</TD>
                             <TD r>{qtyFmt(sub.qty)}</TD><TD>{sub.rateType === 'piece' ? 'ชิ้น' : sub.rateType === 'flat' ? 'เหมา' : '-'}</TD>
                             <TD r>{sub.price != null ? money(sub.price) : (sub.rateType === 'piece' ? <span className="text-natural-muted">หลายราคา</span> : '-')}</TD><TD r>{money(sub.amount)}</TD><TD r>{rowExtra ? money(rowExtra) : '-'}</TD>
