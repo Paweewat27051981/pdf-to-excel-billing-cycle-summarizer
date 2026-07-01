@@ -483,6 +483,8 @@ export async function exportPerVehicleReport(
         const parts: { text: string; color: string }[] = [];
         if (sub.hasDiv) parts.push({ text: 'มีหาร', color: C.dividerText });
         if (sub.first) {
+          if ((t.breakdown?.collect || 0) > 0) parts.push({ text: `🔄 เก็บคืน ฿${fmtB(t.breakdown.collect)}`, color: 'FF0E9F6E' });
+          if ((t.breakdown?.peat || 0) > 0) parts.push({ text: `🌱 Peat ฿${fmtB(t.breakdown.peat)}`, color: 'FF0D9488' });
           for (const r of destFixed) parts.push({ text: `📍แก้ปลายทางจาก ${r.origDistrict || '-'} ${r.origProvince || ''}`.trim(), color: 'FF7C3AED' });
           for (const r of destNoted) parts.push({ text: `⚠️โน้ต ${r.destNote}`, color: 'FFB7791F' });
           for (const d of docInc) parts.push({ text: `➕${d.label} ฿${fmtB(d.amount)}`, color: 'FF0E9F6E' });
