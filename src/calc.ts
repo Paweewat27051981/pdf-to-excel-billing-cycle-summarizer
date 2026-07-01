@@ -621,6 +621,10 @@ export function computeTripDocument(
   // มีงานปกติในเที่ยวนี้ไหม (มีผลกับการคิด Peat mass: ผสม=ชิ้นละ 20, อย่างเดียว=ราคาอำเภอ)
   const hasNormal = receipts.some((r) => r.normalQty > 0);
   const PEAT_MIXED_PRICE = 20;
+  // ปลายทางที่มี "ค่าเหมาบวกเพิ่มตายตัว" (เช่น ท่าสองยาง +700) = คิดแค่ค่าบวกตายตัว ไม่ต้องมีราคาฐาน (ชิ้น/เหมา)
+  // -> ไม่ต้องเตือน "ไม่เจอราคา" (กันบล็อกบันทึกโดยไม่จำเป็น) เพราะ +700 คือค่าของจุดนั้นครบแล้ว
+  const receiptHasAddon = (r: TripReceipt) =>
+    matchRate({ provinceRaw: r.provinceRaw, districtRaw: r.districtRaw, refDate }, ctx.rates, ctx.rateOverrides, 'fixed_addon').flat != null;
 
   // ----- งานปกติ (เหมา/ชิ้น) -----
   let normalAmount = 0;
@@ -629,6 +633,7 @@ export function computeTripDocument(
       for (const r of receipts) {
         if (r.normalQty <= 0) continue;
         if (r.piecePrice != null) { r.receiptAmount = round2(r.billingQty * r.piecePrice); normalAmount += r.receiptAmount; }
+        else if (receiptHasAddon(r)) warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}): คิดค่าเหมาบวกเพิ่มตายตัวเท่านั้น — กล่องไม่คิดชิ้น`);
         else warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}) ไม่เจอราคาชิ้น`);
       }
     } else if (rateType === 'flat') {
@@ -636,7 +641,7 @@ export function computeTripDocument(
       if (flatTotal > 0) {
         normalAmount = flatTotal;
         for (const r of receipts) if (r.normalQty > 0 && r.flatPrice != null) r.receiptAmount = r.flatPrice;
-      } else {
+      } else if (receipts.some((r) => r.normalQty > 0 && !receiptHasAddon(r))) {
         warnings.push('ไม่เจอราคาเหมาของปลายทางใดเลย');
       }
     } else {
