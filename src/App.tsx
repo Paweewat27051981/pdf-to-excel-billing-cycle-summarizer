@@ -2603,8 +2603,8 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
   const branchGroups: string[] = ((db.branches as Branch[]).find((b) => b.id === branchId)?.rateGroups || []).map((g) => g.name);
   const add = async () => {
     if (!form.plateNo) return showToast('warning', 'กรอกทะเบียน');
-    if (editId) { await api(`/api/vehicles/${editId}`, 'PUT', form); showToast('success', 'บันทึกการแก้ไขแล้ว'); }
-    else { await api('/api/vehicles', 'POST', { ...form, branchId }); showToast('success', 'เพิ่มรถแล้ว'); }
+    if (editId) { await api(`/api/vehicles/${editId}`, 'PUT', form); alertBox('บันทึกการแก้ไขแล้ว ✅', `รถ ${form.plateNo}${form.driverName ? ' · ' + form.driverName : ''}`, 'success'); }
+    else { await api('/api/vehicles', 'POST', { ...form, branchId }); alertBox('เพิ่มรถแล้ว ✅', `รถ ${form.plateNo}${form.driverName ? ' · ' + form.driverName : ''}`, 'success'); }
     setForm(blankV); setEditId(null); reload();
   };
   const startEdit = async (v: Vehicle) => {
@@ -2614,7 +2614,7 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   const cancelEdit = () => { setForm(blankV); setEditId(null); };
-  const setGroup = async (v: Vehicle, g: string) => { await api(`/api/vehicles/${v.id}`, 'PUT', { rateGroup: g }); reload(); };
+  const setGroup = async (v: Vehicle, g: string) => { await api(`/api/vehicles/${v.id}`, 'PUT', { rateGroup: g }); showToast('success', `${v.plateNo}: ${g || 'ไม่ระบุกลุ่ม'}`); reload(); };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
   const vehicles: Vehicle[] = db.vehicles;
