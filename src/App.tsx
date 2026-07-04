@@ -2057,6 +2057,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const [batch, setBatch] = useState(false);
   const [pending, setPending] = useState<Record<string, { price?: number; pieceThreshold?: number | null }>>({});
   const [resetKey, setResetKey] = useState(0);
+  const [showExpired, setShowExpired] = useState(false); // false = แสดงเฉพาะราคาที่ใช้ได้ในรอบที่เลือก (ซ่อนราคาที่หมดอายุ)
   const onImportRates = async (files: FileList) => {
     const file = files[0];
     if (!file) return;
@@ -2123,7 +2124,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
 
   const allRates: RateMaster[] = db.rateMasters;
   const nm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, '');
+  // ราคาที่ "ใช้ได้ในรอบที่เลือก" (ช่วง effectiveFrom/To ทับกับรอบ) — ซ่อนราคาที่หมดอายุ/คนละช่วง เว้นแต่กด "รวมที่หมดอายุ"
+  const effForCycle = (r: RateMaster) => !cycle || ((!r.effectiveFrom || r.effectiveFrom <= cycle.endDate) && (!r.effectiveTo || r.effectiveTo >= cycle.startDate));
   const rates = allRates.filter((r) => {
+    if (!showExpired && !effForCycle(r)) return false;
     if (filterGroup !== '__all__' && (r.rateGroup || '') !== (filterGroup === '__none__' ? '' : filterGroup)) return false;
     if (fProv && !nm(r.provinceName).includes(nm(fProv))) return false;
     if (fDist && !nm(r.districtName).includes(nm(fDist)) && !nm(r.destinationName).includes(nm(fDist))) return false;
@@ -2263,7 +2267,11 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         {(fProv || fDist || fCat || fType) && (
           <button type="button" onClick={() => { setFProv(''); setFDist(''); setFCat(''); setFType(''); }} className="text-natural-muted hover:text-rose-600 font-semibold underline">ล้างตัวกรอง</button>
         )}
-        <span className="text-natural-muted ml-auto">{rates.length}/{allRates.length} รายการ</span>
+        <button type="button" onClick={() => setShowExpired((v) => !v)} title="สลับแสดงเฉพาะราคาที่ใช้ในรอบนี้ / รวมราคาที่หมดอายุด้วย"
+          className={`ml-auto px-2.5 py-1 rounded-full font-semibold border ${showExpired ? 'bg-amber-500 text-white border-amber-500' : 'border-natural-border text-natural-muted'}`}>
+          {showExpired ? '⏱ รวมราคาหมดอายุ' : `✅ เฉพาะรอบ ${cycle?.name || 'นี้'}`}
+        </button>
+        <span className="text-natural-muted">{rates.length}/{allRates.length} รายการ</span>
       </div>
 
       <div className="flex flex-wrap gap-2 mb-3 text-sm items-center">
