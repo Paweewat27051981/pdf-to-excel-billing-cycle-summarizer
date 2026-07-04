@@ -564,6 +564,32 @@ async function startServer() {
     }
   });
 
+  // ตั้งวันเริ่ม/สิ้นสุดมีผลของหลายราคาพร้อมกัน (เขียนครั้งเดียว) — ใช้ตอนอัปเดตราคาทั้งสาขา (ปิดเก่า/เปิดใหม่)
+  app.post('/api/rate-masters/bulk-set-effective', async (req, res) => {
+    try {
+      const { ids, effectiveTo, effectiveFrom } = req.body as { ids: string[]; effectiveTo?: string | null; effectiveFrom?: string };
+      if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ต้องส่ง ids เป็น array' });
+      const idset = new Set(ids);
+      const db = await getDb();
+      let n = 0;
+      const now = new Date().toISOString();
+      db.rateMasters = db.rateMasters.map((r) => {
+        if (!idset.has(r.id)) return r;
+        n++;
+        return {
+          ...r,
+          ...(effectiveTo !== undefined ? { effectiveTo } : {}),
+          ...(effectiveFrom !== undefined ? { effectiveFrom } : {}),
+          updatedAt: now,
+        };
+      });
+      await saveDb(db);
+      res.json({ success: true, count: n });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ราคาเฉพาะรอบ: สร้างหรืออัปเดต (1 รอบ + 1 ราคาหลัก = 1 override)
   app.post('/api/rate-overrides/upsert', async (req, res) => {
     try {
