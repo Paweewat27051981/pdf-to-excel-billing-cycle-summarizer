@@ -3,7 +3,35 @@
     "allow": [
       "Bash(node -e ' *)",
       "PowerShell(Set-Location \"d:\\\\pdf-to-excel-billing-cycle-summarizer\"; npx tsx _test-match2.mts 2>&1; Remove-Item _test-match2.mts -Force; Write-Host \"---\"; npm run lint 2>&1 | Select-Object -Last 4; Write-Host \"LINT_EXIT=$LASTEXITCODE\")",
-      "PowerShell(Set-Location \"d:\\\\pdf-to-excel-billing-cycle-summarizer\"; npm run lint 2>&1 | Select-Object -Last 4; Write-Host \"LINT=$LASTEXITCODE\"; if\\($LASTEXITCODE -eq 0\\){ npm run deploy -- \"fix saveDb: deep-clean records before id-keyed map \\(strip undefined\\) -> migration works\" 2>&1 | Select-Object -Last 6 })"
+      "PowerShell(Set-Location \"d:\\\\pdf-to-excel-billing-cycle-summarizer\"; npm run lint 2>&1 | Select-Object -Last 4; Write-Host \"LINT=$LASTEXITCODE\"; if\\($LASTEXITCODE -eq 0\\){ npm run deploy -- \"fix saveDb: deep-clean records before id-keyed map \\(strip undefined\\) -> migration works\" 2>&1 | Select-Object -Last 6 })",
+      "Bash(python -c \"import docx; print\\('docx OK', docx.__version__\\)\")",
+      "Bash(pandoc --version)",
+      "Bash(pip --version)",
+      "Bash(python \"C:/Users/User/AppData/Local/Temp/claude/d--pdf-to-excel-billing-cycle-summarizer/10f7753b-4cfb-451b-9890-04e3256ba6df/scratchpad/gen_prd.py\")",
+      "Bash(python -c \"from docx import Document; d=Document\\([f for f in __import__\\('glob'\\).glob\\('*.docx'\\)][0]\\); print\\('paragraphs:', len\\(d.paragraphs\\)\\); print\\('tables:', len\\(d.tables\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(awk '{print $5, $9}')",
+      "Bash(git config *)",
+      "Read(//d//**)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(echo \"--- commit result: $? ---\")",
+      "Bash(git push *)",
+      "Bash(echo \"--- push exit: $? ---\")",
+      "Bash(echo \"--- commit exit: $? ---\")",
+      "Bash(echo \"fetching production state \\(Render may cold-start ~30-60s\\)...\")",
+      "Bash(curl -s -m 90 https://trip-fuel-summarizer.onrender.com/api/state -o __TRACKED_VAR__/state.json)",
+      "Bash(echo \"curl exit: $? size:\")",
+      "Bash(ls -l __TRACKED_VAR__/state.json)",
+      "Bash(curl -s -m 90 -X POST https://trip-fuel-summarizer.onrender.com/api/rate-masters -H 'Content-Type: application/json; charset=utf-8' --data-binary @__TRACKED_VAR__/payload.json -o __TRACKED_VAR__/resp.json -w 'HTTP %{http_code}\\\\n')",
+      "Bash(curl -s -m 90 https://trip-fuel-summarizer.onrender.com/api/state?branchId=br-chiangmai -o __TRACKED_VAR__/cm.json)",
+      "Bash(npx tsx *)",
+      "Bash(curl -s -m 180 __TRACKED_VAR__/api/state?branchId=br-sai3 -o __TRACKED_VAR__/s3.json -w 'HTTP %{http_code} time=%{time_total}s\\\\n')",
+      "Bash(curl -s -m 120 __TRACKED_VAR__/api/state?branchId=br-sai3 -o __TRACKED_VAR__/s3.json -w 'HTTP %{http_code} time=%{time_total}s size=%{size_download}\\\\n')",
+      "Bash(curl -s -m 150 -X POST __TRACKED_VAR__/api/conversion-rules -H 'Content-Type: application/json; charset=utf-8' --data-binary @__TRACKED_VAR__/r1.json -o __TRACKED_VAR__/r1-resp.json -w 'HTTP %{http_code} time=%{time_total}s\\\\n')",
+      "Bash(curl -s -m 150 -X POST __TRACKED_VAR__/api/conversion-rules -H 'Content-Type: application/json; charset=utf-8' --data-binary @__TRACKED_VAR__/r2.json -o __TRACKED_VAR__/r2-resp.json -w 'HTTP %{http_code} time=%{time_total}s\\\\n')",
+      "Bash(curl -s -m 120 https://trip-fuel-summarizer.onrender.com/api/state?branchId=br-sai3 -o __TRACKED_VAR__/s3b.json -w 'HTTP %{http_code}\\\\n')",
+      "Bash(curl -s -m 120 https://trip-fuel-summarizer.onrender.com/api/state?branchId=br-sai3 -o __TRACKED_VAR__/s3c.json -w 'HTTP %{http_code}\\\\n')"
     ]
   }
 }

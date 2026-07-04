@@ -1,0 +1,25 @@
+# ============================================================
+# NEOSIAM — Container Manager "Project" บน Synology
+# วิธีใช้: Container Manager > Project > Create > เลือกโฟลเดอร์นี้ (มี docker-compose.yml)
+# ต้องมีในโฟลเดอร์เดียวกัน:  .env  และ  serviceAccountKey.json
+# ============================================================
+services:
+  neosiam:
+    build: .
+    container_name: neosiam
+    restart: unless-stopped
+    ports:
+      - "3000:3000"          # ข้างนอก(NAS):ข้างใน(container) — เดี๋ยวให้ Reverse Proxy ชี้มาที่ 3000
+    env_file:
+      - .env                 # เก็บ GEMINI_API_KEY ฯลฯ
+    volumes:
+      # เอาไฟล์กุญแจ Firebase เข้าไปให้ container อ่าน (ไม่ฝังในอิมเมจ = ปลอดภัยกว่า)
+      - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
+      # อ่าน dist จากโฟลเดอร์บน NAS โดยตรง -> อัปเดตโค้ดแค่วาง dist ใหม่ + restart (ไม่ต้อง rebuild)
+      - ./dist:/app/dist:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

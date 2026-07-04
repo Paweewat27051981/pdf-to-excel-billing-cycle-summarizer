@@ -15,3 +15,10 @@ db.json
 
 # external agent skills (ไม่เกี่ยวกับโปรเจกต์)
 .agent/
+
+# ข้อมูล/เอกสาร ไม่ต้องขึ้น repo (ไฟล์ใหญ่/ชั่วคราว)
+Excel/
+*.xls
+*.xlsx
+*.docx
+~$*

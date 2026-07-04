@@ -12,6 +12,10 @@ import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downl
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
+// base path เมื่อรันใต้ subpath (เช่น /neosiam บน NAS) — vite ตั้ง import.meta.env.BASE_URL ให้ตอน build
+// root (Render) = '' ; NAS build (VITE_BASE_PATH=/neosiam/) = '/neosiam'
+const API_PREFIX = (((import.meta as any).env?.BASE_URL as string) || '/').replace(/\/$/, '');
+
 // โมเดลที่มีจริง (ตรวจจาก ListModels API) — flash=เร็ว/ฟรีกว่า, pro=แม่นกว่า
 const GEMINI_MODELS = [
   'gemini-3.5-flash',
@@ -86,7 +90,7 @@ export default function App() {
     for (let attempt = 1; attempt <= MAX; attempt++) {
       let res: Response;
       try {
-        res = await fetch(url, {
+        res = await fetch(API_PREFIX + url, {
           method,
           headers: { 'Content-Type': 'application/json' },
           body: body ? JSON.stringify(body) : undefined,
@@ -116,7 +120,7 @@ export default function App() {
       let data: DatabaseState | null = null;
       for (let attempt = 1; attempt <= 4; attempt++) {
         try {
-          const res = await fetch(url);
+          const res = await fetch(API_PREFIX + url);
           if ((res.status === 502 || res.status === 503) && attempt < 4) { await new Promise((r) => setTimeout(r, attempt * 1500)); continue; }
           if (!res.ok) throw new Error('โหลดไม่สำเร็จ');
           data = await res.json();
@@ -143,12 +147,12 @@ export default function App() {
 
   // โหลด config + branches เสมอ (สำหรับหน้า login)
   useEffect(() => {
-    fetch('/api/config').then((r) => r.json()).then((c) => setAiEnabled(!!c.aiEnabled)).catch(() => setAiEnabled(false));
+    fetch(API_PREFIX + '/api/config').then((r) => r.json()).then((c) => setAiEnabled(!!c.aiEnabled)).catch(() => setAiEnabled(false));
   }, []);
 
   // โหลดข้อมูลตามสาขาที่เลือก (HQ workBranchId='' = ทุกสาขา)
   useEffect(() => {
-    if (!auth) { fetch('/api/state').then((r) => r.json()).then(setDb).finally(() => { setLoading(false); setBooted(true); }); return; }
+    if (!auth) { fetch(API_PREFIX + '/api/state').then((r) => r.json()).then(setDb).finally(() => { setLoading(false); setBooted(true); }); return; }
     fetchState();
   }, [auth, workBranchId]);
 
@@ -1272,7 +1276,9 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   // กรองรายทะเบียน (ใช้ร่วมทั้ง 3 ตาราง)
   const allPlates: string[] = [...new Set([...fuel, ...incomes, ...ded].map((x: any) => x.plateNo).filter(Boolean) as string[])].sort();
   const byPlate = (list: any[]): any[] => fPlate ? list.filter((x) => normPlate(x.plateNo) === normPlate(fPlate)) : list;
-  const fuelF = byPlate(fuel), incomesF = byPlate(incomes), dedF = byPlate(ded);
+  // ค่าน้ำมัน: เรียงตามวันที่ (เก่า -> ใหม่) ให้ดูง่าย
+  const fuelF = [...byPlate(fuel)].sort((a: FuelEntry, b: FuelEntry) => (a.date || '').localeCompare(b.date || ''));
+  const incomesF = byPlate(incomes), dedF = byPlate(ded);
   const fuelSum = fuelF.reduce((s: number, f: FuelEntry) => s + f.amount, 0);
 
   return (

@@ -5,6 +5,8 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // รันใต้ subpath ได้ (เช่น NAS: VITE_BASE_PATH=/neosiam/) — ไม่ตั้ง = root สำหรับ Render
+    base: process.env.VITE_BASE_PATH || '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

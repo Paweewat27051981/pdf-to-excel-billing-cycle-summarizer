@@ -1,0 +1,17 @@
+# สิ่งที่ไม่ต้องส่งเข้าอิมเมจ (dist/ ต้องส่ง เพราะ build ที่ PC แล้ว)
+node_modules
+db.json
+.git
+.github
+Excel
+*.docx
+*.xls
+*.xlsx
+# ความลับ: ใส่ตอนรันผ่าน env_file/volume ไม่ต้องฝังในอิมเมจ
+.env
+.env.local
+.env.*.example
+serviceAccountKey.json
+# สคริปต์ Oracle (ไม่ใช้กับ NAS)
+deploy/setup-vm.sh
+deploy/update.sh

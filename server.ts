@@ -144,6 +144,17 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+  // รองรับรันใต้ subpath (เช่น /neosiam หลัง reverse proxy บน NAS)
+  // ตัด prefix ออกก่อนเข้า routes -> โค้ด routes ทั้งหมด + static ยังทำงานที่ root เหมือนเดิม
+  const BASE_PATH = (process.env.BASE_PATH || '').replace(/\/$/, '');
+  if (BASE_PATH) {
+    app.use((req, _res, next) => {
+      if (req.url === BASE_PATH) req.url = '/';
+      else if (req.url.startsWith(BASE_PATH + '/')) req.url = req.url.slice(BASE_PATH.length);
+      next();
+    });
+  }
+
   // ===================== CONFIG =====================
   app.get('/api/config', (_req, res) => {
     res.json({ aiEnabled: isAiEnabled(), storage: 'granular-v2' });
