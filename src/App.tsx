@@ -80,13 +80,29 @@ export default function App() {
   const showToast = (type: Toast['type'], message: string) => notify(type, message);
 
   const api = async (url: string, method: string, body?: any) => {
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'เกิดข้อผิดพลาด');
-    return res.json();
+    // ลองใหม่อัตโนมัติเมื่อเจอ 502/503 หรือเชื่อมต่อไม่ได้ (server ฟรีกำลัง restart ชั่วคราว)
+    // 502/503 = คำขอยังไม่ถูกประมวลผล -> retry ได้ปลอดภัย ไม่ทำให้บันทึกซ้ำ
+    const MAX = 4;
+    for (let attempt = 1; attempt <= MAX; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+      } catch {
+        if (attempt < MAX) { await new Promise((r) => setTimeout(r, attempt * 1500)); continue; }
+        throw new Error('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ — ลองใหม่อีกครั้ง');
+      }
+      if ((res.status === 502 || res.status === 503) && attempt < MAX) {
+        await new Promise((r) => setTimeout(r, attempt * 1500)); // 1.5s, 3s, 4.5s
+        continue;
+      }
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'เกิดข้อผิดพลาด');
+      return res.json();
+    }
+    throw new Error('เซิร์ฟเวอร์ไม่พร้อมชั่วคราว (restart อยู่) — รอสักครู่แล้วลองใหม่');
   };
 
   // branchId ที่ใช้กรอง/บันทึก
@@ -96,8 +112,21 @@ export default function App() {
     setLoading(true);
     try {
       const url = effBranchId ? `/api/state?branchId=${encodeURIComponent(effBranchId)}` : '/api/state';
-      const res = await fetch(url);
-      const data: DatabaseState = await res.json();
+      // ลองใหม่อัตโนมัติเมื่อ server กำลัง restart (502/503/เชื่อมต่อไม่ได้) กันหน้าโหลดข้อมูลไม่ครบ
+      let data: DatabaseState | null = null;
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          const res = await fetch(url);
+          if ((res.status === 502 || res.status === 503) && attempt < 4) { await new Promise((r) => setTimeout(r, attempt * 1500)); continue; }
+          if (!res.ok) throw new Error('โหลดไม่สำเร็จ');
+          data = await res.json();
+          break;
+        } catch (err) {
+          if (attempt < 4) { await new Promise((r) => setTimeout(r, attempt * 1500)); continue; }
+          throw err;
+        }
+      }
+      if (!data) throw new Error('เซิร์ฟเวอร์ไม่พร้อม (restart อยู่) — รีเฟรชอีกครั้ง');
       setDb(data);
       if (autoCycle) setSelectedCycleId(autoCycle);
       else if (!selectedCycleId && data.cycles.length) {
