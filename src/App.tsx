@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, Fragment } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
-  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp, MapPin,
+  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp, MapPin, History,
 } from 'lucide-react';
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
@@ -54,7 +54,7 @@ function inServiceArea(areas: { prov: string; dists: string[] | null }[], prov: 
 }
 
 type BranchAuth = { id: string; name: string; isHQ: boolean };
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix';
+type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -151,6 +151,7 @@ export default function App() {
     ['vehicles', 'รถ & คนขับ', Truck],
   ];
   if (auth.isHQ) tabs.push(['driverkpi', 'วิเคราะห์รายได้ พขร 🔒', TrendingUp]);
+  if (auth.isHQ) tabs.push(['activity', 'บันทึกการแก้ไข 📋', History]);
   if (auth.isHQ) tabs.push(['branches', 'จัดการสาขา', Building2]);
 
   const activeTabLabel = tabs.find(([k]) => k === tab)?.[1] || '';
@@ -240,6 +241,7 @@ export default function App() {
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'destfix' && <DestFixTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'activity' && <ActivityTab db={db} />}
             {tab === 'branches' && <BranchesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
           </>
         )}
@@ -2595,6 +2597,75 @@ function GroupManager({ db, api, branchId, reload, showToast }: any) {
 // ===========================================================================
 // Tab: รถ & คนขับ
 // ===========================================================================
+// ===========================================================================
+// Tab: บันทึกการแก้ไข (HQ) — MVP: ประวัติการเปลี่ยนราคาต่อสาขา (จาก rateMasterHistory)
+// ===========================================================================
+function ActivityTab({ db }: any) {
+  const [fBranch, setFBranch] = useState('');
+  const rateById = new Map((db.rateMasters as RateMaster[]).map((r) => [r.id, r] as [string, RateMaster]));
+  const branchName = (id?: string) => (db.branches as Branch[]).find((b) => b.id === id)?.name || id || '—';
+  const entries = ((db.rateMasterHistory || []) as any[]).map((h) => {
+    const r = rateById.get(h.rateMasterId);
+    return {
+      ...h,
+      branchId: r?.branchId || '',
+      branchName: branchName(r?.branchId),
+      dest: r ? `${r.districtName || ''} ${r.provinceName || ''}`.trim() : '(ราคาถูกลบแล้ว)',
+      priceType: r?.priceType,
+    };
+  }).sort((a, b) => String(b.changedAt || '').localeCompare(String(a.changedAt || '')));
+  const shown = fBranch ? entries.filter((e: any) => e.branchId === fBranch) : entries;
+  const branches = (db.branches as Branch[]).filter((b) => !b.isHQ);
+  const fmtDT = (s: string) => { const d = new Date(s); return isNaN(d.getTime()) ? (s || '—') : `${d.toLocaleDateString('th-TH')} ${d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`; };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Section title="บันทึกการแก้ไขราคา (ต่อสาขา)" icon={History}>
+        <div className="flex flex-wrap items-center gap-2 mb-3 text-sm">
+          <span className="text-natural-muted font-semibold">กรองสาขา:</span>
+          <select aria-label="กรองสาขา" value={fBranch} onChange={(e) => setFBranch(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1.5">
+            <option value="">ทุกสาขา</option>
+            {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+          <span className="text-xs text-natural-muted ml-auto">{shown.length} รายการ</span>
+        </div>
+        <p className="text-[11px] text-natural-dark-muted bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+          แสดงเฉพาะ “การเปลี่ยนราคา” ที่แก้ผ่านหน้า Master ราคา (ล่าสุดอยู่บนสุด) — การเพิ่ม/ลบราคา หรือแก้ผ่านการนำเข้า ยังไม่บันทึกในเวอร์ชันนี้
+        </p>
+        {shown.length === 0 ? (
+          <EmptyHint text="ยังไม่มีประวัติการเปลี่ยนราคา" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs min-w-[680px]">
+              <thead><tr className="text-natural-muted text-left border-b border-natural-border">
+                <th className="py-1.5 px-1">เวลา</th><th className="px-1">สาขา</th><th className="px-1">ปลายทาง</th><th className="px-1">แบบ</th><th className="px-1 text-right">เดิม</th><th className="px-1 text-right">ใหม่</th><th className="px-1">เปลี่ยน</th><th className="px-1">โดย/เหตุผล</th>
+              </tr></thead>
+              <tbody>
+                {shown.slice(0, 300).map((e, i) => {
+                  const up = e.newPrice > e.oldPrice; const diff = Math.abs(e.newPrice - e.oldPrice);
+                  return (
+                    <tr key={e.id || i} className="border-b border-natural-border/60 hover:bg-natural-secondary/40">
+                      <td className="py-1.5 px-1 whitespace-nowrap text-natural-muted">{fmtDT(e.changedAt)}</td>
+                      <td className="px-1 font-semibold text-brand-navy whitespace-nowrap">{e.branchName}</td>
+                      <td className="px-1">{e.dest}</td>
+                      <td className="px-1">{e.priceType === 'flat' ? 'เหมา' : e.priceType === 'piece' ? 'ชิ้น' : '-'}</td>
+                      <td className="px-1 text-right">{money(e.oldPrice)}</td>
+                      <td className="px-1 text-right font-bold">{money(e.newPrice)}</td>
+                      <td className={`px-1 font-semibold whitespace-nowrap ${up ? 'text-rose-600' : 'text-emerald-600'}`}>{up ? '▲' : '▼'} {money(diff)}</td>
+                      <td className="px-1 text-natural-muted">{e.changedBy}{e.changeReason ? ` · ${e.changeReason}` : ''}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {shown.length > 300 && <p className="text-[11px] text-natural-muted mt-2">แสดง 300 รายการล่าสุด (จากทั้งหมด {shown.length})</p>}
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
 function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
   const blankV = { plateNo: '', driverName: '', vehicleType: '6 ล้อ', rateGroup: '', status: 'active' };
   const [form, setForm] = useState<any>(blankV);
