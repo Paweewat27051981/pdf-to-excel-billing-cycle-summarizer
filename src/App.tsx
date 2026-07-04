@@ -2221,20 +2221,24 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
     const ids = Object.keys(pending);
     if (!ids.length) return;
     try {
-      for (const id of ids) {
-        const r = (db.rateMasters as RateMaster[]).find((x) => x.id === id);
-        if (!r) continue;
-        const ch = pending[id];
-        if (cycleMode) {
-          const price = ch.price ?? effPrice(r);
-          const pieceThreshold = ch.pieceThreshold !== undefined ? ch.pieceThreshold : effTh(r);
-          await api('/api/rate-overrides/upsert', 'POST', { branchId, cycleId: cycle.id, rateMasterId: id, price, pieceThreshold });
-        } else {
-          const body: any = {};
-          if (ch.price !== undefined) body.price = ch.price;
-          if (ch.pieceThreshold !== undefined) body.pieceThreshold = ch.pieceThreshold;
-          await api(`/api/rate-masters/${id}`, 'PUT', body);
-        }
+      // บันทึกเป็นชุดครั้งเดียว (แทนการยิงทีละรายการ) -> เขียน DB รอบเดียว ไม่ทำ server ฟรีล่ม
+      if (cycleMode) {
+        const items = ids.map((id) => {
+          const r = (db.rateMasters as RateMaster[]).find((x) => x.id === id);
+          if (!r) return null;
+          const ch = pending[id];
+          return { branchId, cycleId: cycle.id, rateMasterId: id, price: ch.price ?? effPrice(r), pieceThreshold: ch.pieceThreshold !== undefined ? ch.pieceThreshold : effTh(r) };
+        }).filter(Boolean);
+        await api('/api/rate-overrides/bulk-upsert', 'POST', { items });
+      } else {
+        const updates = ids.map((id) => {
+          const ch = pending[id];
+          const u: any = { id };
+          if (ch.price !== undefined) u.price = ch.price;
+          if (ch.pieceThreshold !== undefined) u.pieceThreshold = ch.pieceThreshold;
+          return u;
+        });
+        await api('/api/rate-masters/bulk-update', 'POST', { updates });
       }
       showToast('success', `บันทึก ${ids.length} ช่อง${cycleMode ? ` (เฉพาะรอบ ${cycle.name})` : ''} แล้ว`);
       setPending({}); reload();

@@ -551,6 +551,37 @@ async function startServer() {
     }
   });
 
+  // แก้ราคาหลักหลายช่องทีเดียว = เขียน DB ครั้งเดียว (คงบันทึกประวัติราคาไว้)
+  app.post('/api/rate-masters/bulk-update', async (req, res) => {
+    try {
+      const updates = (req.body?.updates || []) as { id: string; price?: number; pieceThreshold?: number | null; changeReason?: string; updatedBy?: string }[];
+      if (!Array.isArray(updates) || !updates.length) return res.status(400).json({ error: 'ต้องส่ง updates เป็น array' });
+      const byId = new Map(updates.map((u) => [u.id, u]));
+      const db = await getDb();
+      const now = new Date().toISOString();
+      let n = 0;
+      db.rateMasters = db.rateMasters.map((r) => {
+        const u = byId.get(r.id);
+        if (!u) return r;
+        n++;
+        if (typeof u.price === 'number' && u.price !== r.price) {
+          db.rateMasterHistory.push({
+            id: generateId('rhist'), rateMasterId: r.id, oldPrice: r.price, newPrice: u.price,
+            changedBy: u.updatedBy || 'user', changedAt: now, changeReason: u.changeReason || 'แก้ไขราคา (หลายช่อง)',
+          });
+        }
+        const patch: any = {};
+        if (u.price !== undefined) patch.price = u.price;
+        if (u.pieceThreshold !== undefined) patch.pieceThreshold = u.pieceThreshold;
+        return { ...r, ...patch, updatedAt: now };
+      });
+      await saveDb(db);
+      res.json({ success: true, count: n });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.delete('/api/rate-masters/:id', async (req, res) => {
     try {
       const db = await getDb();
@@ -615,6 +646,28 @@ async function startServer() {
       }
       await saveDb(db);
       res.json(o);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ราคาเฉพาะรอบเป็นชุด (บันทึกหลายช่องทีเดียว = เขียน DB ครั้งเดียว กัน server ฟรีล่มตอนบันทึกเยอะ)
+  app.post('/api/rate-overrides/bulk-upsert', async (req, res) => {
+    try {
+      const items = (req.body?.items || []) as RateOverride[];
+      if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'ต้องส่ง items เป็น array' });
+      const db = await getDb();
+      let n = 0;
+      for (const it of items) {
+        const { branchId, cycleId, rateMasterId, price, pieceThreshold } = it;
+        if (!branchId || !cycleId || !rateMasterId) continue;
+        const o = db.rateOverrides.find((x) => x.branchId === branchId && x.cycleId === cycleId && x.rateMasterId === rateMasterId);
+        if (o) { o.price = price; o.pieceThreshold = pieceThreshold ?? null; }
+        else { db.rateOverrides.push({ id: generateId('rov'), branchId, cycleId, rateMasterId, price, pieceThreshold: pieceThreshold ?? null }); }
+        n++;
+      }
+      await saveDb(db);
+      res.json({ success: true, count: n });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
