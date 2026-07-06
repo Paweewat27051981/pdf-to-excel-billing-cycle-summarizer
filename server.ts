@@ -644,7 +644,7 @@ async function startServer() {
         o = { id: generateId('rov'), branchId, cycleId, rateMasterId, price, pieceThreshold: pieceThreshold ?? null };
         db.rateOverrides.push(o);
       }
-      await saveDb(db);
+      await saveRecord('rateOverrides', o); // เขียนแค่ record เดียว (ไม่เขียนทั้ง DB) เบามากแม้ server ฟรี
       res.json(o);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -657,17 +657,17 @@ async function startServer() {
       const items = (req.body?.items || []) as RateOverride[];
       if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'ต้องส่ง items เป็น array' });
       const db = await getDb();
-      let n = 0;
+      const changed: RateOverride[] = [];
       for (const it of items) {
         const { branchId, cycleId, rateMasterId, price, pieceThreshold } = it;
         if (!branchId || !cycleId || !rateMasterId) continue;
-        const o = db.rateOverrides.find((x) => x.branchId === branchId && x.cycleId === cycleId && x.rateMasterId === rateMasterId);
+        let o = db.rateOverrides.find((x) => x.branchId === branchId && x.cycleId === cycleId && x.rateMasterId === rateMasterId);
         if (o) { o.price = price; o.pieceThreshold = pieceThreshold ?? null; }
-        else { db.rateOverrides.push({ id: generateId('rov'), branchId, cycleId, rateMasterId, price, pieceThreshold: pieceThreshold ?? null }); }
-        n++;
+        else { o = { id: generateId('rov'), branchId, cycleId, rateMasterId, price, pieceThreshold: pieceThreshold ?? null }; db.rateOverrides.push(o); }
+        changed.push(o);
       }
-      await saveDb(db);
-      res.json({ success: true, count: n });
+      await saveRecords('rateOverrides', changed); // multi-path update = 1 round-trip (ไม่เขียนทั้ง DB)
+      res.json({ success: true, count: changed.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

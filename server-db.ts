@@ -196,7 +196,7 @@ function normalizeTrips(list: any[]): any[] {
 // -> บันทึก 1 ใบ = เขียนแค่ /tripDocuments/<id> (ไม่เขียนทั้ง DB) เร็วคงที่
 // อ่านได้ทั้ง 2 รูปแบบ (array เดิม + object ใหม่) ด้วย toArray() ของเก่าจึงไม่หาย
 // ---------------------------------------------------------------------------
-const ID_KEYED: (keyof DatabaseState)[] = ['tripDocuments', 'fuelEntries', 'deductions'];
+const ID_KEYED: (keyof DatabaseState)[] = ['tripDocuments', 'fuelEntries', 'deductions', 'rateOverrides'];
 export function isIdKeyed(collKey: keyof DatabaseState): boolean {
   return ID_KEYED.includes(collKey);
 }
@@ -218,7 +218,7 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     cycles: state.cycles ?? [],
     vehicles: withBranch(state.vehicles, seed.vehicles),
     rateMasters: withBranch(state.rateMasters, seed.rateMasters),
-    rateOverrides: state.rateOverrides ?? [],
+    rateOverrides: toArray(state.rateOverrides), // อ่านได้ทั้ง array (เก่า) และ id-keyed map (ใหม่)
     rateMasterHistory: state.rateMasterHistory ?? [],
     receiverGroups: withBranch(state.receiverGroups, seed.receiverGroups),
     receiverGroupAliases: withBranch(state.receiverGroupAliases, seed.receiverGroupAliases),
@@ -243,6 +243,11 @@ export async function getDb(): Promise<DatabaseState> {
     const val = snap.val() as Partial<DatabaseState> | null;
     cache = ensureShape(val || {});
     if (!val) await saveDb(cache); // ว่างเปล่า -> seed ขึ้น Firebase
+    // migrate ครั้งเดียว: rateOverrides เดิมเก็บเป็น array -> แปลงเป็น id-keyed map
+    // (เขียนแค่ node /rateOverrides เบามาก) เพื่อให้เขียน granular ทีละรายการได้ ไม่เกิด record ซ้ำ
+    else if (Array.isArray(val.rateOverrides) && val.rateOverrides.length) {
+      await flushCollection('rateOverrides');
+    }
     return cache;
   }
 
