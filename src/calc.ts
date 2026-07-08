@@ -727,7 +727,8 @@ export function computeTripDocument(
   const tripAmount = round2(normalAmount + collectAmount + peatAmount + addonAmount);
 
   const rateOptions = {
-    flat: anyFlat ? Math.max(...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number)) : null,
+    // ราคาเหมาที่ใช้จริง (พิเศษ/ชุดอำเภอ ถ้ามี > เหมาสูงสุดต่อจุด) — ให้ป้ายตรงกับยอดรวม
+    flat: hasFlat ? flatTotal : null,
     piece: anyPiece ? round2(receipts.reduce((s, r) => { const pp = piecePriceFor(r); return s + (pp != null ? r.billingQty * pp : 0); }, 0)) : null,
   };
 
