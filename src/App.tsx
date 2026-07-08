@@ -970,6 +970,8 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
                     ? <span className="text-emerald-700">🌱 Peat ฿{money(pr.peatPrice || 0)} × {qtyFmt(pr.peatQty)} = ฿{money((pr.peatPrice || 0) * pr.peatQty)}</span>
                     : prev.rateType === 'piece'
                     ? (pr?.piecePrice != null ? `ชิ้น ฿${money(pr.piecePrice)} × ${qtyFmt(pr.billingQty)} = ฿${money(pr.receiptAmount)}` : (pr?.normalQty > 0 ? '⚠️ ไม่เจอราคาชิ้น' : '—'))
+                    : prev.wholeDocFlat
+                    ? <span className="text-violet-700">🏷️ คิดเหมาทั้งใบ (ดูยอดรวม)</span>
                     : (pr?.flatPrice != null ? `เหมา ฿${money(pr.flatPrice)}` : (pr?.normalQty > 0 ? '⚠️ ไม่เจอราคาเหมา' : '—'))}
                 </span>
               </div>

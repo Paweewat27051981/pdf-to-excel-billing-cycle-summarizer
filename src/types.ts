@@ -268,6 +268,7 @@ export interface TripDocument {
   rateType: PriceType | null;
   rateValue: number | null; // ราคาที่ใช้ (เหมา หรือ ราคา/ชิ้น)
   rateOptions: { flat: number | null; piece: number | null }; // ราคาที่เลือกได้สำหรับปลายทางนี้
+  wholeDocFlat?: boolean;    // true = คิดเหมาทั้งใบ (พิเศษ/ชุดอำเภอ) ไม่ใช่ราคาต่อจุด
   totalQty: number;         // รวมจำนวนจริงทุกใบรับ
   billingQty: number;       // รวมจำนวนคิดค่าเที่ยว
   tripAmount: number;       // ค่าเที่ยว = billingQty * piece OR flat

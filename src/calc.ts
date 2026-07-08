@@ -746,6 +746,8 @@ export function computeTripDocument(
     rateType,
     rateValue: rateType === 'flat' ? rateOptions.flat : null,
     rateOptions,
+    // true = คิดราคาเหมา "ทั้งใบ" (พิเศษ/ชุดอำเภอ) ไม่ใช่ราคาต่อจุด -> UI ซ่อนราคาต่อจุดที่ไม่ได้คิดจริง
+    wholeDocFlat: rateType === 'flat' && (tieredFlat != null || combinedFlat != null),
     totalQty,
     billingQty,
     tripAmount: round2(tripAmount),
