@@ -285,7 +285,8 @@ export function matchCombinedFlat(
 export function matchTieredFlat(
   ctx: { province: string; totalBoxes: number; receiverNames: string[]; senderNames: string[]; productNames: string[] },
   rates: RateMaster[],
-  refDate: string
+  refDate: string,
+  overrides?: Map<string, { price: number; pieceThreshold: number | null }>
 ): number | null {
   // รองรับหลายคำสะกดคั่นด้วย | เช่น "วิ่งย่อยไม่เกิน 13 จุด|วิ่งย่อย≤13จุด" (เหมือน keyword ของกฎตัวหาร)
   const anyContains = (arr: string[], kw: string) => arr.some((n) => textContainsAny(n, kw));
@@ -305,7 +306,9 @@ export function matchTieredFlat(
     if (r.productKeyword && !anyContains(ctx.productNames, r.productKeyword)) continue;
     if (r.minQty != null && ctx.totalBoxes < r.minQty) continue;
     if (r.maxQty != null && ctx.totalBoxes > r.maxQty) continue;
-    return r.price;
+    // ราคาเฉพาะรอบ (ถ้ามี) ทับราคาหลักของ rate row นี้ — เหมือน matchRate
+    const ov = overrides?.get(r.id);
+    return ov ? ov.price : r.price;
   }
   return null;
 }
@@ -593,7 +596,7 @@ export function computeTripDocument(
     senderNames: receipts.map((r) => r.senderName),
     // รวมโน้ตท้ายใบ (เช่น "วิ่งย่อยไม่เกิน 13 จุด") เข้าไปด้วย เพื่อจับราคาเหมาแบบมีเงื่อนไขจากโน้ต
     productNames: [...receipts.flatMap((r) => r.items.map((it) => it.productName)), extracted.docNote || ''],
-  }, ctx.rates, refDate);
+  }, ctx.rates, refDate, ctx.rateOverrides);
 
   // เตือนจำนวนกล่องขั้นต่ำต่อเที่ยว (เช่น เชียงใหม่ ต้อง >=190) — ยกเว้นเที่ยวที่เข้าราคาขั้นบันได
   if (ctx.minBoxes != null && tieredFlat == null && totalBoxes < ctx.minBoxes) {

@@ -7,7 +7,7 @@
 //         -> กดอนุญาต (Authorize) -> เสร็จ! ระบบจะสำรองเองทุกวันตี 1
 // ============================================================
 
-const API_URL   = 'https://trip-fuel-summarizer.onrender.com/api/state';
+const API_URL   = 'https://neosiam.dscloud.biz:8444/neosiam/api/state';  // NAS (ตัวหลัก) — Render suspend แล้ว
 const FOLDER    = 'NEOSIAM-Backup';   // ชื่อโฟลเดอร์ใน Google Drive (สร้างให้อัตโนมัติ)
 const LOG_SHEET = 'สำรอง-log';         // ชื่อชีตบันทึกการสำรอง
 const KEEP      = 30;                  // เก็บไฟล์ล่าสุดกี่ไฟล์ (ลบที่เก่ากว่านี้ กันเปลือง Drive)
