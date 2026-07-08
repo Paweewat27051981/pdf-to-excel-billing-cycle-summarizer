@@ -971,7 +971,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
                     : prev.rateType === 'piece'
                     ? (pr?.piecePrice != null ? `ชิ้น ฿${money(pr.piecePrice)} × ${qtyFmt(pr.billingQty)} = ฿${money(pr.receiptAmount)}` : (pr?.normalQty > 0 ? '⚠️ ไม่เจอราคาชิ้น' : '—'))
                     : prev.wholeDocFlat
-                    ? <span className="text-violet-700">🏷️ คิดเหมาทั้งใบ (ดูยอดรวม)</span>
+                    ? <span className="text-violet-700">🏷️ คิดเป็นราคาเหมาเที่ยว (ดูยอดรวม)</span>
                     : (pr?.flatPrice != null ? `เหมา ฿${money(pr.flatPrice)}` : (pr?.normalQty > 0 ? '⚠️ ไม่เจอราคาเหมา' : '—'))}
                 </span>
               </div>
