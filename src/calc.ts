@@ -257,7 +257,8 @@ export function matchCombinedFlat(
   province: string,
   docDistricts: string[],
   rates: RateMaster[],
-  refDate: string
+  refDate: string,
+  overrides?: Map<string, { price: number; pieceThreshold: number | null }>
 ): number | null {
   const dm = (a: string, b: string) => textContains(a, b) || textContains(b, a);
   let best: number | null = null;
@@ -275,7 +276,10 @@ export function matchCombinedFlat(
     if (rDistricts.length !== docDistricts.length) continue;
     // ทุกอำเภอในชุดต้องจับกับอำเภอในใบได้ครบ (และจำนวนเท่ากัน)
     const ok = rDistricts.every((rd) => docDistricts.some((dd) => dm(dd, rd)));
-    if (ok && (best === null || r.price < best)) best = r.price; // เจอหลายชุด เลือกถูกสุด
+    // ราคาเฉพาะรอบ (ถ้ามี) ทับราคาหลัก — เหมือน matchRate/matchTieredFlat
+    const ov = overrides?.get(r.id);
+    const eff = ov ? ov.price : r.price;
+    if (ok && (best === null || eff < best)) best = eff; // เจอหลายชุด เลือกถูกสุด
   }
   return best;
 }
@@ -584,7 +588,7 @@ export function computeTripDocument(
   )];
   const docProvince = receipts.find((r) => r.normalQty > 0)?.provinceRaw || extracted.provinceRaw;
   const combinedFlat = docDistricts.length >= 2
-    ? matchCombinedFlat(docProvince, docDistricts, ctx.rates, refDate)
+    ? matchCombinedFlat(docProvince, docDistricts, ctx.rates, refDate, ctx.rateOverrides)
     : null;
 
   // ราคาเหมาแบบเงื่อนไขพิเศษ (จำนวนกล่อง/ผู้รับ/ผู้ส่ง/สินค้า) เช่น CP All ลำพูน, adidas

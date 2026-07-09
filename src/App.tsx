@@ -906,7 +906,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
             <select aria-label="เลือกราคาขนส่ง" value={ext.rateChoice || prev.rateType || ''}
               onChange={(e) => update({ rateChoice: e.target.value as any })}
               className="flex-1 sm:flex-none border-2 border-natural-border bg-white rounded-xl px-3 py-2.5 text-base font-bold text-brand-navy focus:border-brand-navy outline-none cursor-pointer shadow-xs">
-              {prev.rateOptions.flat != null && <option value="flat">🔵 เหมา ฿{money(prev.rateOptions.flat)} (สูงสุด)</option>}
+              {prev.rateOptions.flat != null && <option value="flat">🔵 เหมา ฿{money(prev.rateOptions.flat)} {prev.wholeDocFlat ? '(เหมาทั้งเที่ยว)' : '(สูงสุด)'}</option>}
               {prev.rateOptions.piece != null && <option value="piece">🟠 ชิ้น รวมทุกจุด ฿{money(prev.rateOptions.piece)}</option>}
             </select>
             <span className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-bold text-white ${prev.rateType === 'piece' ? 'bg-[#C65911]' : 'bg-brand-navy'}`}>
