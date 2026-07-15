@@ -1,6 +1,7 @@
 import express from 'express';
 import compression from 'compression';
 import path from 'path';
+import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { getDb, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed } from './server-db.js';
@@ -158,6 +159,28 @@ async function startServer() {
   // ===================== CONFIG =====================
   app.get('/api/config', (_req, res) => {
     res.json({ aiEnabled: isAiEnabled(), storage: 'granular-v2' });
+  });
+
+  // ===================== รูปแนบ (เก็บไฟล์บน NAS โฟลเดอร์ uploads/ ไม่เก็บใน Firebase) =====================
+  const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true }); // สร้างโฟลเดอร์ถ้ายังไม่มี (mount เป็น volume บน NAS)
+  // เสิร์ฟรูป: ดูได้ที่ /api/uploads/<ชื่อไฟล์>
+  app.use('/api/uploads', express.static(UPLOADS_DIR, { maxAge: '7d' }));
+  // อัปโหลด: รับ base64 ที่ "ย่อขนาดจากเบราว์เซอร์แล้ว" -> เขียนไฟล์ -> คืนชื่อไฟล์
+  app.post('/api/upload-image', async (req, res) => {
+    try {
+      const b64: string = req.body?.imageBase64 || '';
+      const m = /^data:image\/(png|jpe?g|webp);base64,(.+)$/i.exec(b64);
+      if (!m) return res.status(400).json({ error: 'รูปไม่ถูกต้อง (รองรับ jpg/png/webp)' });
+      const ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length > 5 * 1024 * 1024) return res.status(400).json({ error: 'รูปใหญ่เกิน 5MB (ควรย่อก่อน)' });
+      const name = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      await fs.promises.writeFile(path.join(UPLOADS_DIR, name), buf);
+      res.json({ filename: name });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ===================== SETTINGS =====================

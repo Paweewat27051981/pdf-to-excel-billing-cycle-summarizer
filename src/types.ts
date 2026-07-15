@@ -328,6 +328,7 @@ export interface DeductionEntry {
   amount: number;      // จำนวนเงิน (บวกเสมอ, sign กำหนดโดย kind)
   docNo?: string;      // เลขที่ใบกระจายอ้างอิง (เช่น JB0626075363)
   note?: string;
+  imageFile?: string;  // ชื่อไฟล์รูปแนบ (เก็บบน NAS โฟลเดอร์ uploads/ — ดูผ่าน /api/uploads/<ชื่อไฟล์>)
   type?: DeductionType; // legacy
 }
 

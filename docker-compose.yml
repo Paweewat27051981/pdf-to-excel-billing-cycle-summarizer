@@ -17,6 +17,8 @@ services:
       - ./serviceAccountKey.json:/app/serviceAccountKey.json:ro
       # อ่าน dist จากโฟลเดอร์บน NAS โดยตรง -> อัปเดตโค้ดแค่วาง dist ใหม่ + restart (ไม่ต้อง rebuild)
       - ./dist:/app/dist:ro
+      # รูปแนบ (รายได้เพิ่ม ฯลฯ) เก็บบน NAS โฟลเดอร์นี้ -> ไม่หายตอน rebuild + ให้ Hyper Backup สำรองโฟลเดอร์นี้
+      - ./uploads:/app/uploads
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 60s

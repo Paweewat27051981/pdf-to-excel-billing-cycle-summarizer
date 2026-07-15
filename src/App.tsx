@@ -16,6 +16,19 @@ import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from 
 // root (Render) = '' ; NAS build (VITE_BASE_PATH=/neosiam/) = '/neosiam'
 const API_PREFIX = (((import.meta as any).env?.BASE_URL as string) || '/').replace(/\/$/, '');
 
+// URL รูปแนบบน NAS
+const imgUrl = (name?: string) => (name ? `${API_PREFIX}/api/uploads/${name}` : '');
+// ย่อรูปในเบราว์เซอร์ก่อนอัปโหลด -> JPEG เล็ก (กันไฟล์ใหญ่ + โหลดเร็ว)
+async function resizeImageToDataUrl(file: File, maxDim = 900, quality = 0.72): Promise<string> {
+  const dataUrl = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(file); });
+  const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = dataUrl; });
+  let w = img.width, h = img.height;
+  if (Math.max(w, h) > maxDim) { const s = maxDim / Math.max(w, h); w = Math.round(w * s); h = Math.round(h * s); }
+  const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+  canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
 // โมเดลที่มีจริง (ตรวจจาก ListModels API) — flash=เร็ว/ฟรีกว่า, pro=แม่นกว่า
 const GEMINI_MODELS = [
   'gemini-3.5-flash',
@@ -1234,7 +1247,20 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
 
   const [fForm, setFForm] = useState({ plateNo: '', refNo: '', date: cycle?.startDate || '', amount: 0 });
   const [dForm, setDForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
-  const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
+  const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '', imageFile: '' });
+  const [imgBusy, setImgBusy] = useState(false);
+  // แนบรูป: ย่อในเบราว์เซอร์ -> อัปโหลดขึ้น NAS -> เก็บชื่อไฟล์ใน bForm
+  const onPickIncomeImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    setImgBusy(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(f);
+      const r = await api('/api/upload-image', 'POST', { imageBase64: dataUrl });
+      setBForm((b) => ({ ...b, imageFile: r.filename }));
+      showToast('success', 'แนบรูปแล้ว');
+    } catch { showToast('error', 'อัปโหลดรูปไม่สำเร็จ'); }
+    finally { setImgBusy(false); e.target.value = ''; }
+  };
   const fuelFileRef = useRef<HTMLInputElement>(null);
   const [impFuel, setImpFuel] = useState(false);
   const [fPlate, setFPlate] = useState('');
@@ -1266,12 +1292,12 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
     } catch (e: any) { showToast('error', e.message); }
     finally { setImpFuel(false); if (fuelFileRef.current) fuelFileRef.current.value = ''; }
   };
-  const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', docNo: string, reset: () => void) => {
+  const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', docNo: string, reset: () => void, imageFile?: string) => {
     const cat = cats.find((c) => c.id === categoryId) || (kind === 'income' ? incomeCats[0] : dedCats[0]);
     if (!plateNo || !amount || !cat) return showToast('warning', 'กรอกทะเบียน/จำนวนเงิน และเลือกประเภท');
     // ล้าง docNo: ตัดอักขระแปลกปลอม (ไทยหลง/เว้นวรรค) + ตัวใหญ่ ให้ตรงกับใบกระจาย
     const cleanDoc = docNo.replace(/[^A-Za-z0-9/-]/g, '').toUpperCase().trim();
-    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, docNo: cleanDoc, cycleId: cycle.id, branchId });
+    await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, docNo: cleanDoc, cycleId: cycle.id, branchId, imageFile: imageFile || undefined });
     reset(); reload();
   };
 
@@ -1329,9 +1355,14 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           </select>
           <input type="number" aria-label="จำนวนเงินรายได้เพิ่ม" placeholder="จำนวนเงิน" value={bForm.amount || ''} onChange={(e) => setBForm({ ...bForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
           <input aria-label="ใบกระจายเลขที่" placeholder="ใบกระจายเลขที่" value={bForm.docNo} onChange={(e) => setBForm({ ...bForm, docNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-36" />
-          <button onClick={() => addEntry(bForm.plateNo, bForm.categoryId, bForm.amount, 'income', bForm.docNo, () => setBForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-emerald-600 text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
+          <label className={`border rounded-lg px-2 py-1.5 text-sm cursor-pointer flex items-center gap-1 whitespace-nowrap ${bForm.imageFile ? 'bg-emerald-50 border-emerald-400 text-emerald-700' : 'border-natural-border text-natural-muted'}`} title="แนบรูป (ย่อขนาดอัตโนมัติ)">
+            📷 {imgBusy ? 'กำลังอัป...' : (bForm.imageFile ? 'เปลี่ยนรูป' : 'แนบรูป')}
+            <input type="file" accept="image/*" aria-label="แนบรูปรายได้เพิ่ม" className="hidden" onChange={onPickIncomeImage} />
+          </label>
+          {bForm.imageFile && <a href={imgUrl(bForm.imageFile)} target="_blank" rel="noreferrer"><img src={imgUrl(bForm.imageFile)} alt="แนบ" className="w-8 h-8 object-cover rounded border" /></a>}
+          <button onClick={() => addEntry(bForm.plateNo, bForm.categoryId, bForm.amount, 'income', bForm.docNo, () => setBForm({ plateNo: '', categoryId: '', amount: 0, docNo: '', imageFile: '' }), bForm.imageFile)} className="bg-emerald-600 text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={incomesF.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', `+${money(d.amount)}`])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวนเพิ่ม']}
+        <SimpleTable rows={incomesF.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', `+${money(d.amount)}`, d.imageFile ? <a href={imgUrl(d.imageFile)} target="_blank" rel="noreferrer"><img src={imgUrl(d.imageFile)} alt="รูป" className="w-9 h-9 object-cover rounded border" /></a> : '—'])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวนเพิ่ม', 'รูป']}
           onDelete={async (i: number) => { await api(`/api/deductions/${incomesF[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 
@@ -1948,7 +1979,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
   const shownSums = selPlate ? sums.filter((s: any) => s.plateNo === selPlate) : sums;
   const exp = async () => {
     if (!cycleTrips.length) return showToast('warning', 'ยังไม่มีใบกระจายในรอบนี้');
-    try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
+    try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles, `${API_PREFIX}/api/uploads/`); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
     catch (e: any) { showToast('error', e.message); }
   };
   const TH = ({ children, r }: any) => <th className={`px-2 py-1.5 font-semibold ${r ? 'text-right' : 'text-left'}`}>{children}</th>;
@@ -2023,7 +2054,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                           if ((t.breakdown?.collect || 0) > 0) parts.push(<span className="text-emerald-700 font-semibold">🔄 เก็บคืน ฿{money(t.breakdown.collect)}</span>);
                           if ((t.breakdown?.peat || 0) > 0) parts.push(<span className="text-teal-700 font-semibold">🌱 Peat ฿{money(t.breakdown.peat)}</span>);
                           if ((t.breakdown?.addon || 0) > 0) parts.push(<span className="text-amber-700 font-semibold">📌 เหมาเพิ่ม ฿{money(t.breakdown.addon)}{(t.addonByDest || []).length ? ` (${(t.addonByDest || []).map((a) => a.dist || a.prov).filter(Boolean).join(', ')})` : ''}</span>);
-                          docInc.forEach((d: DeductionEntry) => parts.push(<span className="text-emerald-700 font-semibold">➕{d.label} ฿{money(d.amount)}</span>));
+                          docInc.forEach((d: DeductionEntry) => parts.push(<span className="text-emerald-700 font-semibold">➕{d.label} ฿{money(d.amount)}{d.imageFile && <a href={imgUrl(d.imageFile)} target="_blank" rel="noreferrer" className="ml-1"><img src={imgUrl(d.imageFile)} alt="รูป" className="inline w-6 h-6 object-cover rounded border align-middle" /></a>}</span>));
                           docDed.forEach((d: DeductionEntry) => parts.push(<span className="text-rose-600 font-semibold">➖{d.label} ฿{money(d.amount)}</span>));
                         }
                         return (

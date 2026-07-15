@@ -365,7 +365,8 @@ export async function exportPerVehicleReport(
   trips: TripDocument[],
   fuel: FuelEntry[],
   deductions: DeductionEntry[],
-  vehicles: Vehicle[]
+  vehicles: Vehicle[],
+  imgBase?: string // URL prefix ของรูปแนบ เช่น "/neosiam/api/uploads/" (ถ้าไม่ส่ง = ไม่ฝังรูป)
 ) {
   const wb = await newWorkbook();
   wb.creator = 'ระบบค่าเที่ยว+ค่าน้ำมันรถร่วม';
@@ -546,6 +547,31 @@ export async function exportPerVehicleReport(
 
     // ความกว้างคอลัมน์ (sheet ค่าบรรทุก)
     [13, 22, 18, 11, 11, 11, 13, 16, 13, 12].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+
+    // ---- รูปแนบ (รายได้เพิ่มที่มีรูป) — ฝังรูปเล็กในชีต ----
+    const imgIncomes = vIncome.filter((d) => d.imageFile);
+    if (imgBase && imgIncomes.length) {
+      ws.addRow([]);
+      const hr = ws.addRow(['📎 รูปแนบ (รายได้เพิ่ม)']);
+      hr.getCell(1).font = { name: FONT, size: 13, bold: true, color: { argb: C.title } };
+      styleHeaderRow(ws.addRow(['เลขที่ใบกระจาย', 'ประเภท', 'จำนวน', 'รูป']));
+      for (const d of imgIncomes) {
+        const r = ws.addRow([d.docNo || '-', d.label, d.amount, '']);
+        r.eachCell((cell, col) => bodyCell(cell, { align: col === 3 ? 'right' : 'left' }));
+        r.getCell(3).numFmt = NUM;
+        r.height = 82; // สูงพอใส่รูป ~108px
+        try {
+          const resp = await fetch(imgBase + d.imageFile);
+          if (resp.ok) {
+            const blob = await resp.blob();
+            const b64 = await new Promise<string>((res, rej) => { const fr = new FileReader(); fr.onload = () => res((fr.result as string).split(',')[1]); fr.onerror = rej; fr.readAsDataURL(blob); });
+            const ext = /\.png$/i.test(d.imageFile!) ? 'png' : 'jpeg';
+            const imgId = wb.addImage({ base64: b64, extension: ext as any });
+            ws.addImage(imgId, { tl: { col: 3, row: r.number - 1 }, ext: { width: 108, height: 108 } });
+          }
+        } catch { /* รูปโหลดไม่ได้ (offline) ข้าม */ }
+      }
+    }
 
     // ---- sheet ใบสั่งเติมน้ำมัน (แยกต่างหากต่อทะเบียน) ----
     const wf = wb.addWorksheet(safeSheetName(`${plate} (น้ำมัน)`, usedNames));
