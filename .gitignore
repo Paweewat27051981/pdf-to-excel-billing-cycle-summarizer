@@ -19,6 +19,9 @@ uploads/
 # external agent skills (ไม่เกี่ยวกับโปรเจกต์)
 .agent/
 
+# transcript ของ Codex (มี session id / path ในเครื่อง / บทสนทนาภายใน) — ห้ามขึ้น repo
+.codex-history/
+
 # ข้อมูล/เอกสาร ไม่ต้องขึ้น repo (ไฟล์ใหญ่/ชั่วคราว)
 Excel/
 *.xls

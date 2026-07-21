@@ -196,7 +196,7 @@ function normalizeTrips(list: any[]): any[] {
 // -> บันทึก 1 ใบ = เขียนแค่ /tripDocuments/<id> (ไม่เขียนทั้ง DB) เร็วคงที่
 // อ่านได้ทั้ง 2 รูปแบบ (array เดิม + object ใหม่) ด้วย toArray() ของเก่าจึงไม่หาย
 // ---------------------------------------------------------------------------
-const ID_KEYED: (keyof DatabaseState)[] = ['tripDocuments', 'fuelEntries', 'deductions', 'rateOverrides'];
+const ID_KEYED: (keyof DatabaseState)[] = ['tripDocuments', 'fuelEntries', 'deductions', 'rateOverrides', 'rateMasters', 'rateMasterHistory'];
 export function isIdKeyed(collKey: keyof DatabaseState): boolean {
   return ID_KEYED.includes(collKey);
 }
@@ -212,14 +212,17 @@ const toArray = (x: any): any[] => (Array.isArray(x) ? x : x && typeof x === 'ob
 // migrate: เติม key ที่ขาดให้ db เก่า
 export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   const seed = seedState();
+  // rateMasters เก็บได้ทั้ง array (เก่า) และ id-keyed map (ใหม่) -> แปลงเป็น array ก่อน
+  // ถ้าว่าง = ยังไม่เคยมีข้อมูล -> ส่ง undefined ให้ withBranch ใช้ seed ตามเดิม
+  const rateMasterArr = toArray(state.rateMasters);
   return {
     settings: { ...seed.settings, ...(state.settings || {}) },
     branches: state.branches && state.branches.length ? state.branches : seed.branches,
     cycles: state.cycles ?? [],
     vehicles: withBranch(state.vehicles, seed.vehicles),
-    rateMasters: withBranch(state.rateMasters, seed.rateMasters),
+    rateMasters: withBranch(rateMasterArr.length ? rateMasterArr : undefined, seed.rateMasters),
     rateOverrides: toArray(state.rateOverrides), // อ่านได้ทั้ง array (เก่า) และ id-keyed map (ใหม่)
-    rateMasterHistory: state.rateMasterHistory ?? [],
+    rateMasterHistory: toArray(state.rateMasterHistory),
     receiverGroups: withBranch(state.receiverGroups, seed.receiverGroups),
     receiverGroupAliases: withBranch(state.receiverGroupAliases, seed.receiverGroupAliases),
     conversionRules: withBranch(state.conversionRules, seed.conversionRules),
@@ -243,10 +246,13 @@ export async function getDb(): Promise<DatabaseState> {
     const val = snap.val() as Partial<DatabaseState> | null;
     cache = ensureShape(val || {});
     if (!val) await saveDb(cache); // ว่างเปล่า -> seed ขึ้น Firebase
-    // migrate ครั้งเดียว: rateOverrides เดิมเก็บเป็น array -> แปลงเป็น id-keyed map
-    // (เขียนแค่ node /rateOverrides เบามาก) เพื่อให้เขียน granular ทีละรายการได้ ไม่เกิด record ซ้ำ
-    else if (Array.isArray(val.rateOverrides) && val.rateOverrides.length) {
-      await flushCollection('rateOverrides');
+    // migrate ครั้งเดียว: คอลเลกชัน id-keyed ที่ยังเก็บเป็น array -> แปลงเป็น id-keyed map
+    // (เขียนแค่ node นั้น เบามาก) เพื่อให้เขียน granular ทีละรายการได้ ไม่เกิด record ซ้ำ
+    else {
+      for (const k of ID_KEYED) {
+        const cur = (val as any)[k as string];
+        if (Array.isArray(cur) && cur.length) await flushCollection(k);
+      }
     }
     return cache;
   }

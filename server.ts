@@ -11,6 +11,7 @@ import {
   Branch,
   Vehicle,
   RateMaster,
+  RateMasterHistory,
   RateOverride,
   ReceiverGroup,
   ReceiverGroupAlias,
@@ -452,7 +453,7 @@ async function startServer() {
         createdAt: new Date().toISOString(),
       };
       db.rateMasters.push(item);
-      await saveDb(db);
+      await saveRecord('rateMasters', item); // เขียนแค่ record เดียว (ไม่เขียนทั้ง DB)
       res.status(201).json(item);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -520,7 +521,8 @@ async function startServer() {
       }
       const now = new Date().toISOString();
       for (const r of rates) db.rateMasters.push({ ...r, branchId, id: generateId('rate'), createdBy: 'import', createdAt: now } as RateMaster);
-      await saveDb(db);
+      // เขียนเฉพาะ node /rateMasters (ไม่ใช่ทั้ง DB) — set ทับทั้ง node จึงรองรับการลบของเดิมด้วย
+      await flushCollection('rateMasters');
       res.status(201).json({ success: true, created: rates.length, removed, summary });
     } catch (err: any) {
       console.error('import-rates error:', err);
@@ -535,13 +537,16 @@ async function startServer() {
       if (!Array.isArray(rates) || !rates.length) return res.status(400).json({ error: 'ต้องส่ง rates เป็น array' });
       const db = await getDb();
       const now = new Date().toISOString();
+      const created: RateMaster[] = [];
       for (const r of rates) {
-        db.rateMasters.push({
+        const item = {
           productCategory: 'normal', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active',
           ...r, id: generateId('rate'), createdBy: r.createdBy || 'import', createdAt: now,
-        } as RateMaster);
+        } as RateMaster;
+        db.rateMasters.push(item);
+        created.push(item);
       }
-      await saveDb(db);
+      await saveRecords('rateMasters', created); // multi-path update = 1 round-trip
       res.status(201).json({ success: true, count: rates.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -555,8 +560,9 @@ async function startServer() {
       if (idx === -1) return res.status(404).json({ error: 'ไม่พบราคา' });
       const old = db.rateMasters[idx];
       // เก็บประวัติถ้าราคาเปลี่ยน
+      let hist: RateMasterHistory | null = null;
       if (typeof req.body.price === 'number' && req.body.price !== old.price) {
-        db.rateMasterHistory.push({
+        hist = {
           id: generateId('rhist'),
           rateMasterId: old.id,
           oldPrice: old.price,
@@ -564,10 +570,12 @@ async function startServer() {
           changedBy: req.body.updatedBy || 'user',
           changedAt: new Date().toISOString(),
           changeReason: req.body.changeReason || 'แก้ไขราคา',
-        });
+        };
+        db.rateMasterHistory.push(hist);
       }
       db.rateMasters[idx] = { ...old, ...req.body, id: old.id, updatedAt: new Date().toISOString() };
-      await saveDb(db);
+      await saveRecord('rateMasters', db.rateMasters[idx]); // เขียนแค่ราคาที่แก้
+      if (hist) await saveRecord('rateMasterHistory', hist);
       res.json(db.rateMasters[idx]);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -583,12 +591,14 @@ async function startServer() {
       const db = await getDb();
       const now = new Date().toISOString();
       let n = 0;
+      const changed: RateMaster[] = [];
+      const hists: RateMasterHistory[] = [];
       db.rateMasters = db.rateMasters.map((r) => {
         const u = byId.get(r.id);
         if (!u) return r;
         n++;
         if (typeof u.price === 'number' && u.price !== r.price) {
-          db.rateMasterHistory.push({
+          hists.push({
             id: generateId('rhist'), rateMasterId: r.id, oldPrice: r.price, newPrice: u.price,
             changedBy: u.updatedBy || 'user', changedAt: now, changeReason: u.changeReason || 'แก้ไขราคา (หลายช่อง)',
           });
@@ -596,9 +606,13 @@ async function startServer() {
         const patch: any = {};
         if (u.price !== undefined) patch.price = u.price;
         if (u.pieceThreshold !== undefined) patch.pieceThreshold = u.pieceThreshold;
-        return { ...r, ...patch, updatedAt: now };
+        const next = { ...r, ...patch, updatedAt: now };
+        changed.push(next);
+        return next;
       });
-      await saveDb(db);
+      db.rateMasterHistory.push(...hists);
+      await saveRecords('rateMasters', changed); // เขียนเฉพาะรายการที่แก้ (1 round-trip)
+      if (hists.length) await saveRecords('rateMasterHistory', hists);
       res.json({ success: true, count: n });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -609,7 +623,7 @@ async function startServer() {
     try {
       const db = await getDb();
       db.rateMasters = db.rateMasters.filter((r) => r.id !== req.params.id);
-      await saveDb(db);
+      await removeRecord('rateMasters', req.params.id); // ลบแค่ node เดียว
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -622,7 +636,7 @@ async function startServer() {
       const idset = new Set(ids);
       const db = await getDb();
       db.rateMasters = db.rateMasters.filter((r) => !idset.has(r.id));
-      await saveDb(db);
+      await removeRecords('rateMasters', ids); // ลบเฉพาะ node ที่ระบุ (1 round-trip)
       res.json({ success: true, deleted: ids.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -638,17 +652,20 @@ async function startServer() {
       const db = await getDb();
       let n = 0;
       const now = new Date().toISOString();
+      const changed: RateMaster[] = [];
       db.rateMasters = db.rateMasters.map((r) => {
         if (!idset.has(r.id)) return r;
         n++;
-        return {
+        const next = {
           ...r,
           ...(effectiveTo !== undefined ? { effectiveTo } : {}),
           ...(effectiveFrom !== undefined ? { effectiveFrom } : {}),
           updatedAt: now,
         };
+        changed.push(next);
+        return next;
       });
-      await saveDb(db);
+      await saveRecords('rateMasters', changed); // เขียนเฉพาะรายการที่แก้
       res.json({ success: true, count: n });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
