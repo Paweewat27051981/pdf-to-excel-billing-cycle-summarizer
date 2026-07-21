@@ -154,6 +154,9 @@ export async function exportCycleToExcel(
       }
       // แถวใบรับ (มีปลายทาง + ค่าเที่ยวต่อจุด)
       t.receipts.forEach((rcp) => {
+        // ใส่ค่าเต็ม (ไม่ปัด) ลงเซลล์ แล้วให้ numFmt '#,##0.00' แสดง 2 ตำแหน่ง
+        // -> ตาเห็น 241.88 แต่ SUM ใน Excel ได้ค่าจริง จึงกระทบยอดกับ "ค่าเที่ยวทั้งหมด" ที่ปัดครั้งเดียวพอดี
+        // (ถ้าปัดในเซลล์ ผลรวมรายบรรทัดจะเกินยอดจริง เช่น 3 ใบที่ลงท้าย .005 -> เกิน 0.015)
         const ptAmount = t.rateType === 'piece' ? rcp.receiptAmount : (rcp.flatPrice ?? '');
         const r = ws.addRow(['', '', '', `${rcp.districtRaw} ${rcp.provinceRaw}`.trim(), rcp.receiptNo, rcp.receiverName, rcp.totalQty, rcp.billingQty, ptAmount]);
         const isDiv = rcp.hasAdjustment;

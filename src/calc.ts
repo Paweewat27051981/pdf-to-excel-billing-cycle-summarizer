@@ -647,7 +647,9 @@ export function computeTripDocument(
       for (const r of receipts) {
         if (r.normalQty <= 0) continue;
         const pp = piecePriceFor(r); // ราคาชิ้นของจุดนี้ หรือยืมราคาชิ้นของเที่ยว (ปลายทางเหมาอย่างเดียวที่ถูกรวมในเที่ยวคิดชิ้น)
-        if (pp != null) { r.receiptAmount = round2(r.billingQty * pp); normalAmount += r.receiptAmount; }
+        // เก็บทศนิยมเต็ม (ไม่ปัดรายใบ) -> ไปปัดครั้งเดียวที่ยอดรวมต่อคัน/ต่อใบ ตามหลักบัญชี
+        // ถ้าปัดตรงนี้ ผลรวมจะเพี้ยนจากการปัดสะสม เช่น 18 ใบรับที่สามพราน = 1,912.44 แทนที่จะเป็น 1,912.43
+        if (pp != null) { r.receiptAmount = r.billingQty * pp; normalAmount += r.receiptAmount; }
         else if (receiptHasAddon(r)) warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}): คิดค่าเหมาบวกเพิ่มตายตัวเท่านั้น — กล่องไม่คิดชิ้น`);
         else warnings.push(`ปลายทาง "${r.provinceRaw} ${r.districtRaw}" (ใบรับ ${r.receiptNo}) ไม่เจอราคาชิ้น`);
       }
