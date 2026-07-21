@@ -766,8 +766,14 @@ export function computeTripDocument(
   };
 }
 
+// ปัดเป็น 2 ตำแหน่งแบบ "ครึ่งขึ้น" (0.005 ขึ้นไป -> ปัดขึ้น) ตามหลักบัญชี
+// ทำไมไม่ใช้ Math.round(n*100) ตรงๆ: floating point ทำให้ค่าครึ่งหน่วยต่ำกว่าความจริง
+//   1.005*100 = 100.49999999999999 -> ปัดลงเป็น 1.00 (ผิด ต้องได้ 1.01)
+// Number.EPSILON (2.2e-16) เล็กเกินกว่าจะชดเชย error ระดับ 1e-14 จึงต้อง toFixed(6) ตัด noise ก่อน
 export function round2(n: number): number {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
+  if (!Number.isFinite(n)) return 0;
+  const scaled = Number((n * 100).toFixed(6)); // 100.49999999999999 -> 100.5
+  return (Math.sign(scaled) * Math.floor(Math.abs(scaled) + 0.5)) / 100;
 }
 
 // ตัดทศนิยมที่ 2 ตำแหน่ง (ไม่ปัดขึ้น) — ใช้กับ "จำนวน" กัน float error เช่น 1.9999999998 -> 1.99

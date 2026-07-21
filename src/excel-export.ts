@@ -13,7 +13,7 @@ import {
   Vehicle,
   RateMaster,
 } from './types';
-import { summarizeByVehicle, normPlate, normDoc } from './calc';
+import { summarizeByVehicle, normPlate, normDoc, round2 } from './calc';
 
 const FONT = 'Cordia New';
 
@@ -78,7 +78,7 @@ function bodyCell(cell: ExcelJS.Cell, opts: { bold?: boolean; color?: string; al
 }
 
 const NUM = '#,##0.00';
-const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+// round2 ใช้ตัวเดียวกับ calc.ts (เดิมนิยามซ้ำที่นี่ด้วยสูตรเก่า -> Excel กับหน้าจอปัดเศษไม่ตรงกัน)
 
 // โหลด ExcelJS แบบ dynamic เฉพาะตอนผู้ใช้กด export จริง (code-splitting)
 // -> ExcelJS (~1MB) แยกเป็นไฟล์ย่อย ไม่อยู่ในบันเดิลหน้าแรก โหลดครั้งแรกที่ export
