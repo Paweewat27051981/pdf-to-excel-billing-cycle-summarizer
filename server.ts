@@ -24,7 +24,7 @@ import {
   DeductionEntry,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument, normPlate } from './src/calc.js';
+import { computeTripDocument, normPlate, round2 } from './src/calc.js';
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 
 dotenv.config(); // โหลด .env
@@ -777,16 +777,16 @@ async function startServer() {
   });
 
   // Recalculate: คำนวณ trip เดิมทั้งรอบใหม่ด้วย master ปัจจุบัน
+  // ?dryRun=1 -> คำนวณเทียบ old vs new แล้วคืน diff โดยไม่บันทึก (ดูก่อนแตะข้อมูลจริง)
   app.post('/api/cycles/:id/recalculate', async (req, res) => {
     try {
+      const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
       const db = await getDb();
       const cycle = db.cycles.find((c) => c.id === req.params.id);
       if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
 
-      const changed: TripDocument[] = [];
-      db.tripDocuments = db.tripDocuments.map((t) => {
-        if (t.cycleId !== cycle.id) return t;
-        // สร้าง extracted กลับจาก trip เดิม
+      // คำนวณใหม่จาก trip เดิม (ไม่แก้ cache จนกว่าจะ apply จริง)
+      const recompute = (t: TripDocument): TripDocument => {
         const extracted: ExtractedTripDocument = {
           documentNo: t.documentNo,
           documentDate: t.documentDate,
@@ -806,12 +806,49 @@ async function startServer() {
           })),
         };
         const recomputed = recomputeTrip(db, cycle, extracted, t.fileName, t.branchId);
-        const out = { ...recomputed, id: t.id, isVerified: t.isVerified, createdAt: t.createdAt };
+        return { ...recomputed, id: t.id, isVerified: t.isVerified, createdAt: t.createdAt };
+      };
+
+      const inCycle = db.tripDocuments.filter((t) => t.cycleId === cycle.id);
+
+      if (dryRun) {
+        // จำแนกผลต่าง: <=0.10 บาท = ปัดเศษล้วน, >0.10 = ราคา/logic เปลี่ยน
+        const ROUND_EPS = 0.10;
+        const diffs = inCycle.map((t) => {
+          const nw = recompute(t);
+          const delta = round2(nw.tripAmount - t.tripAmount);
+          return { docNo: t.documentNo, plate: t.plateNo, old: t.tripAmount, new: nw.tripAmount, delta };
+        });
+        const changed = diffs.filter((d) => Math.abs(d.delta) > 0.0001);
+        const roundingOnly = changed.filter((d) => Math.abs(d.delta) <= ROUND_EPS);
+        const priceChanged = changed.filter((d) => Math.abs(d.delta) > ROUND_EPS);
+        const oldSum = round2(diffs.reduce((s, d) => s + d.old, 0));
+        const newSum = round2(diffs.reduce((s, d) => s + d.new, 0));
+        return res.json({
+          dryRun: true,
+          cycleId: cycle.id,
+          cycleName: cycle.name,
+          total: inCycle.length,
+          changedCount: changed.length,
+          roundingOnlyCount: roundingOnly.length,
+          priceChangedCount: priceChanged.length,
+          oldSum,
+          newSum,
+          totalDelta: round2(newSum - oldSum),
+          // ใบที่เปลี่ยนราคา/logic (ต่าง > 0.10) เรียงตามผลต่างมากสุด — ต้องดูก่อน apply
+          priceChanges: priceChanged.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 50),
+        });
+      }
+
+      const changed: TripDocument[] = [];
+      db.tripDocuments = db.tripDocuments.map((t) => {
+        if (t.cycleId !== cycle.id) return t;
+        const out = recompute(t);
         changed.push(out);
         return out;
       });
       await saveRecords('tripDocuments', changed);
-      res.json({ success: true, count: db.tripDocuments.filter((t) => t.cycleId === cycle.id).length });
+      res.json({ success: true, count: changed.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
