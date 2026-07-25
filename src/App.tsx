@@ -1271,6 +1271,17 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const branchName = (db.branches as Branch[]).find((b) => b.id === branchId)?.name || '';
   const addFuel = async () => {
     if (!fForm.plateNo || !fForm.amount) return showToast('warning', 'กรอกทะเบียนและจำนวนเงิน');
+    // เตือนถ้าวันที่ไม่อยู่ในรอบที่เลือก — ค่าน้ำมันจะถูกใส่ "รอบที่เลือก" ไม่ใช่รอบตามวันที่ (กันเผลอบันทึกผิดรอบ)
+    if (fForm.date && cycle.startDate && cycle.endDate && (fForm.date < cycle.startDate || fForm.date > cycle.endDate)) {
+      const correct = (db.cycles as BillingCycle[]).find((c) => c.startDate && c.endDate && fForm.date >= c.startDate && fForm.date <= c.endDate);
+      const hint = correct ? `<br><br>💡 วันที่นี้ตรงกับรอบ "<b>${correct.name}</b>" — แนะนำให้สลับไปเลือกรอบนั้นก่อนเพิ่ม` : '';
+      const ok = await confirmAction({
+        title: '⚠️ วันที่ไม่ตรงกับรอบที่เลือก',
+        html: `วันที่ <b>${fForm.date}</b> ไม่อยู่ในรอบ "<b>${cycle.name}</b>" (${cycle.startDate} ถึง ${cycle.endDate})<br><br>ถ้าเพิ่มต่อ ค่าน้ำมันนี้จะถูกบันทึกในรอบ "<b>${cycle.name}</b>"${hint}`,
+        confirmText: 'เพิ่มต่อ', danger: true,
+      });
+      if (!ok) return;
+    }
     await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id, branchId });
     setFForm({ plateNo: '', refNo: '', date: cycle.startDate, amount: 0 }); reload();
   };
