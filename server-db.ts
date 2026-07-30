@@ -196,7 +196,11 @@ function normalizeTrips(list: any[]): any[] {
 // -> บันทึก 1 ใบ = เขียนแค่ /tripDocuments/<id> (ไม่เขียนทั้ง DB) เร็วคงที่
 // อ่านได้ทั้ง 2 รูปแบบ (array เดิม + object ใหม่) ด้วย toArray() ของเก่าจึงไม่หาย
 // ---------------------------------------------------------------------------
-const ID_KEYED: (keyof DatabaseState)[] = ['tripDocuments', 'fuelEntries', 'deductions', 'rateOverrides', 'rateMasters', 'rateMasterHistory'];
+const ID_KEYED: (keyof DatabaseState)[] = [
+  'tripDocuments', 'fuelEntries', 'deductions', 'rateOverrides', 'rateMasters', 'rateMasterHistory',
+  // master ที่แก้ผ่าน masterRoutes (CRUD ทีละรายการ) -> id-keyed = เขียนแค่ record เดียว ไม่เขียนทั้ง tree
+  'vehicles', 'receiverGroups', 'receiverGroupAliases', 'conversionRules', 'manualBoxSenders', 'destinationOverrides', 'moneyCategories',
+];
 export function isIdKeyed(collKey: keyof DatabaseState): boolean {
   return ID_KEYED.includes(collKey);
 }
@@ -212,23 +216,23 @@ const toArray = (x: any): any[] => (Array.isArray(x) ? x : x && typeof x === 'ob
 // migrate: เติม key ที่ขาดให้ db เก่า
 export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   const seed = seedState();
-  // rateMasters เก็บได้ทั้ง array (เก่า) และ id-keyed map (ใหม่) -> แปลงเป็น array ก่อน
-  // ถ้าว่าง = ยังไม่เคยมีข้อมูล -> ส่ง undefined ให้ withBranch ใช้ seed ตามเดิม
-  const rateMasterArr = toArray(state.rateMasters);
+  // คอลเลกชัน id-keyed เก็บได้ทั้ง array (เก่า) และ map (ใหม่) -> แปลงเป็น array ก่อนเสมอ
+  // คงพฤติกรรมเดิมเป๊ะ: node หายจริง (null/undefined) -> seed | array ว่าง (ลบหมดเอง) -> คงว่าง
+  const kArr = <T,>(v: any): T[] | undefined => (v == null ? undefined : (toArray(v) as T[]));
   return {
     settings: { ...seed.settings, ...(state.settings || {}) },
     branches: state.branches && state.branches.length ? state.branches : seed.branches,
     cycles: state.cycles ?? [],
-    vehicles: withBranch(state.vehicles, seed.vehicles),
-    rateMasters: withBranch(rateMasterArr.length ? rateMasterArr : undefined, seed.rateMasters),
+    vehicles: withBranch(kArr(state.vehicles), seed.vehicles),
+    rateMasters: withBranch(kArr(state.rateMasters), seed.rateMasters),
     rateOverrides: toArray(state.rateOverrides), // อ่านได้ทั้ง array (เก่า) และ id-keyed map (ใหม่)
     rateMasterHistory: toArray(state.rateMasterHistory),
-    receiverGroups: withBranch(state.receiverGroups, seed.receiverGroups),
-    receiverGroupAliases: withBranch(state.receiverGroupAliases, seed.receiverGroupAliases),
-    conversionRules: withBranch(state.conversionRules, seed.conversionRules),
-    manualBoxSenders: withBranch(state.manualBoxSenders, seed.manualBoxSenders),
-    destinationOverrides: withBranch(state.destinationOverrides, []),
-    moneyCategories: withBranch(state.moneyCategories, seed.moneyCategories),
+    receiverGroups: withBranch(kArr(state.receiverGroups), seed.receiverGroups),
+    receiverGroupAliases: withBranch(kArr(state.receiverGroupAliases), seed.receiverGroupAliases),
+    conversionRules: withBranch(kArr(state.conversionRules), seed.conversionRules),
+    manualBoxSenders: withBranch(kArr(state.manualBoxSenders), seed.manualBoxSenders),
+    destinationOverrides: withBranch(toArray(state.destinationOverrides), []),
+    moneyCategories: withBranch(kArr(state.moneyCategories), seed.moneyCategories),
     tripDocuments: normalizeTrips(withBranch(toArray(state.tripDocuments), [])),
     fuelEntries: withBranch(toArray(state.fuelEntries), []),
     deductions: withBranch(migrateDeductions(toArray(state.deductions)), []),
