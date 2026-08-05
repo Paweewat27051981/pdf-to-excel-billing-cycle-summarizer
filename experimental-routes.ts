@@ -112,8 +112,11 @@ export function registerExperimentalRoutes(
           const r = await fetchBranchDiesel(c, dateArg);
           if (!r.representative) { skipped.push(c.branch); continue; }
           const priceDate = String(r.representative.priceDate || '').slice(0, 10);
-          // กันซ้ำ: สาขา + วันที่ราคาเดียวกัน = อัปเดตแทนที่ (idempotent)
-          const existing = db.oilPrices.find((x: OilPriceRecord) => x.branch === c.branch && x.priceDate === priceDate);
+          // กันซ้ำ: match (สาขา+วันที่) เป็นหลัก; fallback จังหวัดใช้เฉพาะ record ที่ branch ว่าง/เพี้ยน (legacy)
+          // ไม่ match province ทั่วไป เพราะ province ซ้ำข้าม branch ได้ (เช่น แม่สอด province=ตาก) จะทับ record ผิด
+          const provKey = c.province || 'กทม./ปริมณฑล';
+          const existing = db.oilPrices.find((x: OilPriceRecord) =>
+            x.priceDate === priceDate && (x.branch === c.branch || (!(x.branch || '').trim() && x.province === provKey)));
           const rec: OilPriceRecord = {
             id: existing?.id || deps.genId('oil'),
             branch: c.branch, province: c.province || 'กทม./ปริมณฑล',
@@ -146,6 +149,18 @@ export function registerExperimentalRoutes(
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // ลบ record ราคาน้ำมัน (id-keyed) — ลบ record ขยะ/ผิด
+  app.delete('/api/experimental/oil-price/:id', async (req: Request, res: Response) => {
+    try {
+      const db = await deps.getDb();
+      const idx = (db.oilPrices || []).findIndex((o: OilPriceRecord) => o.id === req.params.id);
+      if (idx < 0) return res.status(404).json({ error: 'ไม่พบ record' });
+      db.oilPrices.splice(idx, 1);
+      await deps.removeRecord('oilPrices', req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
   // ===== ค่าตั้งสูตร (fuelPolicy — ชุดเดียวทั้งบริษัท) =====
