@@ -235,6 +235,7 @@ function ReportSection() {
   const [expanded, setExpanded] = useState<string | null>(null); // key ทะเบียนที่ขยายดูรายละเอียด
   const [detail, setDetail] = useState<{ key: string; items: any[]; policy?: any } | null>(null); // รายละเอียดใบของทะเบียนที่ขยาย
   const [detailBusy, setDetailBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const reqRef = useRef(0); // กัน response เก่ามาทับตอนสลับรอบ/สาขาเร็วๆ (race)
   const cancelBulkRef = useRef(false); // ธงยกเลิก "คำนวณทั้งหมด" กลางคัน
 
@@ -323,6 +324,28 @@ function ReportSection() {
     setBulk(null);
   };
 
+  // Export Excel: ดึงรายละเอียดต่อใบทุกคัน (จาก cache — ไม่ยิง DOH) แล้วสร้างไฟล์ 2 sheet
+  const exportExcel = async () => {
+    if (!rows.length) return;
+    setExporting(true); setMsg('');
+    try {
+      const { exportFuelReportToExcel } = await import('./exportFuelReport');
+      const detailByPlate: Record<string, any[]> = {};
+      for (const r of rows) {
+        const q = `?cycleId=${encodeURIComponent(cycleId)}&plateNo=${encodeURIComponent(r.plateNo)}&branchId=${encodeURIComponent(r.branchId)}`;
+        const resp = await fetch(api(`/api/experimental/fuel-report/plate-detail${q}`));
+        const j = await resp.json();
+        // detail ล้มเหลว = ไฟล์จะขาดใบเงียบ -> หยุด export ทันที (กันรายงานไม่ครบ)
+        if (!resp.ok || j.error) throw new Error(`${r.plateNo}: ${j.error || resp.status}`);
+        detailByPlate[`${r.branchId}|${r.plateNo}`] = j.items || [];
+      }
+      const cycleName = cycles.find((c) => c.id === cycleId)?.name || cycleId;
+      const branchLabel = branchId ? (branches.find((b) => b.id === branchId)?.name || branchId) : 'ทุกสาขา';
+      await exportFuelReportToExcel(cycleName, branchLabel, rows, detailByPlate);
+      setMsg('✅ ดาวน์โหลด Excel แล้ว');
+    } catch (e: any) { setMsg('❌ export ไม่สำเร็จ: ' + e.message); } finally { setExporting(false); }
+  };
+
   // รวมเฉพาะแถวที่คิดครบ (computed>0 && ไม่มี missing) — แถวคิดไม่ครบ diff เพี้ยน (ค่าเที่ยวเต็ม แต่ต้นทุนบางส่วน)
   const isComplete = (r: ReportRow) => r.computed > 0 && r.missing === 0;
   const completeRows = rows.filter(isComplete);
@@ -358,6 +381,11 @@ function ReportSection() {
               ⏹ หยุด ({bulk.done}/{bulk.total})
             </button>
           )}
+          {/* Export Excel: ดึงรายละเอียดทุกคันจาก cache -> ไฟล์ 2 sheet */}
+          <button onClick={exportExcel} disabled={exporting || !!bulk || loading || !rows.length}
+            className="bg-emerald-600 text-white rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50">
+            {exporting ? 'กำลังสร้าง...' : '📊 Export Excel'}
+          </button>
           {loading && <span className="text-sm text-natural-muted">กำลังโหลด...</span>}
         </div>
         {/* progress bar ตอนคำนวณทั้งหมด */}
