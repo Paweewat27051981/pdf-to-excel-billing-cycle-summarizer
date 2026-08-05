@@ -2,7 +2,7 @@
 // [ทดลอง] แท็บ "คำนวณค่าจ้างรถร่วม (น้ำมัน)" — แยก 100% ไม่แตะ component เดิม
 // 2 ส่วน: (1) คำนวณค่าจ้าง 1 เที่ยว  (2) สรุปราคาน้ำมันย้อนหลังแต่ละสาขา
 // ============================================================================
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 
 const API = (import.meta as any).env?.BASE_URL || '/';
 const api = (p: string) => `${API.replace(/\/$/, '')}${p}`;
@@ -19,7 +19,7 @@ interface Breakdown {
 }
 
 export default function FuelTripTab() {
-  const [sub, setSub] = useState<'calc' | 'history' | 'report'>('report');
+  const [sub, setSub] = useState<'calc' | 'history' | 'report' | 'mountain' | 'policy'>('report');
   const tabBtn = (k: typeof sub, label: string) => (
     <button onClick={() => setSub(k)} className={`px-4 py-2 rounded-lg text-sm font-semibold ${sub === k ? 'bg-brand-navy text-white' : 'bg-natural-100 text-natural-muted'}`}>{label}</button>
   );
@@ -32,8 +32,10 @@ export default function FuelTripTab() {
         {tabBtn('report', 'เทียบต้นทุน (ต่อทะเบียน)')}
         {tabBtn('calc', 'คำนวณค่าจ้าง 1 เที่ยว')}
         {tabBtn('history', 'ราคาน้ำมันย้อนหลัง (ทุกสาขา)')}
+        {tabBtn('mountain', '⛰️ เส้นทางขึ้นเขา')}
+        {tabBtn('policy', '⚙️ ตั้งค่าสูตร')}
       </div>
-      {sub === 'calc' ? <CalcSection /> : sub === 'history' ? <HistorySection /> : <ReportSection />}
+      {sub === 'calc' ? <CalcSection /> : sub === 'history' ? <HistorySection /> : sub === 'mountain' ? <MountainSection /> : sub === 'policy' ? <PolicySection /> : <ReportSection />}
     </div>
   );
 }
@@ -45,6 +47,7 @@ function CalcSection() {
   const [oilErr, setOilErr] = useState('');
   const [form, setForm] = useState({ distanceMinKm: 85, distanceMaxKm: 113, storeCount: 3, actualBoxes: 250, fuelPrice: 0 });
   const [result, setResult] = useState<Breakdown | null>(null);
+  const [policy, setPolicy] = useState<{ driverHourlyRate: number; unloadingMinutesPerStore: number; fuelEfficiencyKmPerL: number } | null>(null);
   const reqRef = useRef(0); // กัน response เก่ามาทับตอนเปลี่ยนสาขาเร็วๆ (race)
 
   // ดึงราคาน้ำมันตามสาขา (backend map: สาย3=กทม, แม่สอด=ตาก/อ.แม่สอด, อื่น=อ.เมือง)
@@ -67,7 +70,9 @@ function CalcSection() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ input: { distanceMinKm: form.distanceMinKm, distanceMaxKm: form.distanceMaxKm, storeCount: form.storeCount, appliedFuelPrice: form.fuelPrice, actualBoxes: form.actualBoxes } }),
     });
-    setResult((await r.json()).breakdown);
+    const j = await r.json();
+    setResult(j.breakdown);
+    if (j.policyUsed) setPolicy(j.policyUsed); // เก็บค่าแรง/นาทีต่อจุด ไว้แสดงวิธีคิด
   };
 
   const num = (v: string) => (v === '' ? 0 : Number(v));
@@ -98,21 +103,44 @@ function CalcSection() {
       <div className="rounded-xl bg-white border p-4">
         <h3 className="font-bold text-brand-navy mb-2">รายละเอียดการคำนวณ</h3>
         {!result ? <p className="text-natural-muted text-sm">กรอกข้อมูลแล้วกดคำนวณ</p> : (
-          <table className="w-full text-sm">
-            <tbody>
-              <Row k="ระยะไป-กลับ (ประมาณ)" v={`${result.estimatedRoundTripKm.toFixed(1)} กม. @ ${result.speedKmh} กม./ชม.`} />
-              <Row k="เวลาเดินทาง + ลงสินค้า" v={`${result.travelHours.toFixed(2)} + ${result.unloadingHours.toFixed(2)} ชม.`} />
-              <Row k="เบี้ยขับ (คนขับ)" v={`฿${baht(result.driverAllowance)}`} />
-              <Row k="ค่าน้ำมัน" v={`฿${baht(result.fuelCost)}`} />
-              {result.extraCharges > 0 && <Row k="ค่าพิเศษ (เขา/เส้นทาง/ภาษี)" v={`฿${baht(result.extraCharges)}`} />}
-              <Row k="ค่าเที่ยว (ก่อนปัด)" v={`฿${baht(result.tripRateBeforeRounding)}`} bold />
-              <Row k="เรทต่อกล่อง" v={`฿${baht(result.boxRateDisplay)}`} />
-              <tr><td colSpan={2} className="pt-2"><div className="rounded-lg bg-emerald-50 px-3 py-2 flex justify-between items-center">
-                <span className="font-bold text-emerald-800">จ่ายจริง ({result.paymentMode === 'LUMP_SUM' ? 'เหมาทั้งเที่ยว' : 'ตามกล่อง'})</span>
-                <span className="font-bold text-lg text-emerald-800">฿{baht(result.finalPayment)}</span>
-              </div></td></tr>
-            </tbody>
-          </table>
+          <div className="space-y-3 text-sm">
+            {/* ===== วิธีคิดเบี้ยขับ (step-by-step) — เวลาใช้ "ระยะสูงสุด × 2" ===== */}
+            <div className="rounded-lg border border-natural-200 p-3 space-y-1.5">
+              <div className="font-semibold text-brand-navy">🧑‍✈️ เบี้ยขับ (คนขับ) = (เวลาเดินทาง + เวลาลงของ) × ค่าแรง/ชม.</div>
+              <Step label="① ระยะไป-กลับ (คิดเวลา)" calc={`${result.distanceMaxKm} × 2`} val={`${(result.distanceMaxKm * 2).toFixed(0)} กม.`} />
+              <Step label={`② ความเร็ว (${policy && result.distanceMaxKm <= policy.speedThresholdKm ? 'ทางใกล้' : result.speedKmh === (policy?.nearSpeedKmh ?? -1) ? 'ทางใกล้' : 'ทางไกล'})`} val={`${result.speedKmh} กม./ชม.`} />
+              <Step label="③ เวลาเดินทาง" calc={`${(result.distanceMaxKm * 2).toFixed(0)} ÷ ${result.speedKmh}`} val={`${result.travelHours.toFixed(3)} ชม.`} />
+              <Step label={`④ เวลาลงของ (${result.storeCount} จุด${policy ? ` × ${policy.unloadingMinutesPerStore} นาที` : ''})`} val={`${result.unloadingHours.toFixed(2)} ชม.`} />
+              <Step label="⑤ รวมเวลาทำงาน" calc={`${result.travelHours.toFixed(3)} + ${result.unloadingHours.toFixed(2)}`} val={`${(result.travelHours + result.unloadingHours).toFixed(3)} ชม.`} />
+              <div className="border-t pt-1.5 flex justify-between font-bold text-brand-navy">
+                <span>= เบี้ยขับ{policy ? ` (${(result.travelHours + result.unloadingHours).toFixed(3)} × ฿${policy.driverHourlyRate})` : ''}</span>
+                <span>฿{baht(result.driverAllowance)}</span>
+              </div>
+            </div>
+
+            {/* ===== วิธีคิดค่าน้ำมัน — ใช้ "ค่ากลางของช่วง × 2" (ต่างจากเวลาที่ใช้ระยะสูงสุด) ===== */}
+            <div className="rounded-lg border border-natural-200 p-3 space-y-1.5">
+              <div className="font-semibold text-brand-navy">⛽ ค่าน้ำมัน = (ระยะ ÷ อัตราสิ้นเปลือง) × ราคา</div>
+              <Step label="ระยะไป-กลับ (คิดน้ำมัน = ค่ากลางช่วง)" calc={`(${result.distanceMinKm}+${result.distanceMaxKm})÷2 × 2`} val={`${result.estimatedRoundTripKm.toFixed(1)} กม.`} />
+              <div className="border-t pt-1.5 flex justify-between font-bold text-brand-navy">
+                <span>= ค่าน้ำมัน ({result.estimatedRoundTripKm.toFixed(1)} ÷ {policy ? policy.fuelEfficiencyKmPerL : 10} × ฿{baht(result.appliedFuelPrice)})</span>
+                <span>฿{baht(result.fuelCost)}</span>
+              </div>
+            </div>
+
+            {/* ===== รวม ===== */}
+            <table className="w-full">
+              <tbody>
+                {result.extraCharges > 0 && <Row k="ค่าพิเศษ (เขา/เส้นทาง/ภาษี)" v={`฿${baht(result.extraCharges)}`} />}
+                <Row k="ค่าเที่ยว (เบี้ยขับ + น้ำมัน)" v={`฿${baht(result.tripRateBeforeRounding)}`} bold />
+                <Row k="เรทต่อกล่อง" v={`฿${baht(result.boxRateDisplay)}`} />
+                <tr><td colSpan={2} className="pt-2"><div className="rounded-lg bg-emerald-50 px-3 py-2 flex justify-between items-center">
+                  <span className="font-bold text-emerald-800">จ่ายจริง ({result.paymentMode === 'LUMP_SUM' ? 'เหมาทั้งเที่ยว' : 'ตามกล่อง'})</span>
+                  <span className="font-bold text-lg text-emerald-800">฿{baht(result.finalPayment)}</span>
+                </div></td></tr>
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>
@@ -121,6 +149,58 @@ function CalcSection() {
 
 function Row({ k, v, bold }: { k: string; v: string; bold?: boolean }) {
   return <tr className="border-b last:border-0"><td className="py-1.5 text-natural-muted">{k}</td><td className={`py-1.5 text-right ${bold ? 'font-bold text-brand-navy' : ''}`}>{v}</td></tr>;
+}
+
+// 1 ขั้นในวิธีคิด: ป้าย + (สูตรย่อย) + ค่าที่ได้
+function Step({ label, calc, val }: { label: string; calc?: string; val: string }) {
+  return (
+    <div className="flex justify-between items-baseline gap-2">
+      <span className="text-natural-muted">{label}{calc && <span className="text-xs text-natural-400"> = {calc}</span>}</span>
+      <span className="tabular-nums">{val}</span>
+    </div>
+  );
+}
+
+// รายละเอียดต่อใบ (แถวขยายในรายงานเทียบต้นทุน) — แต่ละใบ: ปลายทาง ระยะลูป ต้นทุน ส่วนต่าง
+function PlateDetail({ busy, items }: { busy: boolean; items: any[] | null }) {
+  if (busy || !items) return <div className="text-sm text-natural-muted py-2">กำลังโหลดรายละเอียด...</div>;
+  if (!items.length) return <div className="text-sm text-natural-muted py-2">ไม่มีใบ</div>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead><tr className="text-left text-natural-muted border-b">
+          <th className="px-2 py-1">ใบกระจาย</th><th className="px-2 py-1">ปลายทาง (ลำดับวิ่ง)</th>
+          <th className="px-2 py-1 text-right">ระยะลูป</th><th className="px-2 py-1 text-right">เบี้ยขับ</th>
+          <th className="px-2 py-1 text-right">ค่าน้ำมัน</th><th className="px-2 py-1 text-right">ต้นทุนรวม</th>
+          <th className="px-2 py-1 text-right">ค่าเที่ยว</th><th className="px-2 py-1 text-right">ส่วนต่าง</th>
+        </tr></thead>
+        <tbody>
+          {items.map((it, i) => {
+            const hasMissing = (it.missing || []).length > 0;
+            const dests = (it.order && it.order.length ? it.order : it.dests.map((d: string) => d.split('|')[0])).join(' → ');
+            return (
+              <tr key={i} className="border-b last:border-0">
+                <td className="px-2 py-1 font-mono">{it.documentNo}</td>
+                <td className="px-2 py-1">
+                  {dests || '-'}
+                  {hasMissing && <span className="text-brand-red"> · หาไม่เจอ: {it.missing.join(', ')}</span>}
+                  {it.mountainLiters > 0 && <span className="text-amber-600"> · ⛰️+{it.mountainLiters}ล.</span>}
+                </td>
+                <td className="px-2 py-1 text-right">{it.loopKm != null ? `${it.loopKm} กม.` : '-'}</td>
+                <td className="px-2 py-1 text-right">{it.driverAllowance != null ? `฿${baht(it.driverAllowance)}` : '-'}</td>
+                <td className="px-2 py-1 text-right">{it.fuelCost != null ? `฿${baht(it.fuelCost)}` : '-'}</td>
+                <td className="px-2 py-1 text-right font-semibold">{it.totalCost != null ? `฿${baht(it.totalCost)}` : <span className="text-brand-red">ยังไม่คิด</span>}</td>
+                <td className="px-2 py-1 text-right">฿{baht(it.tripAmount)}</td>
+                <td className={`px-2 py-1 text-right font-semibold ${it.diff == null ? 'text-natural-muted' : it.diff >= 0 ? 'text-emerald-700' : 'text-brand-red'}`}>
+                  {it.diff != null ? `${it.diff >= 0 ? '+' : ''}฿${baht(it.diff)}` : '—'}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 // ===== เทียบต้นทุนต่อทะเบียน (ค่าเที่ยวจ่ายจริง vs ต้นทุนตามน้ำมัน+ระยะจริง DOH) =====
@@ -139,8 +219,24 @@ function ReportSection() {
   const [computing, setComputing] = useState(''); // key branchId|plate ที่กำลังคิด (คิดทีละคัน)
   const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null); // progress "คำนวณทั้งหมด"
   const [msg, setMsg] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null); // key ทะเบียนที่ขยายดูรายละเอียด
+  const [detail, setDetail] = useState<{ key: string; items: any[] } | null>(null); // รายละเอียดใบของทะเบียนที่ขยาย
+  const [detailBusy, setDetailBusy] = useState(false);
   const reqRef = useRef(0); // กัน response เก่ามาทับตอนสลับรอบ/สาขาเร็วๆ (race)
   const cancelBulkRef = useRef(false); // ธงยกเลิก "คำนวณทั้งหมด" กลางคัน
+
+  // ย่อ/ขยาย ดูรายละเอียดต่อใบของ 1 ทะเบียน
+  const toggleExpand = async (row: ReportRow) => {
+    const key = `${row.branchId}|${row.plateNo}`;
+    if (expanded === key) { setExpanded(null); return; } // ปิด
+    setExpanded(key); setDetail(null); setDetailBusy(true);
+    try {
+      const q = `?cycleId=${encodeURIComponent(cycleId)}&plateNo=${encodeURIComponent(row.plateNo)}&branchId=${encodeURIComponent(row.branchId)}`;
+      const r = await fetch(api(`/api/experimental/fuel-report/plate-detail${q}`));
+      const j = await r.json();
+      setDetail({ key, items: j.items || [] });
+    } catch { setDetail({ key, items: [] }); } finally { setDetailBusy(false); }
+  };
 
   // โหลดรอบ + สาขา จาก /api/state (HQ เห็นทุกสาขา)
   useEffect(() => {
@@ -280,9 +376,16 @@ function ReportSection() {
             {rows.map((r) => {
               const key = `${r.branchId}|${r.plateNo}`;
               const done = isComplete(r);
+              const isOpen = expanded === key;
               return (
-                <tr key={key} className="border-b last:border-0">
-                  <td className="px-3 py-2 font-semibold">{r.plateNo}</td>
+                <Fragment key={key}>
+                <tr className="border-b last:border-0 hover:bg-natural-50">
+                  <td className="px-3 py-2 font-semibold">
+                    {/* คลิกทะเบียนเพื่อย่อ/ขยายดูรายละเอียดต่อใบ */}
+                    <button onClick={() => toggleExpand(r)} className="flex items-center gap-1 hover:text-brand-red">
+                      <span className={`transition-transform ${isOpen ? 'rotate-90' : ''}`}>▶</span>{r.plateNo}
+                    </button>
+                  </td>
                   {!branchId && <td className="px-3 py-2 text-natural-muted">{r.branch}</td>}
                   <td className="px-3 py-2 text-right">{r.tripCount}</td>
                   <td className="px-3 py-2 text-right font-bold text-brand-navy">฿{baht(r.tripAmount)}</td>
@@ -298,6 +401,14 @@ function ReportSection() {
                     </button>
                   </td>
                 </tr>
+                {isOpen && (
+                  <tr className="bg-natural-50/60">
+                    <td colSpan={branchId ? 6 : 7} className="px-3 py-2">
+                      <PlateDetail busy={detailBusy} items={detail?.key === key ? detail.items : null} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
             {!rows.length && <tr><td colSpan={branchId ? 6 : 7} className="px-3 py-6 text-center text-natural-muted">{loading ? 'กำลังโหลด...' : 'ไม่มีข้อมูลรถร่วมในรอบนี้ (หรือยังไม่เลือกรอบ)'}</td></tr>}
@@ -319,8 +430,186 @@ function ReportSection() {
         </table>
         <p className="text-xs text-natural-muted mt-2">
           ส่วนต่าง = ค่าเที่ยวจ่ายจริง − ต้นทุนน้ำมันที่คิด · <span className="text-emerald-700">บวก</span> = จ่ายจริงแพงกว่าต้นทุน · <span className="text-brand-red">ลบ</span> = จ่ายจริงถูกกว่าต้นทุน ·
-          ต้นทุนน้ำมันคิดจาก DOH ระยะถนนจริง (loop nearest-neighbor) × ราคาดีเซลล่าสุดของสาขา
+          ต้นทุนน้ำมันคิดจาก DOH ระยะถนนจริง (loop nearest-neighbor) × ราคาดีเซลล่าสุดของสาขา · รวมน้ำมันขึ้นเขา (ถ้าปลายทางอยู่ในลิสต์ ⛰️)
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ===== ตั้งค่าสูตร (fuelPolicy — ชุดเดียวทั้งบริษัท) =====
+type Policy = {
+  nearSpeedKmh: number; farSpeedKmh: number; speedThresholdKm: number; fuelEfficiencyKmPerL: number;
+  driverHourlyRate: number; unloadingMinutesPerStore: number; baseBoxes: number; lumpSumBoxThreshold: number; finalRoundingDecimals: number;
+};
+// ช่องที่ให้แก้ใน UI (baseBoxes/finalRoundingDecimals เชิงเทคนิค ไม่โชว์)
+const POLICY_FIELDS: { key: keyof Policy; label: string; unit: string; step?: string }[] = [
+  { key: 'nearSpeedKmh', label: 'ความเร็วขับรถใกล้', unit: 'กม./ชม.' },
+  { key: 'farSpeedKmh', label: 'ความเร็วขับรถไกล', unit: 'กม./ชม.' },
+  { key: 'speedThresholdKm', label: 'จุดตัดใกล้/ไกล (ระยะสูงสุด ≤ นี้ = ใช้ความเร็วใกล้)', unit: 'กม.' },
+  { key: 'fuelEfficiencyKmPerL', label: 'อัตราสิ้นเปลืองน้ำมัน', unit: 'กม./ลิตร', step: '0.1' },
+  { key: 'driverHourlyRate', label: 'ค่าแรงคนขับ', unit: 'บาท/ชม.', step: '0.01' },
+  { key: 'unloadingMinutesPerStore', label: 'เวลาลงสินค้าต่อจุด', unit: 'นาที' },
+  { key: 'lumpSumBoxThreshold', label: 'เส้นแบ่งเหมา (กล่อง ≤ นี้ = เหมาทั้งเที่ยว)', unit: 'กล่อง' },
+];
+function PolicySection() {
+  const [policy, setPolicy] = useState<Policy | null>(null);
+  const [defaults, setDefaults] = useState<Policy | null>(null);
+  const [isDefault, setIsDefault] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = async () => {
+    try {
+      const r = await fetch(api('/api/experimental/fuel-policy'));
+      const j = await r.json();
+      setPolicy(j.policy); setDefaults(j.defaults); setIsDefault(j.isDefault);
+    } catch (e: any) { setMsg('❌ ' + e.message); }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const save = async () => {
+    if (!policy) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await fetch(api('/api/experimental/fuel-policy'), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ policy }),
+      });
+      const j = await r.json();
+      if (!j.success) setMsg('❌ ' + j.error);
+      else { setMsg('✅ บันทึกแล้ว — รายงานคิดใหม่ตามค่าใหม่ (ระยะที่คิดไว้ใช้ได้)'); setIsDefault(false); }
+    } catch (e: any) { setMsg('❌ ' + e.message); } finally { setBusy(false); }
+  };
+  const resetDefault = () => { if (defaults) { setPolicy({ ...defaults }); setMsg('ตั้งเป็นค่าเริ่มต้น (ยังไม่บันทึก — กด "บันทึก" เพื่อยืนยัน)'); } };
+
+  if (!policy) return <div className="rounded-xl bg-white border p-4 text-sm text-natural-muted">กำลังโหลด...</div>;
+  return (
+    <div className="rounded-xl bg-white border p-4 space-y-4 max-w-2xl">
+      <div>
+        <h3 className="font-bold text-brand-navy">⚙️ ตั้งค่าสูตรคำนวณ (ใช้ร่วมทุกสาขา)</h3>
+        <p className="text-sm text-natural-muted mt-1">
+          ค่าเหล่านี้ใช้คิดเบี้ยขับ + ค่าน้ำมันทั้งหน้า "คำนวณ 1 เที่ยว" และ "เทียบต้นทุน" · แก้แล้วมีผลทันที (รายงานคิดใหม่ตามค่าใหม่)
+          {isDefault && <span className="ml-1 text-amber-600">· ตอนนี้ใช้ค่าเริ่มต้น (ยังไม่เคยตั้งเอง)</span>}
+        </p>
+      </div>
+      <div className="grid md:grid-cols-2 gap-3 text-sm">
+        {POLICY_FIELDS.map((f) => (
+          <label key={f.key} className="block">
+            {f.label}
+            <div className="flex items-center gap-2 mt-1">
+              <input type="number" step={f.step || '1'} value={policy[f.key]}
+                onChange={(e) => setPolicy({ ...policy, [f.key]: e.target.value === '' ? 0 : Number(e.target.value) })}
+                className="w-full border rounded-lg px-2 py-1.5" />
+              <span className="text-natural-muted whitespace-nowrap text-xs">{f.unit}</span>
+            </div>
+          </label>
+        ))}
+      </div>
+      {msg && <div className="text-sm rounded-lg bg-natural-50 px-3 py-2">{msg}</div>}
+      <div className="flex gap-2">
+        <button onClick={save} disabled={busy} className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50">💾 บันทึก</button>
+        <button onClick={resetDefault} disabled={busy} className="bg-natural-100 text-brand-navy rounded-lg px-4 py-2 text-sm font-semibold">คืนค่าเริ่มต้น</button>
+      </div>
+      <p className="text-xs text-natural-muted">
+        หมายเหตุ: ค่าแรง 150 บาท/ชม. = 1,200 บาท ÷ 8 ชม. · เบี้ยขับ = (เวลาเดินทาง + เวลาลงของ) × ค่าแรง/ชม. · ค่าน้ำมัน = (ระยะ ÷ อัตราสิ้นเปลือง) × ราคาดีเซล
+      </p>
+    </div>
+  );
+}
+
+// ===== master น้ำมันขึ้นเขา (ลิตรเพิ่มต่อปลายทาง) =====
+interface MountainRoute { id: string; province: string; district?: string; extraLiters: number; note?: string; createdAt: string; }
+function MountainSection() {
+  const [routes, setRoutes] = useState<MountainRoute[]>([]);
+  const [destOpts, setDestOpts] = useState<{ province: string; districts: string[] }[]>([]); // จังหวัด->อำเภอ ที่มีจริงในระบบ
+  const [form, setForm] = useState({ province: '', district: '', extraLiters: '', note: '' });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  const load = async () => {
+    try { const r = await fetch(api('/api/experimental/mountain-routes')); setRoutes((await r.json()).routes || []); }
+    catch (e: any) { setMsg('❌ ' + e.message); }
+  };
+  // โหลดรายการปลายทางที่มีจริง (dropdown) — กันพิมพ์ผิด/ต้อง match เป๊ะ
+  useEffect(() => {
+    load();
+    fetch(api('/api/experimental/dest-options')).then((r) => r.json()).then((j) => setDestOpts(j.provinces || [])).catch(() => {});
+  }, []); // eslint-disable-line
+  const districtsOf = (prov: string) => destOpts.find((p) => p.province === prov)?.districts || [];
+
+  const add = async () => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await fetch(api('/api/experimental/mountain-routes'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ province: form.province, district: form.district, extraLiters: Number(form.extraLiters), note: form.note }),
+      });
+      const j = await r.json();
+      if (!j.success) setMsg('❌ ' + j.error);
+      else { setMsg('✅ เพิ่มแล้ว'); setForm({ province: '', district: '', extraLiters: '', note: '' }); await load(); }
+    } catch (e: any) { setMsg('❌ ' + e.message); } finally { setBusy(false); }
+  };
+
+  const del = async (id: string, label: string) => {
+    if (!window.confirm(`ลบเส้นทางขึ้นเขา "${label}"?`)) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await fetch(api(`/api/experimental/mountain-routes/${id}`), { method: 'DELETE' });
+      const j = await r.json();
+      if (!j.success) setMsg('❌ ' + j.error); else { setMsg('✅ ลบแล้ว'); await load(); }
+    } catch (e: any) { setMsg('❌ ' + e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl bg-white border p-4 space-y-3">
+        <h3 className="font-bold text-brand-navy">⛰️ เส้นทางขึ้นเขา (น้ำมันเพิ่ม)</h3>
+        <p className="text-sm text-natural-muted">
+          ปลายทางที่ต้อง <b>บวกน้ำมันเพิ่ม</b> (ขึ้นดอย/ภูเขา) — ระบุเป็น <b>ลิตรเพิ่มต่อเที่ยว</b> จะถูก <b>คูณราคาดีเซลของสาขา</b> แล้วบวกเข้าต้นทุนน้ำมัน ·
+          อำเภอว่าง = ทั้งจังหวัด · ใบที่ผ่านปลายทางในลิสต์นี้จะถูกคิดเพิ่มอัตโนมัติ (คิดใหม่หลังแก้)
+        </p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+          <label>จังหวัด*
+            <select value={form.province} onChange={(e) => setForm({ ...form, province: e.target.value, district: '' })} className="mt-1 w-full border rounded-lg px-2 py-1.5 bg-white">
+              <option value="">— เลือกจังหวัด —</option>
+              {destOpts.map((p) => <option key={p.province} value={p.province}>{p.province}</option>)}
+            </select>
+          </label>
+          <label>อำเภอ (ว่าง=ทั้งจังหวัด)
+            <select value={form.district} onChange={(e) => setForm({ ...form, district: e.target.value })} disabled={!form.province} className="mt-1 w-full border rounded-lg px-2 py-1.5 bg-white disabled:opacity-60">
+              <option value="">ทั้งจังหวัด</option>
+              {districtsOf(form.province).map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </label>
+          <label>ลิตรเพิ่ม*<input type="number" step="0.1" value={form.extraLiters} onChange={(e) => setForm({ ...form, extraLiters: e.target.value })} placeholder="เช่น 5" className="mt-1 w-full border rounded-lg px-2 py-1.5" /></label>
+          <label>หมายเหตุ<input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="เช่น ขึ้นดอย" className="mt-1 w-full border rounded-lg px-2 py-1.5" /></label>
+        </div>
+        <button onClick={add} disabled={busy || !form.province || !form.extraLiters} className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50">+ เพิ่มเส้นทาง</button>
+        {msg && <div className="text-sm rounded-lg bg-natural-50 px-3 py-2">{msg}</div>}
+      </div>
+
+      <div className="rounded-xl bg-white border p-4 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="bg-natural-100 text-left">
+            <th className="px-3 py-2 rounded-l-lg">จังหวัด</th><th className="px-3 py-2">อำเภอ</th>
+            <th className="px-3 py-2 text-right">ลิตรเพิ่ม</th><th className="px-3 py-2">หมายเหตุ</th>
+            <th className="px-3 py-2 rounded-r-lg text-right">ลบ</th>
+          </tr></thead>
+          <tbody>
+            {routes.map((r) => (
+              <tr key={r.id} className="border-b last:border-0">
+                <td className="px-3 py-2 font-semibold">{r.province}</td>
+                <td className="px-3 py-2">{r.district || <span className="text-natural-muted">ทั้งจังหวัด</span>}</td>
+                <td className="px-3 py-2 text-right font-bold text-brand-navy">{r.extraLiters} ลิตร</td>
+                <td className="px-3 py-2 text-natural-muted">{r.note || '-'}</td>
+                <td className="px-3 py-2 text-right">
+                  <button onClick={() => del(r.id, `${r.province}${r.district ? ' / ' + r.district : ''}`)} disabled={busy} className="text-brand-red text-xs font-semibold hover:underline">ลบ</button>
+                </td>
+              </tr>
+            ))}
+            {!routes.length && <tr><td colSpan={5} className="px-3 py-6 text-center text-natural-muted">ยังไม่มีเส้นทางขึ้นเขา — เพิ่มด้านบน</td></tr>}
+          </tbody>
+        </table>
       </div>
     </div>
   );

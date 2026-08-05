@@ -18,7 +18,15 @@ export default defineConfig(() => {
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // ignore .claude/ (permission auto-add) + db.json + scratchpad — กันหน้า reload ตัวเองรัวๆ ตอน dev (กดปุ่มไม่ติด)
+      // ignore ไฟล์ฝั่ง server + config + ข้อมูล — Vite watch เฉพาะ frontend (src/) กันหน้า reload รัวๆ ตอน dev (กดปุ่มไม่ติด)
+      watch: process.env.DISABLE_HMR === 'true' ? null : {
+        ignored: [
+          '**/.claude/**', '**/db.json', '**/Excel/**', '**/node_modules/**',
+          '**/server.ts', '**/server-db.ts', '**/experimental-routes.ts', // ฝั่ง server (tsx รันแยก ไม่เกี่ยว frontend)
+          '**/*.test.mts', '**/scratchpad/**',
+        ],
+      },
     },
   };
 });
