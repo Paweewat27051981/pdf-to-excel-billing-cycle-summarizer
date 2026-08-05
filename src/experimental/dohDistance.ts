@@ -37,16 +37,41 @@ async function withRetry<T>(fn: () => Promise<T>, n = 2): Promise<T> {
 const geoCache = new Map<string, LatLon | null>();     // "อ.เมือง|นครสวรรค์" -> พิกัด
 const routeCache = new Map<string, number | null>();   // "lat,lon>lat,lon" -> กม.
 
-/** ค้นชื่ออำเภอ -> พิกัด (cache). key = อำเภอ+จังหวัด */
+/** ยิง DOH search 1 keyword -> พิกัด (ไม่ cache) */
+async function dohSearch(keyword: string): Promise<LatLon | null> {
+  const url = `https://map.doh.go.th/mapsearch/json/search?keyword=${encodeURIComponent(keyword)}&offset=0&locale=th&dataset=data2p,data2r,data2a,data2b,change,con,m2h&key=${KEY}`;
+  const body = await withRetry(() => httpGet(url));
+  const d = (JSON.parse(body).data || []).find((x: any) => x && typeof x.lat === 'number' && typeof x.lon === 'number');
+  return d ? { lat: d.lat, lon: d.lon } : null;
+}
+
+// map ชื่อจังหวัดย่อ -> ชื่อเต็มที่ DOH รู้จัก (ข้อมูลใบใช้ชื่อย่อ)
+const PROVINCE_ALIAS: Record<string, string> = {
+  'อยุธยา': 'พระนครศรีอยุธยา',
+};
+/**
+ * ค้นชื่ออำเภอ -> พิกัด (cache). key = อำเภอ+จังหวัด
+ * ข้อมูลใบมีหลายรูปแบบ (มี "อ."/"เขต " นำหน้า, จังหวัดชื่อย่อ) — ลอง keyword หลายแบบ ตัวแรกที่เจอ = ใช้
+ * (ปลายทางนอกพื้นที่สาขา เช่น กทม.ในใบต่างจังหวัด ถูกกรองที่ชั้น endpoint ด้วย serviceArea ก่อนถึงตรงนี้)
+ */
 export async function geocodeDistrict(district: string, province: string): Promise<LatLon | null> {
   const ck = `${district}|${province}`;
   if (geoCache.has(ck)) return geoCache.get(ck)!;
-  const keyword = `อ.${district} จ.${province}`; // ทดสอบแล้ว DOH search รับรูปแบบนี้ตรง (เช่น "อ.เมืองนครสวรรค์ จ.นครสวรรค์")
-  const url = `https://map.doh.go.th/mapsearch/json/search?keyword=${encodeURIComponent(keyword)}&offset=0&locale=th&dataset=data2p,data2r,data2a,data2b,change,con,m2h&key=${KEY}`;
+  // ล้างคำนำหน้าที่ข้อมูลใบใส่มา (อ., เขต, จ.) เหลือชื่อล้วน
+  const d = district.replace(/^(อ\.|เขต\s*|อำเภอ\s*)/g, '').trim();
+  const prov = province.trim();
+  const provFull = PROVINCE_ALIAS[prov] || prov;             // แปลงชื่อย่อ -> เต็ม
+
+  // รายการ keyword ที่จะลองตามลำดับ (dedupe อัตโนมัติ)
+  const attempts: string[] = [];
+  const add = (s: string) => { if (s && !attempts.includes(s)) attempts.push(s); };
+  add(`อ.${d} จ.${provFull}`);           // มาตรฐาน
+  if (d === 'เมือง') add(`อ.เมือง${provFull} จ.${provFull}`); // "เมือง" -> ชื่อเต็ม "เมือง<จังหวัด>"
+  add(`${d} ${provFull}`);               // fallback สุดท้าย: ชื่อล้วน + จังหวัด (ครอบเคสที่ DOH ไม่รับ อ./จ.)
+
   try {
-    const body = await withRetry(() => httpGet(url));
-    const d = (JSON.parse(body).data || []).find((x: any) => x && typeof x.lat === 'number' && typeof x.lon === 'number');
-    const out = d ? { lat: d.lat, lon: d.lon } : null;
+    let out: LatLon | null = null;
+    for (const kw of attempts) { out = await dohSearch(kw); if (out) break; }
     geoCache.set(ck, out);
     return out;
   } catch { geoCache.set(ck, null); return null; }
