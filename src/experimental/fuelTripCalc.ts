@@ -119,31 +119,38 @@ export interface LoopTripCost {
   travelHours: number;
   unloadingHours: number;
   driverAllowance: number; // เบี้ยขับ
-  fuelCost: number;        // ค่าน้ำมัน
+  mountainLiters: number;  // ลิตรน้ำมันขึ้นเขา (match ปลายทาง)
+  mountainFuelCost: number; // ค่าน้ำมันขึ้นเขา = ลิตรขึ้นเขา × ราคา
+  fuelCost: number;        // ค่าน้ำมันรวม (ระยะปกติ + ขึ้นเขา)
   totalCost: number;       // ต้นทุนรวม (เบี้ยขับ + น้ำมัน) — ปัด 2 ตำแหน่ง
 }
 
 /**
  * คิดต้นทุนน้ำมัน 1 ใบ จาก "ระยะลูปจริง" (loopKm = ไป-กลับครบแล้ว ไม่ต้อง ×2)
  * ความเร็วเลือกจากระยะทางเที่ยวเดียว (loopKm/2) เทียบ speedThreshold
- * ต้นทุน = เบี้ยขับ((เวลาเดินทาง+เวลาลงของ)×ค่าแรง) + ค่าน้ำมัน(loopKm÷efficiency×ราคา)
+ * ต้นทุน = เบี้ยขับ((เวลาเดินทาง+เวลาลงของ)×ค่าแรง) + ค่าน้ำมัน((ระยะ÷efficiency + ลิตรขึ้นเขา)×ราคา)
+ * @param mountainLiters ลิตรน้ำมันขึ้นเขาของใบ (จาก master ต่อปลายทาง) — คูณราคาเดียวกับน้ำมันปกติ
  */
 export function computeLoopTripCost(
   loopKm: number, storeCount: number, oilPrice: number, policy: FuelTripPolicy = DEFAULT_FUEL_POLICY,
+  mountainLiters = 0,
 ): LoopTripCost {
   const km = Number.isFinite(loopKm) && loopKm > 0 ? loopKm : 0;
+  const mtnLiters = Number.isFinite(mountainLiters) && mountainLiters > 0 ? mountainLiters : 0;
   // ยังไม่ใส่ระยะ (km<=0) -> คืน 0 ทั้งหมด (ให้ report ถือว่า "ไม่มีข้อมูล" ไม่ใช่คิดเบี้ยขับจากเวลาลงของ)
   if (km <= 0) {
-    return { loopKm: 0, storeCount, oilPrice, speedKmh: 0, travelHours: 0, unloadingHours: 0, driverAllowance: 0, fuelCost: 0, totalCost: 0 };
+    return { loopKm: 0, storeCount, oilPrice, speedKmh: 0, travelHours: 0, unloadingHours: 0, driverAllowance: 0, mountainLiters: 0, mountainFuelCost: 0, fuelCost: 0, totalCost: 0 };
   }
   const oneWayKm = km / 2; // ประมาณระยะเที่ยวเดียว เพื่อเลือกความเร็ว
   const speedKmh = oneWayKm <= policy.speedThresholdKm ? policy.nearSpeedKmh : policy.farSpeedKmh;
   const travelHours = speedKmh > 0 ? km / speedKmh : 0;
   const unloadingHours = (storeCount * policy.unloadingMinutesPerStore) / 60;
   const driverAllowance = (travelHours + unloadingHours) * policy.driverHourlyRate;
-  const fuelCost = (km / policy.fuelEfficiencyKmPerL) * oilPrice;
+  const mountainFuelCost = mtnLiters * oilPrice;
+  const fuelCost = (km / policy.fuelEfficiencyKmPerL) * oilPrice + mountainFuelCost;
   return {
     loopKm: km, storeCount, oilPrice, speedKmh, travelHours, unloadingHours,
-    driverAllowance, fuelCost, totalCost: roundHalfUp(driverAllowance + fuelCost, 2),
+    driverAllowance, mountainLiters: mtnLiters, mountainFuelCost, fuelCost,
+    totalCost: roundHalfUp(driverAllowance + fuelCost, 2),
   };
 }

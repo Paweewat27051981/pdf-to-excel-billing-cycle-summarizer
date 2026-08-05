@@ -82,6 +82,17 @@ check('loop totalCost (ปัด)', loop.totalCost, 1303.41, 0.001);
 check('loop สั้น speed (oneWay 30<=84 -> 50)', computeLoopTripCost(60, 2, 38).speedKmh, 50);
 // loopKm=0 -> ไม่พัง
 check('loopKm 0 -> totalCost 0', computeLoopTripCost(0, 3, 38).totalCost, 0);
+// น้ำมันขึ้นเขา: +5 ลิตร × 36.69 = 183.45 บวกเข้า fuelCost (177 กม เดิม)
+import { DEFAULT_FUEL_POLICY as POL } from './fuelTripCalc.js';
+const mtn = computeLoopTripCost(177, 4, 36.69, POL, 5);
+check('mountainLiters echo', mtn.mountainLiters, 5);
+check('mountainFuelCost (5*36.69)', mtn.mountainFuelCost, 183.45, 0.001);
+check('fuelCost รวมขึ้นเขา (649.413+183.45)', mtn.fuelCost, 832.863, 0.001);
+check('totalCost รวมขึ้นเขา (654+832.863)', mtn.totalCost, 1486.86, 0.01);
+// ลิตรขึ้นเขาติดลบ/NaN -> ปัดเป็น 0 (กัน master กรอกพลาด)
+check('mountainLiters ลบ -> 0', computeLoopTripCost(177, 4, 36.69, POL, -3).mountainFuelCost, 0);
+// km<=0 แต่มีลิตรขึ้นเขา -> ยัง 0 (ไม่มีระยะ = ไม่มีข้อมูล ไม่คิดอะไรเลย)
+check('km 0 + ขึ้นเขา -> 0', computeLoopTripCost(0, 4, 36.69, POL, 5).totalCost, 0);
 
 console.log(`\n=== สรุป: ผ่าน ${pass} | ตก ${fail} ===`);
 console.log('policy ที่ใช้:', JSON.stringify(DEFAULT_FUEL_POLICY));

@@ -6,7 +6,8 @@ import type { Express, Request, Response } from 'express';
 import { fetchCurrentOilPrice, fetchProvincialOilPrice, fetchHistoricalProvincialOilPrice, pickDiesel, summarizeProvinceDiesel, fetchBranchDiesel, BRANCH_OIL_CONFIGS, BranchOilConfig } from './src/experimental/orOilPrice.js';
 import { computeFuelTrip, DEFAULT_FUEL_POLICY, FuelTripInput, FuelTripPolicy, computeLoopTripCost } from './src/experimental/fuelTripCalc.js';
 import { geocodeDistrict, nearestNeighborLoop, LoopStop } from './src/experimental/dohDistance.js';
-import type { OilPriceRecord, TripDistanceRecord } from './src/types.js';
+import { parseServiceAreas, inServiceArea } from './src/serviceArea.js';
+import type { OilPriceRecord, TripDistanceRecord, MountainRouteRecord, FuelPolicyRecord } from './src/types.js';
 
 // พิกัดคลัง 6 สาขา (จุดต้นทางของลูป) — จาก Google Maps ผู้ใช้
 const WAREHOUSES: Record<string, { lat: number; lon: number }> = {
@@ -26,7 +27,7 @@ const BRANCH_ID_NAME: Record<string, string> = {
 export function registerExperimentalRoutes(
   app: Express,
   // inject จาก server (ใช้ getDb/saveRecord เดิม — ไม่ผูก import วนกัน)
-  deps: { getDb: () => Promise<any>; saveRecord: (coll: any, rec: { id: string }) => Promise<void>; genId: (p: string) => string },
+  deps: { getDb: () => Promise<any>; saveRecord: (coll: any, rec: { id: string }) => Promise<void>; removeRecord: (coll: any, id: string) => Promise<void>; flushCollection: (coll: any) => Promise<void>; genId: (p: string) => string },
 ): void {
   // ราคาน้ำมันจาก OR — ?province=<ชื่อไทย> (ว่าง = กทม./ปริมณฑล), &date=DD-MM-YYYY (ย้อนหลังรายจังหวัด)
   app.get('/api/experimental/oil-price', async (req: Request, res: Response) => {
@@ -147,25 +148,169 @@ export function registerExperimentalRoutes(
     }
   });
 
+  // ===== ค่าตั้งสูตร (fuelPolicy — ชุดเดียวทั้งบริษัท) =====
+  const POLICY_KEYS: (keyof FuelTripPolicy)[] = [
+    'nearSpeedKmh', 'farSpeedKmh', 'speedThresholdKm', 'fuelEfficiencyKmPerL',
+    'driverHourlyRate', 'unloadingMinutesPerStore', 'baseBoxes', 'lumpSumBoxThreshold', 'finalRoundingDecimals',
+  ];
+  // policy ปัจจุบัน = ที่ตั้งไว้ (เติม default field ที่ขาด) หรือ default ทั้งชุด
+  const effectivePolicy = (db: any): FuelTripPolicy => ({ ...DEFAULT_FUEL_POLICY, ...(db.fuelPolicy || {}) });
+  // signature ของ policy (ใส่ใน fingerprint cache ระยะ — แก้ policy แล้ว report คิดใหม่)
+  const policySig = (p: FuelTripPolicy): string => POLICY_KEYS.map((k) => p[k]).join(',');
+
+  app.get('/api/experimental/fuel-policy', async (_req: Request, res: Response) => {
+    try {
+      const db = await deps.getDb();
+      res.json({ policy: effectivePolicy(db), isDefault: !db.fuelPolicy, defaults: DEFAULT_FUEL_POLICY });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+  // PUT ตั้งค่า (validate ทุกค่าเป็นตัวเลข > 0; speedThreshold/finalRoundingDecimals >= 0)
+  app.put('/api/experimental/fuel-policy', async (req: Request, res: Response) => {
+    try {
+      const b = (req.body?.policy || {}) as Record<string, unknown>;
+      const out = {} as FuelPolicyRecord;
+      for (const k of POLICY_KEYS) {
+        const v = Number(b[k]);
+        if (!Number.isFinite(v)) return res.status(400).json({ error: `ค่า ${k} ต้องเป็นตัวเลข` });
+        // อนุญาต 0 เฉพาะ finalRoundingDecimals (ปัดจำนวนเต็ม); ที่เหลือต้อง > 0
+        if (v < 0 || (v === 0 && k !== 'finalRoundingDecimals')) return res.status(400).json({ error: `ค่า ${k} ต้อง > 0` });
+        (out as any)[k] = v;
+      }
+      out.updatedAt = new Date().toISOString();
+      const db = await deps.getDb();
+      db.fuelPolicy = out;
+      await deps.flushCollection('fuelPolicy'); // เขียนเฉพาะ node นี้ (เล็ก ไม่ hang)
+      res.json({ success: true, policy: { ...DEFAULT_FUEL_POLICY, ...out } });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ===== master น้ำมันขึ้นเขา (ลิตรเพิ่มต่อปลายทาง) =====
+  const norm = (s: string) => (s || '').trim();
+  // GET รายการทั้งหมด
+  app.get('/api/experimental/mountain-routes', async (_req: Request, res: Response) => {
+    try {
+      const db = await deps.getDb();
+      res.json({ routes: (db.mountainRoutes || []) as MountainRouteRecord[] });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+  // POST เพิ่ม (จังหวัดบังคับ, อำเภอว่าง=ทั้งจังหวัด, extraLiters > 0)
+  app.post('/api/experimental/mountain-routes', async (req: Request, res: Response) => {
+    try {
+      const b = req.body as { province?: string; district?: string; extraLiters?: unknown; note?: string };
+      const province = norm(b.province || '');
+      const district = norm(b.district || '');
+      const extraLiters = Number(b.extraLiters);
+      if (!province) return res.status(400).json({ error: 'ต้องระบุจังหวัด' });
+      if (!Number.isFinite(extraLiters) || extraLiters <= 0) return res.status(400).json({ error: 'ลิตรเพิ่มต้องเป็นตัวเลข > 0' });
+      const db = await deps.getDb();
+      if (!Array.isArray(db.mountainRoutes)) db.mountainRoutes = [];
+      // กันซ้ำ: จังหวัด+อำเภอเดียวกัน (case-insensitive trim)
+      const dup = (db.mountainRoutes as MountainRouteRecord[]).find((r) => norm(r.province) === province && norm(r.district || '') === district);
+      if (dup) return res.status(409).json({ error: `มีปลายทางนี้แล้ว: ${province}${district ? ' / ' + district : ' (ทั้งจังหวัด)'}` });
+      const rec: MountainRouteRecord = {
+        id: deps.genId('mtn'), province, district: district || undefined,
+        extraLiters, note: norm(b.note || '') || undefined, createdAt: new Date().toISOString(),
+      };
+      db.mountainRoutes.push(rec);
+      await deps.saveRecord('mountainRoutes', rec);
+      res.json({ success: true, route: rec });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+  // DELETE
+  app.delete('/api/experimental/mountain-routes/:id', async (req: Request, res: Response) => {
+    try {
+      const db = await deps.getDb();
+      const idx = (db.mountainRoutes || []).findIndex((r: MountainRouteRecord) => r.id === req.params.id);
+      if (idx < 0) return res.status(404).json({ error: 'ไม่พบรายการ' });
+      db.mountainRoutes.splice(idx, 1);
+      await deps.removeRecord('mountainRoutes', req.params.id);
+      res.json({ success: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // รายการจังหวัด -> อำเภอ ที่มี "จริง" ในใบกระจาย (สำหรับ dropdown master ขึ้นเขา — กันพิมพ์ผิด/ต้อง match เป๊ะ)
+  app.get('/api/experimental/dest-options', async (_req: Request, res: Response) => {
+    try {
+      const db = await deps.getDb();
+      const map = new Map<string, Set<string>>(); // province -> set(district)
+      for (const t of (db.tripDocuments || [])) {
+        for (const r of (t.receipts || [])) {
+          const province = norm(r.provinceRaw || ''); const district = norm(r.districtRaw || '');
+          if (!province) continue;
+          if (!map.has(province)) map.set(province, new Set());
+          if (district) map.get(province)!.add(district);
+        }
+      }
+      const provinces = [...map.entries()]
+        .map(([province, ds]) => ({ province, districts: [...ds].sort((a, b) => a.localeCompare(b, 'th')) }))
+        .sort((a, b) => a.province.localeCompare(b.province, 'th'));
+      res.json({ provinces });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // รวมลิตรน้ำมันขึ้นเขาของใบ = ผลรวม extraLiters ของทุกปลายทางที่ match (ต่อ 1 ปลายทาง เลือก route "เจาะจงที่สุด")
+  // เจาะจง: อำเภอตรง > ทั้งจังหวัด (กันเพิ่ม route ทั้งจังหวัดก่อนแล้วบัง route อำเภอเฉพาะ)
+  const mountainLitersFor = (dests: { district: string; province: string }[], routes: MountainRouteRecord[]): number => {
+    let total = 0;
+    for (const d of dests) {
+      const dDist = norm(d.district), dProv = norm(d.province);
+      let districtMatch: number | null = null, provinceMatch: number | null = null;
+      for (const r of routes) {
+        if (norm(r.province) !== dProv) continue;
+        const rDist = norm(r.district || '');
+        if (rDist && rDist === dDist) districtMatch = (districtMatch ?? 0) + (r.extraLiters || 0); // อำเภอเฉพาะ (รวมถ้ามีหลาย row)
+        else if (rDist === '') provinceMatch = (provinceMatch ?? 0) + (r.extraLiters || 0);        // ทั้งจังหวัด
+      }
+      total += districtMatch ?? provinceMatch ?? 0; // มีอำเภอเฉพาะ = ใช้อันนั้น (บัง province default)
+    }
+    return total;
+  };
+
   // ===== รายงานเทียบต้นทุน (DOH ระยะจริง) =====
-  // helper: อำเภอ distinct ของใบ (เรียงตาม normalQty มากสุดไม่สำคัญ — nearest-neighbor เรียงเอง)
-  const tripDests = (t: any): { district: string; province: string }[] => {
+  // ใช้ "พื้นที่ให้บริการต่อสาขา" (serviceAreaText ที่ HQ ตั้งไว้) กรองปลายทางที่ปนมาผิด (เช่น กทม.ในใบพิษณุโลก)
+  // อ่านพื้นที่สดทุกครั้ง (ไม่ cache — HQ แก้พื้นที่แล้วมีผลทันที)
+  const getAreas = (db: any, branchId: string) =>
+    parseServiceAreas(((db.branches || []).find((x: any) => x.id === branchId)?.serviceAreaText) || '');
+  // ใบรับนี้มีราคา (สาขาวิ่งจริง) — ตรงกับ hasRate ใน App.tsx
+  const hasRate = (r: any): boolean =>
+    r.flatPrice != null || r.piecePrice != null || r.collectPrice != null || r.collectFlatPrice != null || r.peatPrice != null;
+  // ปลายทางนี้ต้อง "ทิ้ง" ไหม = นอกพื้นที่สาขา และ ไม่มีราคา (ปลายทางมีราคา=วิ่งจริง เก็บไว้ ตรงกับ save path)
+  const dropReceipt = (areas: any, r: any): boolean =>
+    !hasRate(r) && !inServiceArea(areas, (r.provinceRaw || '').trim(), (r.districtRaw || '').trim());
+  // helper: อำเภอ distinct ของใบ (ทิ้งปลายทางนอกพื้นที่ที่ไม่มีราคา) — nearest-neighbor เรียงเอง
+  const tripDests = (t: any, db: any): { district: string; province: string }[] => {
+    const areas = getAreas(db, t.branchId);
     const seen = new Set<string>(); const out: { district: string; province: string }[] = [];
     for (const r of (t.receipts || [])) {
       const district = (r.districtRaw || '').trim(); const province = (r.provinceRaw || '').trim();
       if (!district && !province) continue;
+      if (dropReceipt(areas, r)) continue; // ปลายทางนอกพื้นที่ + ไม่มีราคา = ข้อมูลผิด ข้าม
       const k = `${district}|${province}`;
       if (!seen.has(k)) { seen.add(k); out.push({ district, province }); }
     }
     return out;
   };
-  // จำนวน "จุดลงของ" จริง (ใบรับที่มีปลายทาง) — ใช้คิดเวลาขนของ ต่างจาก route stops ที่ยุบอำเภอซ้ำ
-  const tripStoreCount = (t: any): number =>
-    (t.receipts || []).filter((r: any) => ((r.districtRaw || '').trim() || (r.provinceRaw || '').trim())).length;
-  // fingerprint ของ input ที่ใช้คิด (ปลายทาง + จำนวนจุดลง) — recalculate/แก้ใบรับ เปลี่ยนค่านี้ = cache stale ต้องคิดใหม่
-  const tripFingerprint = (t: any): string => {
-    const dk = tripDests(t).map((d) => `${d.district}|${d.province}`).sort().join(';');
-    return `${dk}#${tripStoreCount(t)}`;
+  // จำนวน "จุดลงของ" จริง (ใบรับที่มีปลายทาง หลังทิ้งของผิด) — ใช้คิดเวลาขนของ
+  // จำนวน "จุดลงของ" = ผู้รับ distinct ต่อปลายทาง (ผู้รับ+อำเภอ+จังหวัด)
+  // ร้านเดียวหลายใบรับ = แวะจุดเดียว (ไม่นับใบรับดิบ ไม่งั้นเบี้ยขับพองผิด เช่น รัตนภัณฑ์ 6 ใบ = 1 จุด)
+  const tripStoreCount = (t: any, db: any): number => {
+    const areas = getAreas(db, t.branchId);
+    const seen = new Set<string>();
+    for (const r of (t.receipts || [])) {
+      const district = (r.districtRaw || '').trim(); const province = (r.provinceRaw || '').trim();
+      if (!district && !province) continue;
+      if (dropReceipt(areas, r)) continue;
+      seen.add(`${(r.receiverName || '').trim()}|${district}|${province}`);
+    }
+    return seen.size;
+  };
+  // fingerprint ของ input ที่ใช้คิด (ปลายทาง + จำนวนจุดลง + ลิตรขึ้นเขา) — recalculate/แก้ใบรับ/แก้ master ขึ้นเขา เปลี่ยนค่านี้ = cache stale คิดใหม่
+  // NOTE: ต่อ #m<n> เฉพาะเมื่อมีลิตรขึ้นเขา (>0) — คง backward-compat กับ cache เดิม (m0 = รูปแบบเดิม ไม่ให้ stale ทั้งกระดาน)
+  const tripFingerprint = (t: any, routes: MountainRouteRecord[], db: any): string => {
+    const dests = tripDests(t, db);
+    const dk = dests.map((d) => `${d.district}|${d.province}`).sort().join(';');
+    const mtn = mountainLitersFor(dests, routes);
+    return `${dk}#${tripStoreCount(t, db)}${mtn > 0 ? `#m${mtn}` : ''}`;
   };
 
   // GET รายงานต่อทะเบียน (อ่าน cache ที่คิดไว้แล้ว — ไม่ยิง DOH) ?cycleId=&branchId=
@@ -175,6 +320,8 @@ export function registerExperimentalRoutes(
       const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : '';
       if (!cycleId) return res.status(400).json({ error: 'ต้องระบุ cycleId' });
       const db = await deps.getDb();
+      const policy = effectivePolicy(db); // ค่าตั้งสูตรปัจจุบัน (แก้แล้วมีผลทันทีกับต้นทุน — ระยะ cache เดิมใช้ได้)
+      const routes = (db.mountainRoutes || []) as MountainRouteRecord[];
       const distById = new Map<string, TripDistanceRecord>((db.tripDistances || []).map((d: TripDistanceRecord) => [d.tripId, d]));
       const trips = (db.tripDocuments || []).filter((t: any) => t.cycleId === cycleId && (!branchId || t.branchId === branchId));
       // ราคาน้ำมันอ้างอิงต่อสาขา — เลือก record "ล่าสุด" (priceDate ใหม่สุด ไม่งั้น fetchedAt)
@@ -195,11 +342,12 @@ export function registerExperimentalRoutes(
         const g = byPlate.get(key) || { branchId: t.branchId, branch: BRANCH_ID_NAME[t.branchId] || '', plateNo: p, tripCount: 0, tripAmount: 0, fuelCostBand: 0, computed: 0, missing: 0 };
         g.tripCount++; g.tripAmount += t.tripAmount || 0;
         const dist = distById.get(t.id);
-        // นับ computed ต่อเมื่อ: มีระยะ + ครบทุกจุด + fingerprint ตรงปัจจุบัน (ปลายทาง/จุดลงไม่เปลี่ยนหลัง recalculate)
-        if (dist && dist.loopKm > 0 && !(dist.missing && dist.missing.length) && dist.destKey === tripFingerprint(t)) {
+        // นับ computed ต่อเมื่อ: มีระยะ + ครบทุกจุด + fingerprint ตรงปัจจุบัน (ปลายทาง/จุดลง/ลิตรขึ้นเขาไม่เปลี่ยน)
+        if (dist && dist.loopKm > 0 && !(dist.missing && dist.missing.length) && dist.destKey === tripFingerprint(t, routes, db)) {
           const branchName = BRANCH_ID_NAME[t.branchId] || '';
           const oil = oilByBranch.get(branchName) ?? 0;
-          if (oil > 0) { g.fuelCostBand += computeLoopTripCost(dist.loopKm, dist.storeCount, oil).totalCost; g.computed++; }
+          // ลิตรขึ้นเขาใช้ค่าที่ cache ตอนคิด (fingerprint คุมความ fresh แล้ว) — คูณราคาน้ำมันปัจจุบัน
+          if (oil > 0) { g.fuelCostBand += computeLoopTripCost(dist.loopKm, dist.storeCount, oil, policy, dist.mountainLiters || 0).totalCost; g.computed++; }
           else g.missing++;
         } else g.missing++;
         byPlate.set(key, g);
@@ -212,6 +360,48 @@ export function registerExperimentalRoutes(
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  // GET รายละเอียดต่อใบ ของ 1 ทะเบียน (สำหรับแถวขยาย) ?cycleId=&plateNo=&branchId=
+  app.get('/api/experimental/fuel-report/plate-detail', async (req: Request, res: Response) => {
+    try {
+      const cycleId = typeof req.query.cycleId === 'string' ? req.query.cycleId : '';
+      const plateNo = typeof req.query.plateNo === 'string' ? req.query.plateNo : '';
+      const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : '';
+      if (!cycleId || !plateNo) return res.status(400).json({ error: 'ต้องระบุ cycleId, plateNo' });
+      const db = await deps.getDb();
+      const policy = effectivePolicy(db);
+      const routes = (db.mountainRoutes || []) as MountainRouteRecord[];
+      const distById = new Map<string, TripDistanceRecord>((db.tripDistances || []).map((d: TripDistanceRecord) => [d.tripId, d]));
+      // ราคาน้ำมันล่าสุดต่อสาขา
+      const oilLatest = new Map<string, OilPriceRecord>();
+      for (const o of (db.oilPrices || []) as OilPriceRecord[]) {
+        const cur = oilLatest.get(o.branch);
+        if (!cur || (o.priceDate || '') > (cur.priceDate || '') || ((o.priceDate || '') === (cur.priceDate || '') && (o.fetchedAt || '') > (cur.fetchedAt || ''))) oilLatest.set(o.branch, o);
+      }
+      const trips = (db.tripDocuments || []).filter((t: any) => t.cycleId === cycleId && t.plateNo === plateNo && (!branchId || t.branchId === branchId));
+      const items = trips.map((t: any) => {
+        const dist = distById.get(t.id);
+        const dests = tripDests(t, db);
+        const branchName = BRANCH_ID_NAME[t.branchId] || '';
+        const oil = oilLatest.get(branchName)?.price ?? 0;
+        const fresh = !!dist && dist.loopKm > 0 && !(dist.missing && dist.missing.length) && dist.destKey === tripFingerprint(t, routes, db);
+        const cost = fresh && oil > 0 ? computeLoopTripCost(dist!.loopKm, dist!.storeCount, oil, policy, dist!.mountainLiters || 0) : null;
+        return {
+          documentNo: t.documentNo, tripAmount: t.tripAmount || 0,
+          dests: dests.map((d) => `${d.district}|${d.province}`),
+          loopKm: dist?.loopKm ?? null, order: dist?.order ?? [], storeCount: dist?.storeCount ?? 0,
+          mountainLiters: dist?.mountainLiters ?? 0, missing: dist?.missing ?? [],
+          oil, fresh,
+          driverAllowance: cost ? Math.round(cost.driverAllowance * 100) / 100 : null,
+          fuelCost: cost ? Math.round(cost.fuelCost * 100) / 100 : null,
+          mountainFuelCost: cost ? Math.round(cost.mountainFuelCost * 100) / 100 : null,
+          totalCost: cost ? cost.totalCost : null,
+          diff: cost ? Math.round(((t.tripAmount || 0) - cost.totalCost) * 100) / 100 : null,
+        };
+      });
+      res.json({ plateNo, branchId, count: items.length, items, policy });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // POST คิดระยะลูป+ต้นทุน ของ "1 ทะเบียน" (ยิง DOH เฉพาะใบที่ยังไม่ cache) — ผู้ใช้กดทีละคัน
   app.post('/api/experimental/fuel-report/compute-plate', async (req: Request, res: Response) => {
     try {
@@ -219,15 +409,16 @@ export function registerExperimentalRoutes(
       if (!cycleId || !plateNo) return res.status(400).json({ error: 'ต้องระบุ cycleId, plateNo' });
       const db = await deps.getDb();
       if (!Array.isArray(db.tripDistances)) db.tripDistances = [];
+      const routes = (db.mountainRoutes || []) as MountainRouteRecord[];
       const cached = new Map<string, TripDistanceRecord>((db.tripDistances as TripDistanceRecord[]).map((d) => [d.tripId, d]));
       // plateNo ไม่ unique ข้ามสาขา -> filter branchId ด้วย (ตรงกับ /fuel-report) กันไปคิดใบสาขาอื่น
       const trips = (db.tripDocuments || []).filter((t: any) => t.cycleId === cycleId && t.plateNo === plateNo && (!branchId || t.branchId === branchId));
       let computed = 0, skipped = 0;
       for (const t of trips) {
-        const dests = tripDests(t);
-        const destKey = tripFingerprint(t); // ปลายทาง + จำนวนจุดลง
+        const dests = tripDests(t, db);
+        const destKey = tripFingerprint(t, routes, db); // ปลายทาง + จำนวนจุดลง + ลิตรขึ้นเขา
         const prev = cached.get(t.id);
-        // skip เฉพาะ cache สมบูรณ์ (ไม่มี missing) + ปลายทางไม่เปลี่ยน — ล่มชั่วคราว/recalculate เปลี่ยนปลายทาง จะคิดใหม่
+        // skip เฉพาะ cache สมบูรณ์ (ไม่มี missing) + fingerprint ไม่เปลี่ยน — ล่มชั่วคราว/recalculate/แก้ master ขึ้นเขา จะคิดใหม่
         if (prev && !(prev.missing && prev.missing.length) && prev.destKey === destKey) { skipped++; continue; }
         const wh = WAREHOUSES[BRANCH_ID_NAME[t.branchId] || ''];
         if (!wh) { skipped++; continue; }
@@ -243,8 +434,9 @@ export function registerExperimentalRoutes(
         const rec: TripDistanceRecord = {
           id: prev ? prev.id : deps.genId('dist'), // คิดใหม่ = ทับ id เดิม (ไม่ให้ค้าง 2 record)
           tripId: t.id, branchId: t.branchId, branch: BRANCH_ID_NAME[t.branchId] || '', destKey,
-          loopKm: Math.round(loop.totalKm * 10) / 10, storeCount: tripStoreCount(t), // จุดลงของจริง (ไม่ใช่ distinct อำเภอ)
+          loopKm: Math.round(loop.totalKm * 10) / 10, storeCount: tripStoreCount(t, db), // จุดลงของจริง (ไม่ใช่ distinct อำเภอ)
           order: loop.order.map((o) => o.district), missing: missing.length ? missing : undefined,
+          mountainLiters: mountainLitersFor(dests, routes) || undefined, // ลิตรขึ้นเขารวม (match ปลายทางตอนคิด)
           computedAt: new Date().toISOString(),
         };
         if (prev) { const i = db.tripDistances.findIndex((d: TripDistanceRecord) => d.id === prev.id); if (i >= 0) db.tripDistances[i] = rec; else db.tripDistances.push(rec); }
@@ -258,7 +450,7 @@ export function registerExperimentalRoutes(
   });
 
   // คำนวณค่าจ้างรถร่วม (BAND) — ทดสอบสูตรผ่าน API ได้
-  app.post('/api/experimental/fuel-trip/calculate', (req: Request, res: Response) => {
+  app.post('/api/experimental/fuel-trip/calculate', async (req: Request, res: Response) => {
     try {
       const raw = req.body?.input as Record<string, unknown> | undefined;
       // ตรวจ field บังคับ + แปลงเป็น number (กันส่ง string มาแล้ว "85"+"113" ต่อสตริงตอนบวก)
@@ -271,7 +463,9 @@ export function registerExperimentalRoutes(
       const input = {} as FuelTripInput;
       for (const k of required) (input as any)[k] = Number(raw![k]);            // coerce -> number เสมอ
       for (const k of optional) if (raw![k] != null) (input as any)[k] = Number(raw![k]);
-      const policy = { ...DEFAULT_FUEL_POLICY, ...(req.body?.policy || {}) } as FuelTripPolicy;
+      // policy: ที่ตั้งไว้ใน db (ค่าตั้งสูตรทั้งบริษัท) เป็นฐาน + ทับด้วย policy ที่ส่งมา (ถ้ามี — สำหรับทดลอง)
+      const db = await deps.getDb();
+      const policy = { ...effectivePolicy(db), ...(req.body?.policy || {}) } as FuelTripPolicy;
       res.json({ breakdown: computeFuelTrip(input, policy), policyUsed: policy });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

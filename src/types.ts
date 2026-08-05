@@ -383,6 +383,32 @@ export interface DatabaseState {
   deductions: DeductionEntry[];
   oilPrices?: OilPriceRecord[]; // [ทดลอง] ราคาน้ำมัน OR ที่บันทึกถาวร (optional กัน DB เก่า)
   tripDistances?: TripDistanceRecord[]; // [ทดลอง] cache ระยะลูปต่อใบ (คิดจาก DOH ครั้งเดียว เก็บไว้)
+  mountainRoutes?: MountainRouteRecord[]; // [ทดลอง] master น้ำมันขึ้นเขา (ลิตรเพิ่มต่อปลายทาง)
+  fuelPolicy?: FuelPolicyRecord; // [ทดลอง] ค่าตั้งสูตรค่าจ้างรถร่วม (ชุดเดียวทั้งบริษัท) — ว่าง = ใช้ค่าเริ่มต้น
+}
+
+// [ทดลอง] ค่าตั้งสูตรค่าจ้างรถร่วม (ตรงกับ FuelTripPolicy ใน experimental/fuelTripCalc) — singleton
+export interface FuelPolicyRecord {
+  nearSpeedKmh: number;          // ความเร็วช่วงใกล้ (กม./ชม.)
+  farSpeedKmh: number;           // ความเร็วช่วงไกล
+  speedThresholdKm: number;      // จุดตัดความเร็ว (ระยะสูงสุด <= นี้ = ใช้ near)
+  fuelEfficiencyKmPerL: number;  // อัตราสิ้นเปลือง (กม./ลิตร)
+  driverHourlyRate: number;      // ค่าแรงคนขับ (บาท/ชม.)
+  unloadingMinutesPerStore: number; // เวลาลงของต่อจุด (นาที)
+  baseBoxes: number;             // กล่องฐานหาเรทต่อกล่อง
+  lumpSumBoxThreshold: number;   // เส้นแบ่งเหมา (กล่อง) — <= นี้ = เหมาทั้งเที่ยว
+  finalRoundingDecimals: number; // ปัดยอดสุดท้ายกี่ตำแหน่ง
+  updatedAt?: string;
+}
+
+// [ทดลอง] master น้ำมันขึ้นเขา — ปลายทางที่ต้องบวก "ลิตรเพิ่ม" (คูณราคาดีเซลสาขา บวกเข้าค่าน้ำมัน)
+export interface MountainRouteRecord {
+  id: string;
+  province: string;      // จังหวัดปลายทาง (บังคับ)
+  district?: string;     // อำเภอ (ว่าง = ทั้งจังหวัด)
+  extraLiters: number;   // ลิตรเพิ่มต่อเที่ยว (คูณราคาดีเซล)
+  note?: string;         // หมายเหตุ เช่น "ขึ้นดอย"
+  createdAt: string;
 }
 
 // [ทดลอง] cache ระยะทางลูปของ 1 ใบกระจาย (คิดจาก DOH RouteService ครั้งเดียว) — กันยิง API ซ้ำ
@@ -396,6 +422,7 @@ export interface TripDistanceRecord {
   storeCount: number;    // จำนวนจุดส่ง (อำเภอ distinct)
   order: string[];       // ลำดับอำเภอที่วิ่ง (nearest-neighbor)
   missing?: string[];    // อำเภอที่หาระยะไม่ได้
+  mountainLiters?: number; // ลิตรน้ำมันขึ้นเขารวมของใบ (match ปลายทางกับ mountainRoutes ตอนคิด) — report เอาไปคูณราคา
   computedAt: string;
 }
 

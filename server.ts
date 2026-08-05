@@ -980,7 +980,7 @@ async function startServer() {
   });
 
   // ===================== [ทดลอง] route แยก (ลบได้ ไม่กระทบของเดิม) =====================
-  registerExperimentalRoutes(app, { getDb, saveRecord, genId: generateId });
+  registerExperimentalRoutes(app, { getDb, saveRecord, removeRecord, flushCollection, genId: generateId });
   startOilPriceScheduler({ getDb, saveRecord, genId: generateId }); // บันทึกราคาน้ำมันอัตโนมัติ 05:30 น. เวลาไทย
 
   // ===================== Static / Vite =====================
