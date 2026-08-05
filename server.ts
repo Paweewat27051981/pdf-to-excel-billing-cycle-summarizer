@@ -287,6 +287,7 @@ async function startServer() {
         manualBoxSenders: inBranch(db.manualBoxSenders),
         destinationOverrides: inBranch(db.destinationOverrides),
         moneyCategories: inBranch(db.moneyCategories),
+        tripDistances: inBranch(db.tripDistances || []),
       };
       res.json(safe);
     } catch (err: any) {

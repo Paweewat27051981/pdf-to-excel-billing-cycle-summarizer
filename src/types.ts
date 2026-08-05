@@ -382,6 +382,21 @@ export interface DatabaseState {
   fuelEntries: FuelEntry[];
   deductions: DeductionEntry[];
   oilPrices?: OilPriceRecord[]; // [ทดลอง] ราคาน้ำมัน OR ที่บันทึกถาวร (optional กัน DB เก่า)
+  tripDistances?: TripDistanceRecord[]; // [ทดลอง] cache ระยะลูปต่อใบ (คิดจาก DOH ครั้งเดียว เก็บไว้)
+}
+
+// [ทดลอง] cache ระยะทางลูปของ 1 ใบกระจาย (คิดจาก DOH RouteService ครั้งเดียว) — กันยิง API ซ้ำ
+export interface TripDistanceRecord {
+  id: string;
+  tripId: string;        // อ้างอิง trip.id (immutable — ลบ+อัปโหลดซ้ำ documentNo เดิม จะได้ id ใหม่ ไม่ใช้ cache เก่า)
+  branchId: string;      // สาขา (สำหรับ filter + กัน documentNo ซ้ำข้ามสาขา)
+  branch: string;        // ชื่อสาขา (จุดคลังต้นทาง)
+  destKey: string;       // fingerprint ปลายทาง (อำเภอ|จังหวัด เรียง) — ปลายทางเปลี่ยน (recalculate) = คิดใหม่
+  loopKm: number;        // ระยะลูปรวม (กม.)
+  storeCount: number;    // จำนวนจุดส่ง (อำเภอ distinct)
+  order: string[];       // ลำดับอำเภอที่วิ่ง (nearest-neighbor)
+  missing?: string[];    // อำเภอที่หาระยะไม่ได้
+  computedAt: string;
 }
 
 // [ทดลอง] snapshot ราคาน้ำมัน OR ที่บันทึกลง Firebase (id-keyed) — ตรวจย้อนหลัง/ล็อกราคาได้
