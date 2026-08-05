@@ -19,17 +19,21 @@ interface Breakdown {
 }
 
 export default function FuelTripTab() {
-  const [sub, setSub] = useState<'calc' | 'history'>('calc');
+  const [sub, setSub] = useState<'calc' | 'history' | 'report'>('report');
+  const tabBtn = (k: typeof sub, label: string) => (
+    <button onClick={() => setSub(k)} className={`px-4 py-2 rounded-lg text-sm font-semibold ${sub === k ? 'bg-brand-navy text-white' : 'bg-natural-100 text-natural-muted'}`}>{label}</button>
+  );
   return (
     <div className="space-y-4">
       <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-2 text-sm text-amber-800">
         🧪 <b>หน้าทดลอง</b> — คำนวณค่าจ้างรถร่วมจากราคาน้ำมัน OR (แยกจากระบบค่าเที่ยวเดิม 100% ยังไม่ใช้จริง)
       </div>
-      <div className="flex gap-2">
-        <button onClick={() => setSub('calc')} className={`px-4 py-2 rounded-lg text-sm font-semibold ${sub === 'calc' ? 'bg-brand-navy text-white' : 'bg-natural-100 text-natural-muted'}`}>คำนวณค่าจ้าง 1 เที่ยว</button>
-        <button onClick={() => setSub('history')} className={`px-4 py-2 rounded-lg text-sm font-semibold ${sub === 'history' ? 'bg-brand-navy text-white' : 'bg-natural-100 text-natural-muted'}`}>ราคาน้ำมันย้อนหลัง (ทุกสาขา)</button>
+      <div className="flex gap-2 flex-wrap">
+        {tabBtn('report', 'เทียบต้นทุน (ต่อทะเบียน)')}
+        {tabBtn('calc', 'คำนวณค่าจ้าง 1 เที่ยว')}
+        {tabBtn('history', 'ราคาน้ำมันย้อนหลัง (ทุกสาขา)')}
       </div>
-      {sub === 'calc' ? <CalcSection /> : <HistorySection />}
+      {sub === 'calc' ? <CalcSection /> : sub === 'history' ? <HistorySection /> : <ReportSection />}
     </div>
   );
 }
@@ -117,6 +121,161 @@ function CalcSection() {
 
 function Row({ k, v, bold }: { k: string; v: string; bold?: boolean }) {
   return <tr className="border-b last:border-0"><td className="py-1.5 text-natural-muted">{k}</td><td className={`py-1.5 text-right ${bold ? 'font-bold text-brand-navy' : ''}`}>{v}</td></tr>;
+}
+
+// ===== เทียบต้นทุนต่อทะเบียน (ค่าเที่ยวจ่ายจริง vs ต้นทุนตามน้ำมัน+ระยะจริง DOH) =====
+interface ReportRow {
+  branchId: string; branch: string; plateNo: string;
+  tripCount: number; tripAmount: number; fuelCostBand: number; diff: number;
+  computed: number; missing: number;
+}
+function ReportSection() {
+  const [cycles, setCycles] = useState<{ id: string; name: string; status: string }[]>([]);
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
+  const [cycleId, setCycleId] = useState('');
+  const [branchId, setBranchId] = useState(''); // '' = ทุกสาขา
+  const [rows, setRows] = useState<ReportRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [computing, setComputing] = useState(''); // key branchId|plate ที่กำลังคิด
+  const [msg, setMsg] = useState('');
+  const reqRef = useRef(0); // กัน response เก่ามาทับตอนสลับรอบ/สาขาเร็วๆ (race)
+
+  // โหลดรอบ + สาขา จาก /api/state (HQ เห็นทุกสาขา)
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(api('/api/state'));
+        const s = await r.json();
+        const cs = (s.cycles || []) as any[];
+        setCycles(cs.map((c) => ({ id: c.id, name: c.name, status: c.status })));
+        setBranches(((s.branches || []) as any[]).filter((b) => !b.isHQ).map((b) => ({ id: b.id, name: b.name })));
+        if (cs.length) { const open = cs.find((c) => c.status === 'open'); setCycleId(open ? open.id : cs[cs.length - 1].id); }
+      } catch { /* เงียบ */ }
+    })();
+  }, []);
+
+  const loadReport = async (cid = cycleId, bid = branchId) => {
+    if (!cid) return;
+    const myReq = ++reqRef.current;
+    setLoading(true); setMsg('');
+    try {
+      const q = `?cycleId=${encodeURIComponent(cid)}${bid ? `&branchId=${encodeURIComponent(bid)}` : ''}`;
+      const r = await fetch(api(`/api/experimental/fuel-report${q}`));
+      const j = await r.json();
+      if (myReq !== reqRef.current) return; // มี request ใหม่กว่าแล้ว (สลับรอบ/สาขา) -> ทิ้งผลเก่า
+      if (j.error) { setMsg('❌ ' + j.error); setRows([]); }
+      else setRows(j.rows || []);
+    } catch (e: any) { if (myReq === reqRef.current) setMsg('❌ ' + e.message); }
+    finally { if (myReq === reqRef.current) setLoading(false); }
+  };
+  useEffect(() => { if (cycleId) loadReport(cycleId, branchId); }, [cycleId, branchId]); // eslint-disable-line
+
+  // กดคิดระยะ+ต้นทุนของ 1 ทะเบียน (ยิง DOH เฉพาะใบที่ cache ยังไม่สมบูรณ์) แล้วรีเฟรชรายงาน
+  const computePlate = async (row: ReportRow) => {
+    const key = `${row.branchId}|${row.plateNo}`;
+    setComputing(key); setMsg('');
+    try {
+      const r = await fetch(api('/api/experimental/fuel-report/compute-plate'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cycleId, plateNo: row.plateNo, branchId: row.branchId }),
+      });
+      const j = await r.json();
+      await loadReport(); // รีเฟรชก่อน (loadReport ล้าง msg) แล้วค่อยตั้งข้อความ ผู้ใช้จะได้เห็น
+      if (!j.success) setMsg(`❌ ${row.plateNo}: ${j.error}`);
+      else setMsg(`✅ ${row.plateNo}: คิดใหม่ ${j.computed} ใบ (ข้าม cache ${j.skipped}) จาก ${j.total} ใบ`);
+    } catch (e: any) { setMsg(`❌ ${row.plateNo}: ${e.message}`); } finally { setComputing(''); }
+  };
+
+  // รวมเฉพาะแถวที่คิดครบ (computed>0 && ไม่มี missing) — แถวคิดไม่ครบ diff เพี้ยน (ค่าเที่ยวเต็ม แต่ต้นทุนบางส่วน)
+  const isComplete = (r: ReportRow) => r.computed > 0 && r.missing === 0;
+  const completeRows = rows.filter(isComplete);
+  const incompleteCount = rows.length - completeRows.length;
+  const totals = completeRows.reduce((a, r) => ({ trip: a.trip + r.tripAmount, fuel: a.fuel + r.fuelCostBand, diff: a.diff + r.diff }), { trip: 0, fuel: 0, diff: 0 });
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl bg-white border p-4 space-y-3">
+        <h3 className="font-bold text-brand-navy">เทียบต้นทุนขนส่งต่อทะเบียน</h3>
+        <p className="text-sm text-natural-muted">เทียบ <b>ค่าเที่ยวที่จ่ายจริง</b> กับ <b>ต้นทุนตามน้ำมัน + ระยะถนนจริง (DOH)</b> — กด "คำนวณ" ต่อคันเพื่อยิงระยะทาง (cache ไว้ ไม่ยิงซ้ำ)</p>
+        <div className="flex items-end gap-2 flex-wrap">
+          <label className="text-sm">รอบบิล
+            <select value={cycleId} onChange={(e) => setCycleId(e.target.value)} className="mt-1 block border rounded-lg px-3 py-2 min-w-[220px]">
+              {cycles.map((c) => <option key={c.id} value={c.id}>{c.name}{c.status === 'closed' ? ' 🔒' : ''}</option>)}
+            </select>
+          </label>
+          <label className="text-sm">สาขา
+            <select value={branchId} onChange={(e) => setBranchId(e.target.value)} className="mt-1 block border rounded-lg px-3 py-2 min-w-[160px]">
+              <option value="">ทุกสาขา</option>
+              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>
+          <button onClick={() => loadReport()} disabled={loading} className="bg-natural-100 text-brand-navy rounded-lg px-4 py-2 text-sm font-semibold">รีเฟรช</button>
+          {loading && <span className="text-sm text-natural-muted">กำลังโหลด...</span>}
+        </div>
+        {msg && <div className="text-sm rounded-lg bg-natural-50 px-3 py-2">{msg}</div>}
+      </div>
+
+      <div className="rounded-xl bg-white border p-4 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-natural-100 text-left">
+              <th className="px-3 py-2 rounded-l-lg">ทะเบียน</th>
+              {!branchId && <th className="px-3 py-2">สาขา</th>}
+              <th className="px-3 py-2 text-right">เที่ยว</th>
+              <th className="px-3 py-2 text-right">ค่าเที่ยว (จ่ายจริง)</th>
+              <th className="px-3 py-2 text-right">ต้นทุนน้ำมัน (คิด)</th>
+              <th className="px-3 py-2 text-right">ส่วนต่าง</th>
+              <th className="px-3 py-2 rounded-r-lg text-right">คิดระยะ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const key = `${r.branchId}|${r.plateNo}`;
+              const done = isComplete(r);
+              return (
+                <tr key={key} className="border-b last:border-0">
+                  <td className="px-3 py-2 font-semibold">{r.plateNo}</td>
+                  {!branchId && <td className="px-3 py-2 text-natural-muted">{r.branch}</td>}
+                  <td className="px-3 py-2 text-right">{r.tripCount}</td>
+                  <td className="px-3 py-2 text-right font-bold text-brand-navy">฿{baht(r.tripAmount)}</td>
+                  {/* แสดงต้นทุน/ส่วนต่าง เฉพาะแถวที่คิดครบ — บางส่วน diff เพี้ยน (ค่าเที่ยวเต็ม vs ต้นทุนบางใบ) */}
+                  <td className="px-3 py-2 text-right">{done ? `฿${baht(r.fuelCostBand)}` : <span className="text-natural-muted">{r.missing > 0 && r.computed > 0 ? 'บางส่วน' : '—'}</span>}</td>
+                  <td className={`px-3 py-2 text-right font-bold ${done ? (r.diff >= 0 ? 'text-emerald-700' : 'text-brand-red') : 'text-natural-muted'}`}>
+                    {done ? `${r.diff >= 0 ? '+' : ''}฿${baht(r.diff)}` : '—'}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button onClick={() => computePlate(r)} disabled={computing === key}
+                      className={`rounded-lg px-3 py-1 text-xs font-semibold ${done ? 'bg-emerald-50 text-emerald-700' : 'bg-brand-red text-white'}`}>
+                      {computing === key ? 'กำลังคิด...' : done ? `✓ คิดแล้ว${r.missing ? '' : ''}` : r.missing ? `คำนวณ (ขาด ${r.missing})` : 'คำนวณ'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+            {!rows.length && <tr><td colSpan={branchId ? 6 : 7} className="px-3 py-6 text-center text-natural-muted">{loading ? 'กำลังโหลด...' : 'ไม่มีข้อมูลรถร่วมในรอบนี้ (หรือยังไม่เลือกรอบ)'}</td></tr>}
+          </tbody>
+          {rows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 font-bold">
+                <td className="px-3 py-2" colSpan={branchId ? 2 : 3}>
+                  รวมเฉพาะคิดครบ ({completeRows.length}/{rows.length} ทะเบียน)
+                  {incompleteCount > 0 && <span className="ml-1 text-xs font-normal text-brand-red">· ยังไม่ครบ {incompleteCount} คัน (ไม่รวมในยอด)</span>}
+                </td>
+                <td className="px-3 py-2 text-right text-brand-navy">฿{baht(totals.trip)}</td>
+                <td className="px-3 py-2 text-right">฿{baht(totals.fuel)}</td>
+                <td className={`px-3 py-2 text-right ${totals.diff >= 0 ? 'text-emerald-700' : 'text-brand-red'}`}>{totals.diff >= 0 ? '+' : ''}฿{baht(totals.diff)}</td>
+                <td className="px-3 py-2"></td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+        <p className="text-xs text-natural-muted mt-2">
+          ส่วนต่าง = ค่าเที่ยวจ่ายจริง − ต้นทุนน้ำมันที่คิด · <span className="text-emerald-700">บวก</span> = จ่ายจริงแพงกว่าต้นทุน · <span className="text-brand-red">ลบ</span> = จ่ายจริงถูกกว่าต้นทุน ·
+          ต้นทุนน้ำมันคิดจาก DOH ระยะถนนจริง (loop nearest-neighbor) × ราคาดีเซลล่าสุดของสาขา
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function HistorySection() {
