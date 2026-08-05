@@ -66,6 +66,23 @@ check('300 กล่อง -> PER_BOX', perBox.finalPayment, roundTest(perBox.bo
 
 function roundTest(v: number) { const s = Number((v * 100).toFixed(6)); return Math.floor(s + 0.5) / 100; }
 
+// ===== computeLoopTripCost (ระยะลูปจริง) =====
+import { computeLoopTripCost } from './fuelTripCalc.js';
+console.log('\n=== computeLoopTripCost (ลูป 177 กม, 4 จุด, ดีเซล 36.69) ===');
+const loop = computeLoopTripCost(177, 4, 36.69);
+// oneWay 88.5 > 84 -> speed 75 | travel 177/75=2.36 | unload 4*30/60=2 | เบี้ยขับ (2.36+2)*150=654
+// น้ำมัน 177/10*36.69=649.413 | รวม 1303.413 -> 1303.41
+check('loop speed (oneWay 88.5>84 -> 75)', loop.speedKmh, 75);
+check('loop travelHours (177/75)', loop.travelHours, 2.36, 0.001);
+check('loop unloadingHours (4 จุด)', loop.unloadingHours, 2);
+check('loop driverAllowance', loop.driverAllowance, 654);
+check('loop fuelCost (177/10*36.69)', loop.fuelCost, 649.413, 0.001);
+check('loop totalCost (ปัด)', loop.totalCost, 1303.41, 0.001);
+// ลูปสั้น: 60 กม (oneWay 30<=84 -> speed 50)
+check('loop สั้น speed (oneWay 30<=84 -> 50)', computeLoopTripCost(60, 2, 38).speedKmh, 50);
+// loopKm=0 -> ไม่พัง
+check('loopKm 0 -> totalCost 0', computeLoopTripCost(0, 3, 38).totalCost, 0);
+
 console.log(`\n=== สรุป: ผ่าน ${pass} | ตก ${fail} ===`);
 console.log('policy ที่ใช้:', JSON.stringify(DEFAULT_FUEL_POLICY));
 if (fail > 0) process.exit(1);
