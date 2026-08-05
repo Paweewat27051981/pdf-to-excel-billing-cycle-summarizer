@@ -162,9 +162,11 @@ function Step({ label, calc, val }: { label: string; calc?: string; val: string 
 }
 
 // รายละเอียดต่อใบ (แถวขยายในรายงานเทียบต้นทุน) — แต่ละใบ: ปลายทาง ระยะลูป ต้นทุน ส่วนต่าง
-function PlateDetail({ busy, items }: { busy: boolean; items: any[] | null }) {
+function PlateDetail({ busy, items, policy }: { busy: boolean; items: any[] | null; policy?: any }) {
   if (busy || !items) return <div className="text-sm text-natural-muted py-2">กำลังโหลดรายละเอียด...</div>;
   if (!items.length) return <div className="text-sm text-natural-muted py-2">ไม่มีใบ</div>;
+  const rate = policy?.driverHourlyRate ?? 150;
+  const unloadMin = policy?.unloadingMinutesPerStore ?? 30;
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
@@ -177,7 +179,8 @@ function PlateDetail({ busy, items }: { busy: boolean; items: any[] | null }) {
         <tbody>
           {items.map((it, i) => {
             const hasMissing = (it.missing || []).length > 0;
-            const dests = (it.order && it.order.length ? it.order : it.dests.map((d: string) => d.split('|')[0])).join(' → ');
+            // it.dests = ["อ.เมือง จ.พิจิตร", ...] เรียงตามลำดับวิ่งแล้ว (backend เติม อ./จ. + จัดลำดับ)
+            const dests = (it.dests || []).join(' → ');
             return (
               <tr key={i} className="border-b last:border-0">
                 <td className="px-2 py-1 font-mono">{it.documentNo}</td>
@@ -187,7 +190,17 @@ function PlateDetail({ busy, items }: { busy: boolean; items: any[] | null }) {
                   {it.mountainLiters > 0 && <span className="text-amber-600"> · ⛰️+{it.mountainLiters}ล.</span>}
                 </td>
                 <td className="px-2 py-1 text-right">{it.loopKm != null ? `${it.loopKm} กม.` : '-'}</td>
-                <td className="px-2 py-1 text-right">{it.driverAllowance != null ? `฿${baht(it.driverAllowance)}` : '-'}</td>
+                {/* เบี้ยขับ + สูตรย่อ: (เวลาเดินทาง + จุด×นาที) × ค่าแรง */}
+                <td className="px-2 py-1 text-right">
+                  {it.driverAllowance != null ? (
+                    <>
+                      <div className="font-semibold">฿{baht(it.driverAllowance)}</div>
+                      <div className="text-[10px] text-natural-400 leading-tight">
+                        ({it.travelHours?.toFixed(2)}ชม.@{it.speedKmh} + {it.storeCount}จุด×{unloadMin}น.) × ฿{rate}
+                      </div>
+                    </>
+                  ) : '-'}
+                </td>
                 <td className="px-2 py-1 text-right">{it.fuelCost != null ? `฿${baht(it.fuelCost)}` : '-'}</td>
                 <td className="px-2 py-1 text-right font-semibold">{it.totalCost != null ? `฿${baht(it.totalCost)}` : <span className="text-brand-red">ยังไม่คิด</span>}</td>
                 <td className="px-2 py-1 text-right">฿{baht(it.tripAmount)}</td>
@@ -220,7 +233,7 @@ function ReportSection() {
   const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null); // progress "คำนวณทั้งหมด"
   const [msg, setMsg] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null); // key ทะเบียนที่ขยายดูรายละเอียด
-  const [detail, setDetail] = useState<{ key: string; items: any[] } | null>(null); // รายละเอียดใบของทะเบียนที่ขยาย
+  const [detail, setDetail] = useState<{ key: string; items: any[]; policy?: any } | null>(null); // รายละเอียดใบของทะเบียนที่ขยาย
   const [detailBusy, setDetailBusy] = useState(false);
   const reqRef = useRef(0); // กัน response เก่ามาทับตอนสลับรอบ/สาขาเร็วๆ (race)
   const cancelBulkRef = useRef(false); // ธงยกเลิก "คำนวณทั้งหมด" กลางคัน
@@ -234,7 +247,7 @@ function ReportSection() {
       const q = `?cycleId=${encodeURIComponent(cycleId)}&plateNo=${encodeURIComponent(row.plateNo)}&branchId=${encodeURIComponent(row.branchId)}`;
       const r = await fetch(api(`/api/experimental/fuel-report/plate-detail${q}`));
       const j = await r.json();
-      setDetail({ key, items: j.items || [] });
+      setDetail({ key, items: j.items || [], policy: j.policy });
     } catch { setDetail({ key, items: [] }); } finally { setDetailBusy(false); }
   };
 
@@ -404,7 +417,7 @@ function ReportSection() {
                 {isOpen && (
                   <tr className="bg-natural-50/60">
                     <td colSpan={branchId ? 6 : 7} className="px-3 py-2">
-                      <PlateDetail busy={detailBusy} items={detail?.key === key ? detail.items : null} />
+                      <PlateDetail busy={detailBusy} items={detail?.key === key ? detail.items : null} policy={detail?.key === key ? detail.policy : null} />
                     </td>
                   </tr>
                 )}

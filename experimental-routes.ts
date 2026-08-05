@@ -385,12 +385,23 @@ export function registerExperimentalRoutes(
         const oil = oilLatest.get(branchName)?.price ?? 0;
         const fresh = !!dist && dist.loopKm > 0 && !(dist.missing && dist.missing.length) && dist.destKey === tripFingerprint(t, routes, db);
         const cost = fresh && oil > 0 ? computeLoopTripCost(dist!.loopKm, dist!.storeCount, oil, policy, dist!.mountainLiters || 0) : null;
+        // ปลายทางแบบเต็ม (อำเภอ+จังหวัด) เรียงตามลำดับวิ่ง (order = "district|province")
+        // record ใหม่ order มี |province -> ใช้เรียงลำดับวิ่ง; record เก่า (อำเภอล้วน ไม่มี |) จังหวัด
+        // จะเพี้ยนถ้าอำเภอซ้ำข้ามจังหวัด -> fallback ใช้ dests ตามใบ (จังหวัดถูก 100% แต่ไม่เรียงลำดับวิ่ง)
+        const orderHasProv = dist?.order?.length && dist.order.every((s: string) => s.includes('|'));
+        const orderedDests = orderHasProv
+          ? dist!.order.map((s: string) => { const [district, province] = s.split('|'); return { district, province }; })
+          : dests; // order เก่า/ยังไม่คิด -> ใช้ตามใบ (จังหวัดถูก)
         return {
           documentNo: t.documentNo, tripAmount: t.tripAmount || 0,
-          dests: dests.map((d) => `${d.district}|${d.province}`),
+          dests: orderedDests.map((d: any) => `อ.${d.district}${d.province ? ' จ.' + d.province : ''}`),
           loopKm: dist?.loopKm ?? null, order: dist?.order ?? [], storeCount: dist?.storeCount ?? 0,
           mountainLiters: dist?.mountainLiters ?? 0, missing: dist?.missing ?? [],
           oil, fresh,
+          // รายละเอียดวิธีคิดเบี้ยขับ (สำหรับแสดงสูตรในแถวขยาย)
+          speedKmh: cost ? cost.speedKmh : null,
+          travelHours: cost ? Math.round(cost.travelHours * 1000) / 1000 : null,
+          unloadingHours: cost ? Math.round(cost.unloadingHours * 1000) / 1000 : null,
           driverAllowance: cost ? Math.round(cost.driverAllowance * 100) / 100 : null,
           fuelCost: cost ? Math.round(cost.fuelCost * 100) / 100 : null,
           mountainFuelCost: cost ? Math.round(cost.mountainFuelCost * 100) / 100 : null,
@@ -435,7 +446,7 @@ export function registerExperimentalRoutes(
           id: prev ? prev.id : deps.genId('dist'), // คิดใหม่ = ทับ id เดิม (ไม่ให้ค้าง 2 record)
           tripId: t.id, branchId: t.branchId, branch: BRANCH_ID_NAME[t.branchId] || '', destKey,
           loopKm: Math.round(loop.totalKm * 10) / 10, storeCount: tripStoreCount(t, db), // จุดลงของจริง (ไม่ใช่ distinct อำเภอ)
-          order: loop.order.map((o) => o.district), missing: missing.length ? missing : undefined,
+          order: loop.order.map((o) => `${o.district}|${o.province}`), missing: missing.length ? missing : undefined, // เก็บ district|province (กันอำเภอซ้ำข้ามจังหวัด)
           mountainLiters: mountainLitersFor(dests, routes) || undefined, // ลิตรขึ้นเขารวม (match ปลายทางตอนคิด)
           computedAt: new Date().toISOString(),
         };
