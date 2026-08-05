@@ -136,9 +136,11 @@ function ReportSection() {
   const [branchId, setBranchId] = useState(''); // '' = ทุกสาขา
   const [rows, setRows] = useState<ReportRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [computing, setComputing] = useState(''); // key branchId|plate ที่กำลังคิด
+  const [computing, setComputing] = useState(''); // key branchId|plate ที่กำลังคิด (คิดทีละคัน)
+  const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null); // progress "คำนวณทั้งหมด"
   const [msg, setMsg] = useState('');
   const reqRef = useRef(0); // กัน response เก่ามาทับตอนสลับรอบ/สาขาเร็วๆ (race)
+  const cancelBulkRef = useRef(false); // ธงยกเลิก "คำนวณทั้งหมด" กลางคัน
 
   // โหลดรอบ + สาขา จาก /api/state (HQ เห็นทุกสาขา)
   useEffect(() => {
@@ -170,20 +172,46 @@ function ReportSection() {
   };
   useEffect(() => { if (cycleId) loadReport(cycleId, branchId); }, [cycleId, branchId]); // eslint-disable-line
 
-  // กดคิดระยะ+ต้นทุนของ 1 ทะเบียน (ยิง DOH เฉพาะใบที่ cache ยังไม่สมบูรณ์) แล้วรีเฟรชรายงาน
-  const computePlate = async (row: ReportRow) => {
-    const key = `${row.branchId}|${row.plateNo}`;
-    setComputing(key); setMsg('');
+  // ยิง compute-plate 1 คัน (ไม่แตะ UI msg/refresh) — ใช้ร่วมทั้งกดทีละคันและคำนวณทั้งหมด
+  const computeOne = async (row: ReportRow): Promise<{ ok: boolean; computed?: number; error?: string }> => {
     try {
       const r = await fetch(api('/api/experimental/fuel-report/compute-plate'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cycleId, plateNo: row.plateNo, branchId: row.branchId }),
       });
       const j = await r.json();
-      await loadReport(); // รีเฟรชก่อน (loadReport ล้าง msg) แล้วค่อยตั้งข้อความ ผู้ใช้จะได้เห็น
-      if (!j.success) setMsg(`❌ ${row.plateNo}: ${j.error}`);
-      else setMsg(`✅ ${row.plateNo}: คิดใหม่ ${j.computed} ใบ (ข้าม cache ${j.skipped}) จาก ${j.total} ใบ`);
-    } catch (e: any) { setMsg(`❌ ${row.plateNo}: ${e.message}`); } finally { setComputing(''); }
+      return j.success ? { ok: true, computed: j.computed } : { ok: false, error: j.error };
+    } catch (e: any) { return { ok: false, error: e.message }; }
+  };
+
+  // กดคิดทีละคัน แล้วรีเฟรชรายงาน
+  const computePlate = async (row: ReportRow) => {
+    setComputing(`${row.branchId}|${row.plateNo}`); setMsg('');
+    const res = await computeOne(row);
+    await loadReport(); // รีเฟรชก่อน (loadReport ล้าง msg) แล้วค่อยตั้งข้อความ ผู้ใช้จะได้เห็น
+    setMsg(res.ok ? `✅ ${row.plateNo}: คิดเสร็จ (${res.computed} ใบ)` : `❌ ${row.plateNo}: ${res.error}`);
+    setComputing('');
+  };
+
+  // คำนวณทุกคันที่ยังไม่ครบ (ไล่ทีละคัน กัน DOH ถล่ม) — หยุดกลางคันได้ | filter ถูก disable ตอนนี้ (cid/bid คงที่)
+  const computeAll = async () => {
+    const cid = cycleId, bid = branchId; // ล็อกรอบ/สาขาที่กำลังคำนวณ (filter disable ระหว่างนี้)
+    const todo = rows.filter((r) => !isComplete(r)); // ข้ามคันที่คิดครบแล้ว (cache)
+    if (!todo.length) { setMsg('✅ ทุกคันคิดครบแล้ว'); return; }
+    cancelBulkRef.current = false;
+    setBulk({ done: 0, total: todo.length }); setMsg('');
+    let ok = 0, fail = 0, stopped = false;
+    for (let i = 0; i < todo.length; i++) {
+      if (cancelBulkRef.current) { stopped = true; break; }
+      const res = await computeOne(todo[i]);
+      res.ok ? ok++ : fail++;
+      setBulk({ done: i + 1, total: todo.length });
+    }
+    await loadReport(cid, bid); // รีเฟรชด้วยรอบ/สาขาเดิม แล้วค่อยตั้งข้อความ (loadReport ล้าง msg)
+    setMsg(stopped
+      ? `⏹ หยุดแล้ว — คิดสำเร็จ ${ok} คัน${fail ? ` · ล้มเหลว ${fail} คัน` : ''} (ยังเหลือ ${todo.length - ok - fail} คัน)`
+      : `✅ คำนวณทั้งหมดเสร็จ — สำเร็จ ${ok} คัน${fail ? ` · ล้มเหลว ${fail} คัน` : ''}`);
+    setBulk(null);
   };
 
   // รวมเฉพาะแถวที่คิดครบ (computed>0 && ไม่มี missing) — แถวคิดไม่ครบ diff เพี้ยน (ค่าเที่ยวเต็ม แต่ต้นทุนบางส่วน)
@@ -199,19 +227,39 @@ function ReportSection() {
         <p className="text-sm text-natural-muted">เทียบ <b>ค่าเที่ยวที่จ่ายจริง</b> กับ <b>ต้นทุนตามน้ำมัน + ระยะถนนจริง (DOH)</b> — กด "คำนวณ" ต่อคันเพื่อยิงระยะทาง (cache ไว้ ไม่ยิงซ้ำ)</p>
         <div className="flex items-end gap-2 flex-wrap">
           <label className="text-sm">รอบบิล
-            <select value={cycleId} onChange={(e) => setCycleId(e.target.value)} className="mt-1 block border rounded-lg px-3 py-2 min-w-[220px]">
+            <select value={cycleId} onChange={(e) => setCycleId(e.target.value)} disabled={!!bulk} className="mt-1 block border rounded-lg px-3 py-2 min-w-[220px] disabled:opacity-60">
               {cycles.map((c) => <option key={c.id} value={c.id}>{c.name}{c.status === 'closed' ? ' 🔒' : ''}</option>)}
             </select>
           </label>
           <label className="text-sm">สาขา
-            <select value={branchId} onChange={(e) => setBranchId(e.target.value)} className="mt-1 block border rounded-lg px-3 py-2 min-w-[160px]">
+            <select value={branchId} onChange={(e) => setBranchId(e.target.value)} disabled={!!bulk} className="mt-1 block border rounded-lg px-3 py-2 min-w-[160px] disabled:opacity-60">
               <option value="">ทุกสาขา</option>
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           </label>
-          <button onClick={() => loadReport()} disabled={loading} className="bg-natural-100 text-brand-navy rounded-lg px-4 py-2 text-sm font-semibold">รีเฟรช</button>
+          <button onClick={() => loadReport()} disabled={loading || !!bulk} className="bg-natural-100 text-brand-navy rounded-lg px-4 py-2 text-sm font-semibold">รีเฟรช</button>
+          {/* คำนวณทั้งหมด: ไล่ทีละคันที่ยังไม่ครบ (กัน DOH ถล่ม) — ระหว่างทำ เปลี่ยนเป็นปุ่มหยุด */}
+          {!bulk ? (
+            <button onClick={computeAll} disabled={loading || !!computing || incompleteCount === 0}
+              className="bg-brand-red text-white rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50">
+              คำนวณทั้งหมด{incompleteCount > 0 ? ` (${incompleteCount} คัน)` : ''}
+            </button>
+          ) : (
+            <button onClick={() => { cancelBulkRef.current = true; }} className="bg-natural-700 text-white rounded-lg px-4 py-2 text-sm font-semibold">
+              ⏹ หยุด ({bulk.done}/{bulk.total})
+            </button>
+          )}
           {loading && <span className="text-sm text-natural-muted">กำลังโหลด...</span>}
         </div>
+        {/* progress bar ตอนคำนวณทั้งหมด */}
+        {bulk && (
+          <div className="space-y-1">
+            <div className="text-sm text-natural-muted">กำลังคำนวณ {bulk.done}/{bulk.total} คัน... (ยิงระยะจริงทีละคัน อาจใช้เวลาสักครู่)</div>
+            <div className="h-2 rounded-full bg-natural-100 overflow-hidden">
+              <div className="h-full bg-brand-red transition-all" style={{ width: `${bulk.total ? (bulk.done / bulk.total) * 100 : 0}%` }} />
+            </div>
+          </div>
+        )}
         {msg && <div className="text-sm rounded-lg bg-natural-50 px-3 py-2">{msg}</div>}
       </div>
 
@@ -244,9 +292,9 @@ function ReportSection() {
                     {done ? `${r.diff >= 0 ? '+' : ''}฿${baht(r.diff)}` : '—'}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    <button onClick={() => computePlate(r)} disabled={computing === key}
-                      className={`rounded-lg px-3 py-1 text-xs font-semibold ${done ? 'bg-emerald-50 text-emerald-700' : 'bg-brand-red text-white'}`}>
-                      {computing === key ? 'กำลังคิด...' : done ? `✓ คิดแล้ว${r.missing ? '' : ''}` : r.missing ? `คำนวณ (ขาด ${r.missing})` : 'คำนวณ'}
+                    <button onClick={() => computePlate(r)} disabled={computing === key || !!bulk}
+                      className={`rounded-lg px-3 py-1 text-xs font-semibold disabled:opacity-50 ${done ? 'bg-emerald-50 text-emerald-700' : 'bg-brand-red text-white'}`}>
+                      {computing === key ? 'กำลังคิด...' : done ? '✓ คิดแล้ว' : r.missing ? `คำนวณ (ขาด ${r.missing})` : 'คำนวณ'}
                     </button>
                   </td>
                 </tr>
