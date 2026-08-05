@@ -381,4 +381,21 @@ export interface DatabaseState {
   tripDocuments: TripDocument[];
   fuelEntries: FuelEntry[];
   deductions: DeductionEntry[];
+  oilPrices?: OilPriceRecord[]; // [ทดลอง] ราคาน้ำมัน OR ที่บันทึกถาวร (optional กัน DB เก่า)
+}
+
+// [ทดลอง] snapshot ราคาน้ำมัน OR ที่บันทึกลง Firebase (id-keyed) — ตรวจย้อนหลัง/ล็อกราคาได้
+export interface OilPriceRecord {
+  id: string;
+  branch: string;        // ชื่อสาขา เช่น "สาย3", "นครสวรรค์"
+  province: string;      // จังหวัดราคาน้ำมัน เช่น "นครสวรรค์" (สาย3 = "กทม./ปริมณฑล")
+  location: string;      // อำเภอที่ใช้เป็นตัวแทน เช่น "เมืองนครสวรรค์"
+  product: string;       // "ดีเซล"
+  price: number;         // บาท/ลิตร
+  priceDate: string;     // วันที่ราคา (จาก OR) เช่น 2026-07-23
+  minPrice?: number;     // ต่ำสุดในจังหวัด (ทุกอำเภอ)
+  maxPrice?: number;     // สูงสุดในจังหวัด
+  source: string;        // "OR"
+  fetchedAt: string;     // เวลาที่ดึง (ISO)
+  savedBy?: string;
 }

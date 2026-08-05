@@ -2,8 +2,9 @@ import React, { useState, useEffect, useRef, Fragment } from 'react';
 import {
   UploadCloud, AlertTriangle, FileSpreadsheet, Trash2, Plus, Save,
   RefreshCw, Lock, Unlock, Database, Truck, Tag, Filter, Calculator, Fuel, Receipt, Coins,
-  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp, MapPin, History,
+  Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp, MapPin, History, Beaker,
 } from 'lucide-react';
+import FuelTripTab from './experimental/FuelTripTab'; // [ทดลอง] แยก 100%
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
@@ -71,7 +72,7 @@ function inServiceArea(areas: { prov: string; dists: string[] | null }[], prov: 
 }
 
 type BranchAuth = { id: string; name: string; isHQ: boolean };
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity';
+type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity' | 'fueltrip';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -199,6 +200,7 @@ export default function App() {
   if (auth.isHQ) tabs.push(['driverkpi', 'วิเคราะห์รายได้ พขร 🔒', TrendingUp]);
   if (auth.isHQ) tabs.push(['activity', 'บันทึกการแก้ไข 📋', History]);
   if (auth.isHQ) tabs.push(['branches', 'จัดการสาขา', Building2]);
+  if (auth.isHQ) tabs.push(['fueltrip', '🧪 ค่าจ้างรถร่วม (น้ำมัน)', Beaker]);
 
   const activeTabLabel = tabs.find(([k]) => k === tab)?.[1] || '';
 
@@ -288,6 +290,7 @@ export default function App() {
             {tab === 'destfix' && <DestFixTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'activity' && <ActivityTab db={db} />}
+            {tab === 'fueltrip' && <FuelTripTab />}
             {tab === 'branches' && <BranchesTab db={db} api={api} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
           </>
         )}

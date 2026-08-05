@@ -26,6 +26,8 @@ import {
 } from './src/types.js';
 import { computeTripDocument, normPlate, round2 } from './src/calc.js';
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
+import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
+import { startOilPriceScheduler } from './src/experimental/oilPriceScheduler.js'; // [ทดลอง] auto 05:30 ไทย
 
 dotenv.config(); // โหลด .env
 dotenv.config({ path: '.env.local', override: true }); // และ .env.local (ทับค่าเดิม)
@@ -975,6 +977,10 @@ async function startServer() {
       res.status(500).json({ error: `อ่าน Excel ไม่สำเร็จ: ${err.message}` });
     }
   });
+
+  // ===================== [ทดลอง] route แยก (ลบได้ ไม่กระทบของเดิม) =====================
+  registerExperimentalRoutes(app, { getDb, saveRecord, genId: generateId });
+  startOilPriceScheduler({ getDb, saveRecord, genId: generateId }); // บันทึกราคาน้ำมันอัตโนมัติ 05:30 น. เวลาไทย
 
   // ===================== Static / Vite =====================
   if (process.env.NODE_ENV !== 'production') {

@@ -137,6 +137,7 @@ function seedState(): DatabaseState {
     tripDocuments: [],
     fuelEntries: [],
     deductions: [],
+    oilPrices: [], // [ทดลอง] ราคาน้ำมัน OR
   };
 }
 
@@ -200,6 +201,7 @@ const ID_KEYED: (keyof DatabaseState)[] = [
   'tripDocuments', 'fuelEntries', 'deductions', 'rateOverrides', 'rateMasters', 'rateMasterHistory',
   // master ที่แก้ผ่าน masterRoutes (CRUD ทีละรายการ) -> id-keyed = เขียนแค่ record เดียว ไม่เขียนทั้ง tree
   'vehicles', 'receiverGroups', 'receiverGroupAliases', 'conversionRules', 'manualBoxSenders', 'destinationOverrides', 'moneyCategories',
+  'oilPrices', // [ทดลอง] ราคาน้ำมัน OR บันทึกถาวร
 ];
 export function isIdKeyed(collKey: keyof DatabaseState): boolean {
   return ID_KEYED.includes(collKey);
@@ -236,6 +238,7 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     tripDocuments: normalizeTrips(withBranch(toArray(state.tripDocuments), [])),
     fuelEntries: withBranch(toArray(state.fuelEntries), []),
     deductions: withBranch(migrateDeductions(toArray(state.deductions)), []),
+    oilPrices: toArray(state.oilPrices), // [ทดลอง] อ่านได้ทั้ง array/map (ว่าง = [])
   };
 }
 
