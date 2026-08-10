@@ -720,8 +720,8 @@ async function startServer() {
   // บันทึก trip ที่ผ่าน Review (รับ extracted + คำนวณใหม่ฝั่ง server)
   app.post('/api/trips', async (req, res) => {
     try {
-      const { extracted, fileName, branchId } = req.body as {
-        extracted: ExtractedTripDocument; fileName: string; branchId: string;
+      const { extracted, fileName, branchId, overwrite } = req.body as {
+        extracted: ExtractedTripDocument; fileName: string; branchId: string; overwrite?: boolean;
       };
       if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
       const db = await getDb();
@@ -739,15 +739,28 @@ async function startServer() {
       const trip = recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId);
 
       // 🔒 กฎเหล็ก: เลขใบกระจายห้ามซ้ำภายในสาขา (ทุกรอบ) — ซ้ำ = การเงินผิดเพี้ยน
+      // overwrite:true = ผู้ใช้ยืนยันทับใบเดิม (ไฟล์แก้/พิมพ์ใหม่) -> ลบใบเดิมแล้วบันทึกใหม่แทน 409
+      // NOTE: ยังไม่ลบตรงนี้ (Codex P2) — ลบหลัง validation ครบ กันข้อมูลหายเมื่อ validate ล้มเหลว
       const docNo = (trip.documentNo || '').trim();
+      const dupsToRemove: TripDocument[] = [];
       if (docNo) {
-        const dup = db.tripDocuments.find(
+        const dups = db.tripDocuments.filter(
           (t) => t.branchId === branchId && (t.documentNo || '').trim() === docNo
         );
-        if (dup) {
-          const dupCycle = db.cycles.find((c) => c.id === dup.cycleId);
-          const where = dup.cycleId === cycle.id ? 'ในรอบนี้' : `ในรอบ "${dupCycle?.name || dup.cycleId}"`;
-          return res.status(409).json({ error: `เลขใบกระจาย ${docNo} ซ้ำ — มีอยู่แล้ว${where} (ห้ามบันทึกซ้ำ ถ้าต้องการแก้ ให้ลบใบเดิมก่อน)` });
+        if (dups.length) {
+          if (!overwrite) {
+            const dup = dups[0];
+            const dupCycle = db.cycles.find((c) => c.id === dup.cycleId);
+            const where = dup.cycleId === cycle.id ? 'ในรอบนี้' : `ในรอบ "${dupCycle?.name || dup.cycleId}"`;
+            return res.status(409).json({ error: `เลขใบกระจาย ${docNo} ซ้ำ — มีอยู่แล้ว${where} (ห้ามบันทึกซ้ำ ถ้าต้องการแก้ ให้ลบใบเดิมก่อน)`, canOverwrite: true, dupCycleName: dupCycle?.name || dup.cycleId });
+          }
+          // 🔒 ห้ามทับใบที่อยู่ในรอบปิด (ประวัติการเงินถูกล็อก) — กันแก้ย้อนหลังผ่านการทับ
+          const closedDup = dups.find((d) => db.cycles.find((c) => c.id === d.cycleId)?.status === 'closed');
+          if (closedDup) {
+            const cn = db.cycles.find((c) => c.id === closedDup.cycleId)?.name || closedDup.cycleId;
+            return res.status(400).json({ error: `ทับไม่ได้ — ใบเดิมอยู่ในรอบ "${cn}" ที่ปิดแล้ว (ประวัติล็อก) ให้ HQ เปิดรอบก่อนจึงแก้ได้` });
+          }
+          dupsToRemove.push(...dups); // ทับ: จำใบเดิมไว้ ลบทีหลัง (หลัง validate ครบ)
         }
       }
 
@@ -756,13 +769,19 @@ async function startServer() {
       if (missingBox) {
         return res.status(400).json({ error: `ใบรับ ${missingBox.receiptNo}: ต้องกรอกจำนวนกล่องก่อนบันทึก (ผู้ส่งส่งเป็นชิ้น)` });
       }
-      // ผ่านทุกด่าน -> ถ้าเป็นรอบใหม่ ค่อยเพิ่มลงระบบตอนนี้ (กันสร้างรอบเปล่าเวลาบันทึกไม่ผ่าน)
+      // ✅ ผ่านทุก validation แล้ว -> ค่อยลบใบเดิม (overwrite) กันข้อมูลหายเมื่อ validate ล้มเหลว
+      const removedDupIds = dupsToRemove.map((d) => d.id);
+      if (removedDupIds.length) db.tripDocuments = db.tripDocuments.filter((t) => !removedDupIds.includes(t.id));
+      // ถ้าเป็นรอบใหม่ ค่อยเพิ่มลงระบบตอนนี้ (กันสร้างรอบเปล่าเวลาบันทึกไม่ผ่าน)
       if (resolved.created) db.cycles.push(cycle);
       trip.isVerified = true;
       db.tripDocuments.push(trip);
-      await saveRecord('tripDocuments', trip);           // เขียนแค่ใบเดียว (เร็ว)
+      // เขียนใบใหม่ก่อน แล้วค่อยลบใบเดิม (Codex P2) — ถ้า crash กลางทาง จะเหลือ 2 ใบ (กู้ได้)
+      // ดีกว่าลบก่อน-เขียนไม่ทัน = ข้อมูลหายถาวร
+      await saveRecord('tripDocuments', trip);           // เขียนใบใหม่ก่อน
+      for (const id of removedDupIds) if (id !== trip.id) await removeRecord('tripDocuments', id); // แล้วลบเก่า
       if (resolved.created) await flushCollection('cycles'); // รอบใหม่ -> เขียน cycles (เล็ก)
-      res.status(201).json({ ...trip, _cycle: cycle, _cycleCreated: resolved.created });
+      res.status(201).json({ ...trip, _cycle: cycle, _cycleCreated: resolved.created, _overwritten: removedDupIds.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

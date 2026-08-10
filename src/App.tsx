@@ -635,12 +635,14 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
     preview(ext, 'manual.pdf');
   };
 
-  const save = async () => {
+  const save = async (overwrite = false) => {
     if (!pending) return;
     try {
-      const saved = await api('/api/trips', 'POST', { extracted: pending.extracted, fileName: pending.fileName, branchId });
+      const saved = await api('/api/trips', 'POST', { extracted: pending.extracted, fileName: pending.fileName, branchId, overwrite });
       const cy = saved?._cycle;
-      showToast('success', saved?._cycleCreated ? `เปิดรอบ "${cy?.name}" อัตโนมัติ + บันทึกแล้ว` : `บันทึกเข้ารอบ "${cy?.name}" แล้ว`);
+      const msg = saved?._overwritten ? `ทับใบเดิม + บันทึกเข้ารอบ "${cy?.name}" แล้ว`
+        : saved?._cycleCreated ? `เปิดรอบ "${cy?.name}" อัตโนมัติ + บันทึกแล้ว` : `บันทึกเข้ารอบ "${cy?.name}" แล้ว`;
+      showToast('success', msg);
       setPending(null);
       if (cy?.id && cy.id !== cycle?.id) gotoCycle(cy.id); // สลับไปรอบที่ใบนั้นเข้าจริง
       else reload();
@@ -816,10 +818,19 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   if (needsBox) blockReasons.push('ยังไม่กรอกจำนวนกล่อง (ผู้ส่งส่งเป็นชิ้น)');
   if (noVehicle) blockReasons.push('ไม่มีทะเบียนรถนี้ใน Master — เพิ่มรถที่เมนู "รถ & คนขับ" ก่อน');
   if (noPrice) blockReasons.push('ไม่เจอราคาขนส่งของปลายทาง — เพิ่มราคาใน Master / แก้ปลายทางให้ตรง');
-  const blocked = blockReasons.length > 0;
+  // isDup แก้ได้ด้วย "ทับใบเดิม" (แยกจาก block อื่นที่ต้องแก้ข้อมูล) — block อื่นยังต้องแก้ก่อน
+  const hardBlockReasons = blockReasons.filter((r) => !r.startsWith('เลขใบกระจายซ้ำ'));
+  const blocked = hardBlockReasons.length > 0;
   const trySave = () => {
-    if (blocked) { alertBox('🔒 บันทึกไม่ได้ — ต้องแก้ให้ครบก่อน', blockReasons.map((r, i) => `${i + 1}. ${r}`).join('\n'), 'error'); return; }
+    if (blocked) { alertBox('🔒 บันทึกไม่ได้ — ต้องแก้ให้ครบก่อน', hardBlockReasons.map((r, i) => `${i + 1}. ${r}`).join('\n'), 'error'); return; }
+    if (isDup) return; // มีปุ่มทับใบเดิมแยก (กันบันทึกซ้ำเงียบ)
     onSave();
+  };
+  // ทับใบเดิม (ต้องผ่าน hard block อื่นก่อน + ยืนยัน)
+  const tryOverwrite = () => {
+    if (blocked) { alertBox('🔒 ต้องแก้ให้ครบก่อน', hardBlockReasons.map((r, i) => `${i + 1}. ${r}`).join('\n'), 'error'); return; }
+    if (!window.confirm(`ทับใบเดิม ${docNo}?\nใบเดิมในรอบ "${dupCycleName}" จะถูกลบ แล้วบันทึกใบนี้แทน (ยอดค่าเที่ยวจะเปลี่ยนตามข้อมูลใหม่)`)) return;
+    onSave(true);
   };
 
   const update = (patch: Partial<ExtractedTripDocument>) => onPreview({ ...ext, ...patch }, pending.fileName);
@@ -865,11 +876,17 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
         </div>
       )}
 
-      {/* 🔒 เตือนเลขใบกระจายซ้ำ */}
+      {/* 🔒 เตือนเลขใบกระจายซ้ำ + ปุ่มทับใบเดิม */}
       {isDup && (
-        <div className="bg-rose-50 border-2 border-rose-400 rounded-xl p-3 text-xs text-rose-800 flex gap-1.5 font-semibold">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          เลขใบกระจาย <b>{docNo}</b> ซ้ำ — มีอยู่แล้ว{dupTrip.cycleId === cycleId ? 'ในรอบนี้' : `ในรอบ "${dupCycleName}"`} · บันทึกไม่ได้ (ถ้าต้องการแก้ ให้ลบใบเดิมก่อน หรือเปลี่ยนเลขให้ถูกต้อง)
+        <div className="bg-rose-50 border-2 border-rose-400 rounded-xl p-3 text-xs text-rose-800 space-y-2">
+          <div className="flex gap-1.5 font-semibold">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>เลขใบกระจาย <b>{docNo}</b> ซ้ำ — มีอยู่แล้ว{dupTrip.cycleId === cycleId ? 'ในรอบนี้' : `ในรอบ "${dupCycleName}"`} · ถ้าไฟล์นี้แก้ไข/พิมพ์ใหม่ กด "ทับใบเดิม" (ใบเก่าจะถูกลบ ยอดเปลี่ยนตามข้อมูลใหม่)</span>
+          </div>
+          <button onClick={tryOverwrite} disabled={blocked}
+            className="bg-rose-600 hover:bg-rose-700 text-white rounded-lg px-4 py-1.5 text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed">
+            🔄 ทับใบเดิม {blocked ? '(แก้ข้อผิดพลาดอื่นให้ครบก่อน)' : ''}
+          </button>
         </div>
       )}
 
