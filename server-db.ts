@@ -35,6 +35,8 @@ const FIREBASE_DB_URL =
 
 let firebaseDb: Database | null = null;
 let cache: DatabaseState | null = null; // in-memory cache (ลดการอ่าน Firebase)
+let loadingPromise: Promise<DatabaseState> | null = null; // กันโหลด Firebase พร้อมกันหลาย request (race ตอน cache null)
+const FIREBASE_READ_TIMEOUT_MS = Number(process.env.FIREBASE_READ_TIMEOUT_MS) || 60000; // อ่าน Firebase เกินนี้ = throw (กัน getDb ค้างตลอดกาล -> server แฮงก์)
 
 function loadServiceAccount(): ServiceAccount | null {
   // 1) จาก env var (สำหรับ deploy บน Render/Railway — ไม่ต้อง commit ไฟล์ key)
@@ -247,38 +249,59 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   };
 }
 
-export async function getDb(): Promise<DatabaseState> {
-  // 1) ถ้ามี cache อยู่แล้ว -> ตอบทันที (ไม่อ่าน Firebase = ไม่มี download)
-  if (cache) return cache;
+// อ่าน Firebase ref พร้อม timeout (กัน .once() ค้างตลอดกาลเมื่อ connect/socket ค้าง -> getDb ค้าง -> server แฮงก์)
+function readRootWithTimeout(fb: Database): Promise<Partial<DatabaseState> | null> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`อ่าน Firebase เกิน ${FIREBASE_READ_TIMEOUT_MS}ms (network/connection ค้าง)`)), FIREBASE_READ_TIMEOUT_MS);
+    fb.ref('/').once('value')
+      .then((snap) => { clearTimeout(timer); resolve(snap.val() as Partial<DatabaseState> | null); })
+      .catch((e) => { clearTimeout(timer); reject(e); });
+  });
+}
 
+// โหลด DB จากแหล่งจริง (Firebase หรือ db.json) — เรียกครั้งเดียว (ผ่าน lock ใน getDb)
+async function loadDbFromSource(): Promise<DatabaseState> {
   const fb = initFirebase();
   if (fb) {
-    // 2) Firebase: อ่านครั้งเดียวตอนบูต -> เก็บ cache
-    const snap = await fb.ref('/').once('value');
-    const val = snap.val() as Partial<DatabaseState> | null;
-    cache = ensureShape(val || {});
-    if (!val) await saveDb(cache); // ว่างเปล่า -> seed ขึ้น Firebase
-    // migrate ครั้งเดียว: คอลเลกชัน id-keyed ที่ยังเก็บเป็น array -> แปลงเป็น id-keyed map
-    // (เขียนแค่ node นั้น เบามาก) เพื่อให้เขียน granular ทีละรายการได้ ไม่เกิด record ซ้ำ
+    const val = await readRootWithTimeout(fb); // มี timeout กันค้าง
+    const loaded = ensureShape(val || {});
+    // ⚠️ ต้อง set cache ก่อน saveDb/flushCollection (มันอ่านจาก cache) ไม่งั้นเขียน empty ทับ = ข้อมูลหาย (Codex P1)
+    cache = loaded;
+    if (!val) await saveDb(loaded); // ว่างเปล่า -> seed ขึ้น Firebase
     else {
+      // migrate ครั้งเดียว: id-keyed ที่ยังเป็น array -> map (เขียนแค่ node นั้น)
       for (const k of ID_KEYED) {
         const cur = (val as any)[k as string];
         if (Array.isArray(cur) && cur.length) await flushCollection(k);
       }
     }
-    return cache;
+    return loaded;
   }
-
-  // 3) Fallback: db.json (เมื่อยังไม่ใส่ serviceAccountKey)
+  // Fallback: db.json (เมื่อยังไม่ใส่ serviceAccountKey)
   try {
     const content = await fs.readFile(DB_FILE, 'utf-8');
-    cache = ensureShape(JSON.parse(content) as Partial<DatabaseState>);
-    return cache;
+    const loaded = ensureShape(JSON.parse(content) as Partial<DatabaseState>);
+    cache = loaded;
+    return loaded;
   } catch {
-    cache = seedState();
-    await saveDb(cache);
-    return cache;
+    const seeded = seedState();
+    cache = seeded;      // set ก่อน saveDb (อ่าน cache)
+    await saveDb(seeded);
+    return seeded;
   }
+}
+
+export async function getDb(): Promise<DatabaseState> {
+  // 1) มี cache -> ตอบทันที (ไม่อ่าน Firebase)
+  if (cache) return cache;
+  // 2) กำลังโหลดอยู่ (request อื่นเริ่มก่อน) -> รอ promise เดียวกัน (กันโหลด 35MB ซ้อนหลายรอบ = ยิ่งช้า/ค้าง)
+  if (loadingPromise) return loadingPromise;
+  // 3) เริ่มโหลด — เก็บ promise ให้ request อื่นรอด้วย; ถ้าโหลดล้ม (timeout) เคลียร์ lock ให้ลองใหม่ได้
+  loadingPromise = (async () => {
+    try { cache = await loadDbFromSource(); return cache; }
+    finally { loadingPromise = null; }
+  })();
+  return loadingPromise;
 }
 
 // เขียนทั้ง DB (ใช้ตอน seed / bulk / migrate) — คอลเลกชันใหญ่เขียนแบบ id-keyed
