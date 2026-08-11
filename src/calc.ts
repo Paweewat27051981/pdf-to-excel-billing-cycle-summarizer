@@ -56,6 +56,14 @@ function stripParen(s: string): string {
   return (s || '').replace(/[(（][^)）]*[)）]/g, '').trim();
 }
 
+// normalize ชื่ออำเภอ/จังหวัดสำหรับเทียบตรงเป๊ะ: ตัด "อ./อำเภอ/จ./จังหวัด" นำหน้า + ช่องว่าง + lower
+function normDistrict(s: string): string {
+  return norm((s || '').replace(/^\s*(อำเภอ|อ\.?)\s*/, ''));
+}
+function normProvince(s: string): string {
+  return norm((s || '').replace(/^\s*(จังหวัด|จ\.?)\s*/, ''));
+}
+
 // เทียบทะเบียนรถแบบยืดหยุ่น: ตัดคำว่า "ตู้" (ชนิดรถ) และช่องว่างออกก่อนเทียบ
 // เช่น "3ฒต-983 ตู้" (Master) = "3ฒต-983" (อ่านจาก PDF)
 export function normPlate(s: string): string {
@@ -235,20 +243,31 @@ export function matchRate(
     return provOk && distOk;
   });
 
-  const result: { flat?: RateMatch; piece?: RateMatch } = {};
-  for (const r of candidates) {
-    // ราคาเฉพาะรอบ (ถ้ามี) ทับราคาหลักของ rate row นี้
-    const ov = overrides?.get(r.id);
-    const match: RateMatch = {
-      rateMasterId: r.id,
-      rateType: r.priceType,
-      rateValue: ov ? ov.price : r.price,
-      threshold: ov ? ov.pieceThreshold : (r.pieceThreshold ?? null),
-    };
-    if (r.priceType === 'flat' && !result.flat) result.flat = match;
-    if (r.priceType === 'piece' && !result.piece) result.piece = match;
-  }
-  return result;
+  // 🔒 จัดลำดับความแม่นของการจับอำเภอ (กันราคาเพี้ยน): อำเภอตรงเป๊ะต้องชนะ substring
+  //    เช่น districtRaw "เมือง" เจอทั้ง "เมืองลำปาง"(1700) และ "เมืองปาน"(2200) ->
+  //    substring หลวมทำให้เผลอเลือก "เมืองปาน" = เก็บเงินเกิน. ให้ตรงเป๊ะ (เมืองลำปาง) ชนะ
+  const dRaw = normDistrict(params.districtRaw);
+  const distScore = (r: RateMaster): number => {
+    const rd = normDistrict(stripParen(r.districtName || ''));
+    if (!rd) return 0;                       // master ไม่ระบุอำเภอ = จับได้แต่คะแนนต่ำสุด
+    if (!dRaw) return 0;
+    if (rd === dRaw) return 3;               // ตรงเป๊ะ
+    if (rd === dRaw + normProvince(params.provinceRaw)) return 3; // "เมือง"+"ลำปาง" = "เมืองลำปาง" เป๊ะ
+    if (dRaw.startsWith(rd) || rd.startsWith(dRaw)) return 2; // ขึ้นต้นตรงกัน (เมือง~เมืองลำปาง)
+    return 1;                                // substring กลางคำ (หลวมสุด — เช่น เมือง~เมืองปาน)
+  };
+
+  const pick = (type: 'flat' | 'piece'): RateMatch | undefined => {
+    const same = candidates.filter((r) => r.priceType === type);
+    if (!same.length) return undefined;
+    // เลือกอำเภอที่แม่นที่สุด (score สูงสุด); เสมอ = ตัวแรกตามลำดับเดิม
+    let best = same[0], bestScore = distScore(same[0]);
+    for (const r of same.slice(1)) { const s = distScore(r); if (s > bestScore) { best = r; bestScore = s; } }
+    const ov = overrides?.get(best.id);
+    return { rateMasterId: best.id, rateType: best.priceType, rateValue: ov ? ov.price : best.price, threshold: ov ? ov.pieceThreshold : (best.pieceThreshold ?? null) };
+  };
+
+  return { flat: pick('flat'), piece: pick('piece') };
 }
 
 // ราคาชุดอำเภอ (เช่น "เมือง+คีรีมาศ" = 1400): จับเมื่อใบส่งหลายอำเภอตรงชุดพอดี
