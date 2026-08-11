@@ -22,6 +22,10 @@ function defaultBranches(): Branch[] {
 
 const DB_FILE = path.join(process.cwd(), 'db.json');
 const SEED_MASTERS_FILE = path.join(process.cwd(), 'seed-masters.json');
+// snapshot cache ลง disk เร่ง boot (อ่าน local <5วิ แทนโหลด Firebase 35MB 2-16 นาที)
+// Firebase = source of truth เสมอ; snapshot แค่เร่งความเร็ว boot + sync Firebase พื้นหลัง
+const SNAPSHOT_FILE = process.env.CACHE_SNAPSHOT_FILE || path.join(process.cwd(), '.cache-snapshot.json');
+const ENABLE_SNAPSHOT = process.env.DISABLE_CACHE_SNAPSHOT !== '1'; // ปิดได้ถ้าจำเป็น
 
 // ---------------------------------------------------------------------------
 // Firebase Realtime Database (เก็บข้อมูลจริง) — เปิดใช้เมื่อมี serviceAccountKey
@@ -56,9 +60,11 @@ function initFirebase(): Database | null {
   const serviceAccount = loadServiceAccount();
   if (!serviceAccount) return null; // ยังไม่ใส่ key -> ใช้ db.json
   try {
+    console.log('[firebase] เริ่ม initializeApp...'); // จับเวลา: ถ้าค้างนานหลังบรรทัดนี้ = init ค้าง
     const app = getApps().length
       ? getApps()[0]
       : initializeApp({ credential: cert(serviceAccount), databaseURL: FIREBASE_DB_URL });
+    console.log('[firebase] initializeApp เสร็จ -> getDatabase...');
     firebaseDb = getDatabase(app);
     console.log('✅ ใช้ Firebase Realtime Database (cache + write-through)');
     return firebaseDb;
@@ -263,7 +269,9 @@ function readRootWithTimeout(fb: Database): Promise<Partial<DatabaseState> | nul
 async function loadDbFromSource(): Promise<DatabaseState> {
   const fb = initFirebase();
   if (fb) {
+    console.log('[firebase] เริ่มอ่าน root (once)...'); // ถ้าค้างนานหลังบรรทัดนี้ = read/network ค้าง (ไม่ใช่ init)
     const val = await readRootWithTimeout(fb); // มี timeout กันค้าง
+    console.log('[firebase] อ่าน root เสร็จ'); // ถึงบรรทัดนี้ = read สำเร็จ
     const loaded = ensureShape(val || {});
     // ⚠️ ต้อง set cache ก่อน saveDb/flushCollection (มันอ่านจาก cache) ไม่งั้นเขียน empty ทับ = ข้อมูลหาย (Codex P1)
     cache = loaded;
@@ -291,14 +299,76 @@ async function loadDbFromSource(): Promise<DatabaseState> {
   }
 }
 
+let bootedFromSnapshot = false; // boot จาก snapshot (ยังไม่ยืนยันกับ Firebase) -> snapshot ต้อง "ตรวจ" ก่อนอนุญาต write
+
+// ตรวจ snapshot กับ Firebase 1 ครั้งตอน boot (Firebase = source of truth)
+// สำเร็จ -> ทับ cache ด้วย Firebase + set bootedFromSnapshot=false (verified)
+// ล้มเหลว (Firebase timeout) -> throw ต่อ; ผู้เรียกต้องไม่ set false (ให้ retry) - Codex P1a
+async function verifySnapshotAgainstFirebase(): Promise<DatabaseState> {
+  const fresh = await loadDbFromSource(); // โหลด Firebase จริง (มี timeout) -> set cache ในนั้น; throw ถ้าค้าง
+  cache = fresh;
+  bootedFromSnapshot = false; // ยืนยันสำเร็จแล้วเท่านั้นถึงปลดล็อก write
+  await writeSnapshotNow();
+  return cache!;
+}
+
+// readOnlySnapshot(): คืน snapshot ที่ยังไม่ verify — ใช้เฉพาะ read path ที่ยอมข้อมูลเก่าเสี้ยววินาที
+// (เช่น /api/state ครั้งแรกตอน boot) เพื่อไม่ให้ผู้ใช้รอ Firebase; ไม่ใช้กับ write เด็ดขาด
+// จำกัดอายุ: ถ้า verify Firebase ไม่สำเร็จนานเกิน STALE_LIMIT -> หยุดเสิร์ฟ snapshot (กัน stale ไม่มีที่สิ้นสุด - Codex)
+const SNAPSHOT_STALE_LIMIT_MS = Number(process.env.SNAPSHOT_STALE_LIMIT_MS) || 15 * 60 * 1000; // 15 นาที
+let snapshotBootAt = 0; // เวลาที่เริ่ม boot จาก snapshot (0 = ไม่ได้ boot จาก snapshot)
+export function peekCache(): DatabaseState | null {
+  if (!(cache && bootedFromSnapshot)) return null;
+  // snapshot เก่าเกินลิมิต (verify Firebase ยังไม่สำเร็จ) -> ไม่เสิร์ฟ (ให้ getDb รอ/throw แทน)
+  if (snapshotBootAt && Date.now() - snapshotBootAt > SNAPSHOT_STALE_LIMIT_MS) return null;
+  return cache;
+}
+
+// โหลด snapshot เข้า cache ให้เสร็จก่อน (เร็ว จาก disk) แยกจากการ verify Firebase
+// -> peekCache() ใช้ได้ทันทีตั้งแต่ boot (Codex P2: /api/state ไม่ต้องรอ Firebase)
+let snapshotLoadPromise: Promise<void> | null = null;
+async function ensureSnapshotLoaded(): Promise<void> {
+  if (cache) return;                       // มี cache แล้ว (snapshot หรือ verified) -> ไม่ต้อง
+  if (snapshotLoadPromise) return snapshotLoadPromise;
+  snapshotLoadPromise = (async () => {
+    const snap = await readSnapshot();
+    if (snap && !cache) { cache = snap; bootedFromSnapshot = true; snapshotBootAt = Date.now(); } // ไม่ทับถ้ามีคนโหลดของจริงไปแล้ว
+  })().finally(() => { snapshotLoadPromise = null; });
+  return snapshotLoadPromise;
+}
+
+// เรียกตอน boot: โหลด snapshot เข้า cache ก่อน (peekCache พร้อมทันที) แล้วค่อย verify Firebase พื้นหลัง
+export async function warmCacheOnBoot(): Promise<void> {
+  await ensureSnapshotLoaded();   // snapshot พร้อม -> /api/state ตอบได้แม้ Firebase ยังช้า
+  await getDb().catch(() => {});  // verify กับ Firebase (source of truth)
+}
+
+// read เร็วสำหรับ /api/state: รอแค่ snapshot โหลด (จาก disk เร็ว) ไม่รอ Firebase verify
+// คืน snapshot ถ้ามี (แม้ Firebase ช้า); ถ้าไม่มี snapshot -> null (ให้ route ไป await getDb ปกติ)
+export async function peekCacheAsync(): Promise<DatabaseState | null> {
+  if (cache && !bootedFromSnapshot) return cache; // verified แล้ว
+  await ensureSnapshotLoaded(); // รอ snapshot โหลดเข้า cache (เร็ว) — ไม่ trigger verify Firebase
+  return peekCache();
+}
+
+// getDb(): source of truth เสมอ (สำหรับทั้ง read+write ที่ต้องข้อมูลถูก)
+// boot จาก snapshot -> verify กับ Firebase ให้เสร็จก่อนคืน (กัน write ทับด้วย snapshot เก่า - Codex P1)
+// ยอมช้าครั้งแรก (โหลด Firebase 1 ครั้ง) แลกกับข้อมูลถูก 100%; หลังจากนั้น cache -> เร็วตลอด
 export async function getDb(): Promise<DatabaseState> {
-  // 1) มี cache -> ตอบทันที (ไม่อ่าน Firebase)
-  if (cache) return cache;
-  // 2) กำลังโหลดอยู่ (request อื่นเริ่มก่อน) -> รอ promise เดียวกัน (กันโหลด 35MB ซ้อนหลายรอบ = ยิ่งช้า/ค้าง)
-  if (loadingPromise) return loadingPromise;
-  // 3) เริ่มโหลด — เก็บ promise ให้ request อื่นรอด้วย; ถ้าโหลดล้ม (timeout) เคลียร์ lock ให้ลองใหม่ได้
+  if (cache && !bootedFromSnapshot) return cache; // verified แล้ว -> เร็ว
+  if (loadingPromise) return loadingPromise;       // กำลังโหลด/verify -> รอ promise เดียว
   loadingPromise = (async () => {
-    try { cache = await loadDbFromSource(); return cache; }
+    try {
+      await ensureSnapshotLoaded(); // อ่าน snapshot เข้า cache ก่อน (peekCache ใช้ได้ระหว่าง verify)
+      if (cache && bootedFromSnapshot) {
+        // มี snapshot แต่ยังไม่ verify -> verify กับ Firebase ให้เสร็จก่อนคืน (throw ถ้า Firebase ค้าง)
+        return await verifySnapshotAgainstFirebase();
+      }
+      // ไม่มี snapshot -> โหลด Firebase ตรง
+      cache = await loadDbFromSource();
+      await writeSnapshotNow();
+      return cache;
+    }
     finally { loadingPromise = null; }
   })();
   return loadingPromise;
@@ -315,11 +385,41 @@ export async function saveDb(state: DatabaseState): Promise<void> {
   } else {
     await fs.writeFile(DB_FILE, JSON.stringify(deepClean(state), null, 2), 'utf-8');
   }
+  scheduleSnapshot();
 }
 
 // fallback db.json: เขียนทั้งไฟล์ (sandbox local เล็ก เขียนเร็ว)
 async function persistLocal(): Promise<void> {
   if (cache) await fs.writeFile(DB_FILE, JSON.stringify(deepClean(cache), null, 2), 'utf-8');
+}
+
+// ---- snapshot cache ลง disk (เร่ง boot) ----
+// เขียนแบบ atomic (temp -> rename) กันไฟล์เสียถ้า crash กลางเขียน
+async function writeSnapshotNow(): Promise<void> {
+  // เขียนเฉพาะเมื่อ cache = ของจริงจาก Firebase แล้ว (ยืนยันแล้ว ไม่ใช่ snapshot ที่ยังไม่ verify)
+  // กัน snapshot ที่ยังไม่ verify เขียนทับตัวเอง / กันเขียนตอน cache ยังเป็น snapshot เก่า
+  if (!ENABLE_SNAPSHOT || !cache || bootedFromSnapshot) return;
+  try {
+    const tmp = `${SNAPSHOT_FILE}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(deepClean(cache)), 'utf-8');
+    await fs.rename(tmp, SNAPSHOT_FILE); // atomic replace
+  } catch { /* snapshot ล้มเหลวไม่ critical (Firebase ยังเป็น source of truth) */ }
+}
+// debounce: หลัง write เงียบ 5 วิ ค่อยเขียน snapshot (ไม่เขียน 35MB ทุก write = ไม่ block)
+let snapshotTimer: NodeJS.Timeout | null = null;
+function scheduleSnapshot(): void {
+  if (!ENABLE_SNAPSHOT) return;
+  if (snapshotTimer) clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(() => { snapshotTimer = null; void writeSnapshotNow(); }, 5000);
+  snapshotTimer.unref?.(); // ไม่กัน process exit
+}
+// อ่าน snapshot ตอน boot -> คืน state ถ้าอ่านได้ (null ถ้าไม่มี/เสีย)
+async function readSnapshot(): Promise<DatabaseState | null> {
+  if (!ENABLE_SNAPSHOT) return null;
+  try {
+    const content = await fs.readFile(SNAPSHOT_FILE, 'utf-8');
+    return ensureShape(JSON.parse(content) as Partial<DatabaseState>);
+  } catch { return null; }
 }
 
 // บันทึก/แก้ 1 record — เขียนแค่ /<coll>/<id> (เร็วคงที่ ไม่ขึ้นกับขนาด DB)
@@ -328,6 +428,7 @@ export async function saveRecord(collKey: keyof DatabaseState, record: { id: str
   const fb = initFirebase();
   if (fb) await fb.ref(`/${String(collKey)}/${record.id}`).set(deepClean(record));
   else await persistLocal();
+  scheduleSnapshot();
 }
 // บันทึกหลาย record ครั้งเดียว (multi-path update — 1 round-trip)
 export async function saveRecords(collKey: keyof DatabaseState, records: { id: string }[]): Promise<void> {
@@ -338,11 +439,13 @@ export async function saveRecords(collKey: keyof DatabaseState, records: { id: s
     for (const r of records) upd[r.id] = deepClean(r);
     await fb.ref(`/${String(collKey)}`).update(upd);
   } else await persistLocal();
+  scheduleSnapshot();
 }
 export async function removeRecord(collKey: keyof DatabaseState, id: string): Promise<void> {
   const fb = initFirebase();
   if (fb) await fb.ref(`/${String(collKey)}/${id}`).remove();
   else await persistLocal();
+  scheduleSnapshot();
 }
 export async function removeRecords(collKey: keyof DatabaseState, ids: string[]): Promise<void> {
   if (!ids.length) return;
@@ -352,6 +455,7 @@ export async function removeRecords(collKey: keyof DatabaseState, ids: string[])
     for (const id of ids) upd[id] = null; // null ใน update = ลบ node นั้น
     await fb.ref(`/${String(collKey)}`).update(upd);
   } else await persistLocal();
+  scheduleSnapshot();
 }
 // เขียนทั้งคอลเลกชัน (คอลเลกชันเล็กที่เปลี่ยนพร้อม trip เช่น cycles)
 export async function flushCollection(collKey: keyof DatabaseState): Promise<void> {
@@ -359,4 +463,5 @@ export async function flushCollection(collKey: keyof DatabaseState): Promise<voi
   const arr = deepClean((cache as any)?.[collKey] || []); // clean ก่อน (ตัด undefined)
   if (fb) await fb.ref(`/${String(collKey)}`).set(ID_KEYED.includes(collKey) ? arrToMap(arr) : arr);
   else await persistLocal();
+  scheduleSnapshot();
 }

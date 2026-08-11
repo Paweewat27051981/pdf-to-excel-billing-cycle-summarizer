@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
-import { getDb, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed } from './server-db.js';
+import { getDb, peekCache, peekCacheAsync, warmCacheOnBoot, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed } from './server-db.js';
 import {
   DatabaseState,
   BillingCycle,
@@ -268,7 +268,10 @@ async function startServer() {
   // ตัด password ของสาขาออกเสมอ
   app.get('/api/state', async (req, res) => {
     try {
-      const db = await getDb();
+      // read เร็ว: รอแค่ snapshot โหลด (จาก disk เร็ว) ไม่รอ Firebase verify ที่อาจช้า
+      //   ถ้าไม่มี snapshot -> await getDb() ปกติ; write path ยังใช้ getDb() ที่ verify แล้วเสมอ
+      const db = (await peekCacheAsync()) || await getDb();
+      if (peekCache()) void getDb().catch(() => {}); // เริ่ม verify Firebase พื้นหลัง (ครั้งถัดไปได้ของ verified)
       const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : '';
       const inBranch = <T extends { branchId?: string }>(arr: T[]) =>
         branchId ? arr.filter((x) => x.branchId === branchId) : arr;
@@ -1021,7 +1024,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => console.log(`Server running at http://0.0.0.0:${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running at http://0.0.0.0:${PORT}`);
+    // warm cache ตอน boot: โหลด snapshot ก่อน (peekCache พร้อม -> /api/state ตอบได้แม้ Firebase ช้า)
+    // แล้ว verify กับ Firebase พื้นหลัง; ไม่ block listen (พอร์ตเปิดแล้ว config ตอบได้ทันที)
+    warmCacheOnBoot().then(() => console.log('[boot] cache พร้อมใช้งาน'))
+      .catch((e) => console.error('[boot] warm cache ล้มเหลว (จะ retry ตอน request):', e.message));
+  });
 }
 
 startServer().catch((error) => console.error('Failed to start server:', error));

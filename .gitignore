@@ -28,3 +28,5 @@ Excel/
 *.xlsx
 *.docx
 ~$*
+.cache-snapshot.json
+dist-*.zip
