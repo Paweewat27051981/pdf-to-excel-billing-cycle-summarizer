@@ -273,15 +273,26 @@ async function startServer() {
       const db = (await peekCacheAsync()) || await getDb();
       if (peekCache()) void getDb().catch(() => {}); // เริ่ม verify Firebase พื้นหลัง (ครั้งถัดไปได้ของ verified)
       const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : '';
+      // lazy load ต่องวด: tripsCycleId=<id> -> ส่งใบเฉพาะงวดนั้น (state เล็กลงมาก ไม่โตตามจำนวนงวด)
+      // tripsCycleId=current -> server เลือกงวดที่เปิดอยู่ให้ (logic เดียวกับ client auto-pick)
+      // ไม่ส่ง param = ส่งเต็มเหมือนเดิม (Dashboard/รายงานที่ใช้ข้ามงวด + client เก่า)
+      let tripsCycleId = typeof req.query.tripsCycleId === 'string' ? req.query.tripsCycleId : '';
+      if (tripsCycleId === 'current') {
+        const open = db.cycles.find((c) => c.status === 'open');
+        tripsCycleId = open ? open.id : (db.cycles[db.cycles.length - 1]?.id || '');
+      }
       const inBranch = <T extends { branchId?: string }>(arr: T[]) =>
         branchId ? arr.filter((x) => x.branchId === branchId) : arr;
+      const trips = tripsCycleId
+        ? db.tripDocuments.filter((t) => t.cycleId === tripsCycleId)
+        : db.tripDocuments;
       const safe: DatabaseState = {
         ...db,
         branches: db.branches.map((b) => ({ ...b, password: '' })),
         vehicles: inBranch(db.vehicles),
         rateMasters: inBranch(db.rateMasters),
         rateOverrides: inBranch(db.rateOverrides),
-        tripDocuments: inBranch(db.tripDocuments),
+        tripDocuments: inBranch(trips),
         fuelEntries: inBranch(db.fuelEntries),
         deductions: inBranch(db.deductions),
         receiverGroups: inBranch(db.receiverGroups),
@@ -292,7 +303,23 @@ async function startServer() {
         moneyCategories: inBranch(db.moneyCategories),
         tripDistances: inBranch(db.tripDistances || []),
       };
-      res.json(safe);
+      // บอก client ว่า tripDocuments ในก้อนนี้ครอบคลุมแค่งวดไหน ('' = ทุกงวด)
+      res.json({ ...safe, _tripsCycleId: tripsCycleId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // เลขใบกระจายทุกงวดของสาขา (เบามาก ~ไม่กี่ร้อย KB) — ให้หน้า Review เช็คเลขซ้ำข้ามงวดได้
+  // แม้ state จะโหลดใบแค่งวดเดียว (lazy) — กฎเหล็ก docNo ห้ามซ้ำทุกรอบยังเตือนก่อนบันทึกได้
+  app.get('/api/doc-numbers', async (req, res) => {
+    try {
+      const db = (await peekCacheAsync()) || await getDb();
+      const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : '';
+      const list = db.tripDocuments
+        .filter((t) => !branchId || t.branchId === branchId)
+        .map((t) => ({ documentNo: t.documentNo, cycleId: t.cycleId }));
+      res.json(list);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

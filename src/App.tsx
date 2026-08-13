@@ -105,12 +105,23 @@ export default function App() {
   // branchId ที่ใช้กรอง/บันทึก
   const effBranchId = auth?.isHQ ? workBranchId : (auth?.id || '');
 
-  const fetchState = async (autoCycle?: string) => {
+  // lazy load ต่องวด: db.tripDocuments ตอนนี้ครอบคลุมงวดไหน ('' = ยังไม่โหลด, 'all' = ทุกงวด, อื่น = cycleId)
+  const tripsLoadedRef = useRef<string>('');
+
+  // scope 'cycle' = โหลดใบเฉพาะงวด (หน้าคำนวณ — state เล็ก ~9MB แทน 37MB+ ที่โตตามงวด)
+  // scope 'all' = โหลดใบทุกงวด (Dashboard/รายงานที่สรุปข้ามงวด)
+  const fetchState = async (autoCycle?: string, tripsScope?: 'cycle' | 'all') => {
     setLoading(true);
     try {
-      const url = effBranchId ? `/api/state?branchId=${encodeURIComponent(effBranchId)}` : '/api/state';
+      // default: หน้าคำนวณโหลดแค่งวด, หน้าอื่นโหลดเต็ม (ใช้ข้ามงวด)
+      const scope = tripsScope || (tab === 'calc' ? 'cycle' : 'all');
+      const params = new URLSearchParams();
+      if (effBranchId) params.set('branchId', effBranchId);
+      if (scope === 'cycle') params.set('tripsCycleId', autoCycle || selectedCycleId || 'current');
+      const qs = params.toString();
+      const url = `/api/state${qs ? `?${qs}` : ''}`;
       // ลองใหม่อัตโนมัติเมื่อ server กำลัง restart (502/503/เชื่อมต่อไม่ได้) กันหน้าโหลดข้อมูลไม่ครบ
-      let data: DatabaseState | null = null;
+      let data: (DatabaseState & { _tripsCycleId?: string }) | null = null;
       for (let attempt = 1; attempt <= 4; attempt++) {
         try {
           const res = await fetch(API_PREFIX + url);
@@ -124,6 +135,7 @@ export default function App() {
         }
       }
       if (!data) throw new Error('เซิร์ฟเวอร์ไม่พร้อม (restart อยู่) — รีเฟรชอีกครั้ง');
+      tripsLoadedRef.current = data._tripsCycleId || 'all'; // '' จาก server = ส่งเต็ม
       setDb(data);
       if (autoCycle) setSelectedCycleId(autoCycle);
       else if (!selectedCycleId && data.cycles.length) {
@@ -145,9 +157,24 @@ export default function App() {
 
   // โหลดข้อมูลตามสาขาที่เลือก (HQ workBranchId='' = ทุกสาขา)
   useEffect(() => {
-    if (!auth) { fetch(API_PREFIX + '/api/state').then((r) => r.json()).then(setDb).finally(() => { setLoading(false); setBooted(true); }); return; }
+    if (!auth) { fetch(API_PREFIX + '/api/state?tripsCycleId=current').then((r) => r.json()).then(setDb).finally(() => { setLoading(false); setBooted(true); }); return; }
     fetchState();
   }, [auth, workBranchId]);
+
+  // เข้าแท็บที่สรุปข้ามงวด (Dashboard/รายงาน ฯลฯ) แต่ตอนนี้มีใบแค่งวดเดียว -> โหลดเต็มครั้งเดียว
+  // deps มี loading ด้วย: กัน race ตอนสลับแท็บระหว่าง initial fetch ยังไม่จบ (Codex P2) —
+  // พอโหลดเสร็จ effect รันซ้ำ เห็นว่าแท็บนี้ต้องการเต็มแต่มีแค่งวดเดียว -> โหลดเต็มให้
+  useEffect(() => {
+    if (!auth || loading) return;
+    if (tab !== 'calc' && tripsLoadedRef.current && tripsLoadedRef.current !== 'all') fetchState(selectedCycleId, 'all');
+  }, [tab, loading]);
+
+  // อยู่หน้าคำนวณ + เปลี่ยนงวด แต่ใบที่โหลดไว้เป็นงวดอื่น -> โหลดใบงวดใหม่
+  useEffect(() => {
+    if (!auth || !booted || tab !== 'calc' || !selectedCycleId) return;
+    const loaded = tripsLoadedRef.current;
+    if (loaded && loaded !== 'all' && loaded !== selectedCycleId) fetchState(selectedCycleId, 'cycle');
+  }, [selectedCycleId]);
 
   const doLogin = async (a: BranchAuth) => {
     localStorage.setItem('branchAuth', JSON.stringify(a));
@@ -756,7 +783,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
       </div>
 
       {/* review */}
-      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
+      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
 
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
@@ -783,14 +810,28 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
 }
 
 // Review board — แก้ไข extracted + แสดงผล preview พร้อม badge
-function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '' }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '' }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
 
+  // เลขใบทุกงวดของสาขา (เบา) — เช็คซ้ำข้ามงวดได้แม้ state โหลดใบแค่งวดเดียว (lazy load)
+  const [docIndex, setDocIndex] = useState<{ documentNo: string; cycleId: string }[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`${API_PREFIX}/api/doc-numbers${branchId ? `?branchId=${encodeURIComponent(branchId)}` : ''}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((list) => { if (alive && Array.isArray(list)) setDocIndex(list); })
+      .catch(() => { /* โหลดไม่ได้ -> fallback ใช้ existingTrips (งวดที่โหลด) + server 409 เป็นด่านสุดท้าย */ });
+    return () => { alive = false; };
+  }, [branchId, pending.fileName]); // refetch ต่อไฟล์ใหม่ -> เห็นเลขใบที่เพิ่งบันทึกไปด้วย (ไม่ stale)
+
   // 🔒 กฎเหล็ก: เลขใบกระจายห้ามซ้ำในสาขา (ทุกรอบ)
+  // เช็คจาก docIndex (ทุกงวด) ก่อน; ถ้ายังโหลดไม่เสร็จ fallback existingTrips (งวดที่โหลด)
   const docNo = (ext.documentNo || '').trim();
-  const dupTrip = docNo ? (existingTrips as TripDocument[]).find((t) => (t.documentNo || '').trim() === docNo) : null;
+  const dupFromIndex = docNo && docIndex ? docIndex.find((d) => (d.documentNo || '').trim() === docNo) : null;
+  const dupFromLoaded = docNo ? (existingTrips as TripDocument[]).find((t) => (t.documentNo || '').trim() === docNo) : null;
+  const dupTrip = dupFromIndex || dupFromLoaded;
   const dupCycleName = dupTrip ? ((cycles as BillingCycle[]).find((c) => c.id === dupTrip.cycleId)?.name || dupTrip.cycleId) : '';
   const isDup = !!dupTrip;
 
