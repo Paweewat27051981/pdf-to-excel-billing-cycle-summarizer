@@ -66,7 +66,7 @@ function initFirebase(): Database | null {
       : initializeApp({ credential: cert(serviceAccount), databaseURL: FIREBASE_DB_URL });
     console.log('[firebase] initializeApp เสร็จ -> getDatabase...');
     firebaseDb = getDatabase(app);
-    console.log('✅ ใช้ Firebase Realtime Database (cache + write-through)');
+    console.log('[firebase] getDatabase เสร็จ (ยังไม่ได้อ่าน root)'); // ✅ จริงย้ายไปหลัง read สำเร็จ (กัน false positive)
     return firebaseDb;
   } catch (e) {
     console.error('Firebase init ล้มเหลว ใช้ db.json แทน:', (e as Error).message);
@@ -255,14 +255,48 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   };
 }
 
-// อ่าน Firebase ref พร้อม timeout (กัน .once() ค้างตลอดกาลเมื่อ connect/socket ค้าง -> getDb ค้าง -> server แฮงก์)
-function readRootWithTimeout(fb: Database): Promise<Partial<DatabaseState> | null> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`อ่าน Firebase เกิน ${FIREBASE_READ_TIMEOUT_MS}ms (network/connection ค้าง)`)), FIREBASE_READ_TIMEOUT_MS);
-    fb.ref('/').once('value')
-      .then((snap) => { clearTimeout(timer); resolve(snap.val() as Partial<DatabaseState> | null); })
-      .catch((e) => { clearTimeout(timer); reject(e); });
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      console.error(`[firebase] ⏱ guard เตะ: ${label} เกิน ${ms}ms -> throw`);
+      reject(new Error(`อ่าน Firebase (${label}) เกิน ${ms}ms (network/connection ค้าง)`));
+    }, ms);
+    if (typeof timer.unref === 'function') timer.unref();
   });
+  // clear timer เมื่อ p settle (สำเร็จ/ล้ม) -> ไม่ emit log timeout เก้อ + ไม่ค้าง timer (Codex P3)
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
+// รายชื่อ top-level node ทั้งหมดใน RTDB (อ่านทีละ node แทน root ทั้งก้อน)
+const ROOT_NODES = [
+  'settings', 'branches', 'cycles', 'vehicles', 'rateMasters', 'rateOverrides', 'rateMasterHistory',
+  'receiverGroups', 'receiverGroupAliases', 'conversionRules', 'manualBoxSenders', 'destinationOverrides',
+  'moneyCategories', 'tripDocuments', 'fuelEntries', 'deductions', 'tripDistances', 'oilPrices',
+  'mountainRoutes', 'fuelPolicy',
+] as const;
+
+// อ่าน Firebase ทีละ top-level node (ไม่อ่าน root ทั้งก้อน) — กัน .val() build object 35MB
+// แบบ sync ครั้งเดียว = block event loop นาน (พบว่าค้าง 30+ นาที). อ่านทีละ node + await ระหว่าง
+// node = yield event loop ให้ /api/config, healthcheck ตอบได้ระหว่างโหลด
+// ⚠️ Trade-off (Codex P2): ไม่ atomic เท่า once('/') — ถ้ามีคนเขียนหลาย node ระหว่างอ่านตอน boot
+//    cache อาจผสม 2 จุดเวลา. ยอมรับได้เพราะ NEOSIAM มี instance เดียวเขียน (ดู memory
+//    render-cache-overwrites-firebase) + boot มักไม่มีคนใช้ + ครั้งถัดไป reload/write-through แก้เอง.
+//    แลกกับการไม่ block event loop 30 นาที (prod ล่ม) ซึ่งร้ายแรงกว่ามาก
+async function readRootWithTimeout(fb: Database): Promise<Partial<DatabaseState> | null> {
+  const out: Record<string, any> = {};
+  let hasAny = false;
+  const deadline = Date.now() + FIREBASE_READ_TIMEOUT_MS; // total timeout ครอบทั้ง loop (Codex P2)
+  for (const node of ROOT_NODES) {
+    const remain = deadline - Date.now();
+    if (remain <= 0) throw new Error(`อ่าน Firebase เกิน ${FIREBASE_READ_TIMEOUT_MS}ms รวมทุก node (network ช้า)`);
+    // timeout ต่อ node = เวลาที่เหลือของ deadline รวม (ไม่ให้รวมกันเกินลิมิตเดียว)
+    const snap = await withTimeout(fb.ref(`/${node}`).once('value'), remain, `อ่าน ${node}`);
+    const val = snap.val();
+    if (val != null) { out[node] = val; hasAny = true; }
+    await new Promise((r) => setImmediate(r)); // yield event loop ระหว่าง node (กัน block ยาว)
+  }
+  return hasAny ? (out as Partial<DatabaseState>) : null;
 }
 
 // โหลด DB จากแหล่งจริง (Firebase หรือ db.json) — เรียกครั้งเดียว (ผ่าน lock ใน getDb)
@@ -271,7 +305,7 @@ async function loadDbFromSource(): Promise<DatabaseState> {
   if (fb) {
     console.log('[firebase] เริ่มอ่าน root (once)...'); // ถ้าค้างนานหลังบรรทัดนี้ = read/network ค้าง (ไม่ใช่ init)
     const val = await readRootWithTimeout(fb); // มี timeout กันค้าง
-    console.log('[firebase] อ่าน root เสร็จ'); // ถึงบรรทัดนี้ = read สำเร็จ
+    console.log('✅ ใช้ Firebase Realtime Database — อ่าน root เสร็จ (read ได้จริง)'); // ✅ จริงตรงนี้ (ไม่ใช่ตอน getDatabase)
     const loaded = ensureShape(val || {});
     // ⚠️ ต้อง set cache ก่อน saveDb/flushCollection (มันอ่านจาก cache) ไม่งั้นเขียน empty ทับ = ข้อมูลหาย (Codex P1)
     cache = loaded;
