@@ -24,7 +24,8 @@ const DB_FILE = path.join(process.cwd(), 'db.json');
 const SEED_MASTERS_FILE = path.join(process.cwd(), 'seed-masters.json');
 // snapshot cache ลง disk เร่ง boot (อ่าน local <5วิ แทนโหลด Firebase 35MB 2-16 นาที)
 // Firebase = source of truth เสมอ; snapshot แค่เร่งความเร็ว boot + sync Firebase พื้นหลัง
-const SNAPSHOT_FILE = process.env.CACHE_SNAPSHOT_FILE || path.join(process.cwd(), '.cache-snapshot.json');
+// เขียนลง uploads/ (mount :rw บน NAS) — process.cwd()/dist mount :ro เขียนไม่ได้ (CFC เจอ snapshot ไม่เคยถูกเขียน)
+const SNAPSHOT_FILE = process.env.CACHE_SNAPSHOT_FILE || path.join(process.cwd(), 'uploads', '.cache-snapshot.json');
 const ENABLE_SNAPSHOT = process.env.DISABLE_CACHE_SNAPSHOT !== '1'; // ปิดได้ถ้าจำเป็น
 
 // ---------------------------------------------------------------------------
@@ -290,10 +291,12 @@ async function readRootWithTimeout(fb: Database): Promise<Partial<DatabaseState>
   for (const node of ROOT_NODES) {
     const remain = deadline - Date.now();
     if (remain <= 0) throw new Error(`อ่าน Firebase เกิน ${FIREBASE_READ_TIMEOUT_MS}ms รวมทุก node (network ช้า)`);
+    const t0 = Date.now();
     // timeout ต่อ node = เวลาที่เหลือของ deadline รวม (ไม่ให้รวมกันเกินลิมิตเดียว)
     const snap = await withTimeout(fb.ref(`/${node}`).once('value'), remain, `อ่าน ${node}`);
-    const val = snap.val();
+    const val = snap.val(); // .val() ของ node ใหญ่ (tripDocuments) อาจ block ตรงนี้ -> log เวลาจะเห็น
     if (val != null) { out[node] = val; hasAny = true; }
+    console.log(`[firebase] node ${node}: ${Date.now() - t0}ms`); // จับเวลาต่อ node -> เห็นตัวที่ block/ช้า
     await new Promise((r) => setImmediate(r)); // yield event loop ระหว่าง node (กัน block ยาว)
   }
   return hasAny ? (out as Partial<DatabaseState>) : null;
@@ -372,9 +375,14 @@ async function ensureSnapshotLoaded(): Promise<void> {
 }
 
 // เรียกตอน boot: โหลด snapshot เข้า cache ก่อน (peekCache พร้อมทันที) แล้วค่อย verify Firebase พื้นหลัง
+// ล้มเหลว -> log แล้ว rethrow (Codex P3: ไม่ให้ caller log "cache พร้อม" หลอกทั้งที่โหลดไม่สำเร็จ)
 export async function warmCacheOnBoot(): Promise<void> {
   await ensureSnapshotLoaded();   // snapshot พร้อม -> /api/state ตอบได้แม้ Firebase ยังช้า
-  await getDb().catch(() => {});  // verify กับ Firebase (source of truth)
+  try { await getDb(); }
+  catch (e) {
+    console.error('[boot] ❌ โหลด cache ล้มเหลว (จะ retry ตอน request):', (e as Error)?.message || e);
+    throw e; // ให้ caller รู้ว่ายังไม่พร้อมจริง (log สำเร็จเฉพาะเมื่อโหลดได้)
+  }
 }
 
 // read เร็วสำหรับ /api/state: รอแค่ snapshot โหลด (จาก disk เร็ว) ไม่รอ Firebase verify
