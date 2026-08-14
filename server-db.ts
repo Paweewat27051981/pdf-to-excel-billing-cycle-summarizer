@@ -368,8 +368,16 @@ async function ensureSnapshotLoaded(): Promise<void> {
   if (cache) return;                       // มี cache แล้ว (snapshot หรือ verified) -> ไม่ต้อง
   if (snapshotLoadPromise) return snapshotLoadPromise;
   snapshotLoadPromise = (async () => {
+    const t0 = Date.now();
     const snap = await readSnapshot();
-    if (snap && !cache) { cache = snap; bootedFromSnapshot = true; snapshotBootAt = Date.now(); } // ไม่ทับถ้ามีคนโหลดของจริงไปแล้ว
+    if (snap && !cache) {
+      cache = snap; bootedFromSnapshot = true; snapshotBootAt = Date.now(); // ไม่ทับถ้ามีคนโหลดของจริงไปแล้ว
+      // observability (CFC ขอ): ให้ log บอกชัดว่า boot รอบนี้อ่าน snapshot — debug รอบหน้าง่าย
+      try {
+        const sz = fsSync.statSync(SNAPSHOT_FILE).size;
+        console.log(`[boot] โหลด snapshot ${(sz / 1e6).toFixed(1)}MB ใน ${Date.now() - t0}ms — read ตอบได้ทันที (Firebase verify พื้นหลัง)`);
+      } catch { console.log(`[boot] โหลด snapshot ใน ${Date.now() - t0}ms`); }
+    }
   })().finally(() => { snapshotLoadPromise = null; });
   return snapshotLoadPromise;
 }
