@@ -114,7 +114,9 @@ export default function App() {
     setLoading(true);
     try {
       // default: หน้าคำนวณโหลดแค่งวด, หน้าอื่นโหลดเต็ม (ใช้ข้ามงวด)
-      const scope = tripsScope || (tab === 'calc' ? 'cycle' : 'all');
+      // แท็บที่ใช้ข้อมูลแค่งวดเดียว (คำนวณ + น้ำมัน/รายการหัก) -> โหลดเฉพาะงวด; แท็บอื่นสรุปข้ามงวด -> เต็ม
+      const cycleScoped = tab === 'calc' || tab === 'fuel';
+      const scope = tripsScope || (cycleScoped ? 'cycle' : 'all');
       const params = new URLSearchParams();
       if (effBranchId) params.set('branchId', effBranchId);
       if (scope === 'cycle') params.set('tripsCycleId', autoCycle || selectedCycleId || 'current');
@@ -166,12 +168,12 @@ export default function App() {
   // พอโหลดเสร็จ effect รันซ้ำ เห็นว่าแท็บนี้ต้องการเต็มแต่มีแค่งวดเดียว -> โหลดเต็มให้
   useEffect(() => {
     if (!auth || loading) return;
-    if (tab !== 'calc' && tripsLoadedRef.current && tripsLoadedRef.current !== 'all') fetchState(selectedCycleId, 'all');
+    if (tab !== 'calc' && tab !== 'fuel' && tripsLoadedRef.current && tripsLoadedRef.current !== 'all') fetchState(selectedCycleId, 'all');
   }, [tab, loading]);
 
   // อยู่หน้าคำนวณ + เปลี่ยนงวด แต่ใบที่โหลดไว้เป็นงวดอื่น -> โหลดใบงวดใหม่
   useEffect(() => {
-    if (!auth || !booted || tab !== 'calc' || !selectedCycleId) return;
+    if (!auth || !booted || (tab !== 'calc' && tab !== 'fuel') || !selectedCycleId) return;
     const loaded = tripsLoadedRef.current;
     if (loaded && loaded !== 'all' && loaded !== selectedCycleId) fetchState(selectedCycleId, 'cycle');
   }, [selectedCycleId]);
@@ -901,14 +903,22 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
       )}
 
       {/* 📅 รอบที่ใบนี้จะเข้า (อัตโนมัติจากวันที่ในใบ) */}
-      {tgtCycle && (
-        <div className={`rounded-xl p-3 text-xs flex items-center gap-1.5 font-semibold border ${cycleClosed ? 'bg-rose-50 border-rose-400 text-rose-800' : 'bg-[#EAF2F8] border-brand-navy/30 text-brand-navy'}`}>
-          <Calendar className="w-4 h-4 shrink-0" />
-          ใบนี้จะเข้ารอบ: <b>{tgtCycle}</b> (ตามวันที่ {ext.documentDate})
-          {cycleNew && <span className="bg-emerald-600 text-white rounded-full px-2 py-0.5">เปิดรอบใหม่อัตโนมัติ</span>}
-          {cycleClosed && <span className="ml-1">⚠️ รอบนี้ถูกปิดอยู่ — บันทึกไม่ได้ (ให้ HQ เปิดรอบก่อน)</span>}
-        </div>
-      )}
+      {tgtCycle && (() => {
+        // เตือนวันที่ผิดปกติ: ห่างจากวันนี้เกิน 45 วัน มักเป็นพิมพ์เดือน/ปีผิดในไฟล์ -> ใบเข้าผิดรอบเงียบๆ
+        // (เคสจริง: ใบน้ำมัน 3242 พิมพ์ 17/6 แทน 17/7 -> ยอดรอบขาด 1,000) — เตือนไม่บล็อก (คีย์ย้อนหลังได้จริง)
+        const dd = new Date(ext.documentDate + 'T00:00:00');
+        const diffDays = isNaN(dd.getTime()) ? 0 : Math.abs((Date.now() - dd.getTime()) / 86400000);
+        const dateSuspicious = diffDays > 45;
+        return (
+          <div className={`rounded-xl p-3 text-xs flex items-center gap-1.5 font-semibold border flex-wrap ${cycleClosed ? 'bg-rose-50 border-rose-400 text-rose-800' : dateSuspicious ? 'bg-amber-50 border-amber-400 text-amber-900' : 'bg-[#EAF2F8] border-brand-navy/30 text-brand-navy'}`}>
+            <Calendar className="w-4 h-4 shrink-0" />
+            ใบนี้จะเข้ารอบ: <b>{tgtCycle}</b> (ตามวันที่ {ext.documentDate})
+            {cycleNew && <span className="bg-emerald-600 text-white rounded-full px-2 py-0.5">เปิดรอบใหม่อัตโนมัติ</span>}
+            {cycleClosed && <span className="ml-1">⚠️ รอบนี้ถูกปิดอยู่ — บันทึกไม่ได้ (ให้ HQ เปิดรอบก่อน)</span>}
+            {dateSuspicious && !cycleClosed && <span className="ml-1">⚠️ วันที่ห่างจากวันนี้ {Math.round(diffDays)} วัน — ตรวจว่าพิมพ์เดือน/ปีถูกไหม (ถ้าผิด ใบจะเข้าผิดรอบ)</span>}
+          </div>
+        );
+      })()}
 
       {/* warnings */}
       {(prev.warnings || []).length > 0 && (

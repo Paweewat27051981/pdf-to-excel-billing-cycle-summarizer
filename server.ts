@@ -286,6 +286,9 @@ async function startServer() {
       const trips = tripsCycleId
         ? db.tripDocuments.filter((t) => t.cycleId === tripsCycleId)
         : db.tripDocuments;
+      // เฟส 2: น้ำมัน+รายการหัก ก็โตตามงวดเช่นกัน -> กรองต่องวดด้วย param เดียวกัน
+      const fuelScoped = tripsCycleId ? db.fuelEntries.filter((f) => f.cycleId === tripsCycleId) : db.fuelEntries;
+      const dedScoped = tripsCycleId ? db.deductions.filter((d) => d.cycleId === tripsCycleId) : db.deductions;
       const safe: DatabaseState = {
         ...db,
         branches: db.branches.map((b) => ({ ...b, password: '' })),
@@ -293,8 +296,8 @@ async function startServer() {
         rateMasters: inBranch(db.rateMasters),
         rateOverrides: inBranch(db.rateOverrides),
         tripDocuments: inBranch(trips),
-        fuelEntries: inBranch(db.fuelEntries),
-        deductions: inBranch(db.deductions),
+        fuelEntries: inBranch(fuelScoped),
+        deductions: inBranch(dedScoped),
         receiverGroups: inBranch(db.receiverGroups),
         receiverGroupAliases: inBranch(db.receiverGroupAliases),
         conversionRules: inBranch(db.conversionRules),
@@ -502,13 +505,19 @@ async function startServer() {
       const buffer = Buffer.from(fileBase64.replace(/^data:[^;]+;base64,/, ''), 'base64');
       const { fuel, summary } = parseFuelExcel(buffer);
       if (!fuel.length) return res.status(422).json({ error: 'อ่านไฟล์ไม่พบใบสั่งเติมน้ำมัน — ตรวจสอบหัวคอลัมน์ ทะเบียน/วันที่/จำนวนเงิน' });
+      // guard เพดานหลวม: ไฟล์เทมเพลตจริง ~ไม่กี่ร้อยแถว; เกิน 5,000 = ไฟล์ผิด/parse เพี้ยน ไม่ใช่งานจริง
+      if (fuel.length > 5000) return res.status(422).json({ error: `ไฟล์มีรายการมากผิดปกติ (${fuel.length} แถว) — ตรวจว่าเลือกไฟล์เทมเพลตค่าน้ำมันถูกไฟล์ไหม` });
       const db = await getDb();
       let created = 0, skippedDup = 0;
       const closedCycles = new Set<string>();
       const createdCycles = new Set<string>();
       const createdEntries: FuelEntry[] = [];
+      // นับว่าใบไปเข้ารอบไหนบ้าง — ไฟล์เทมเพลตปกติควรเป็นรอบเดียว; แตกหลายรอบ = วันที่ในไฟล์
+      // น่าจะพิมพ์ผิด (เคสจริง: ใบ 3242 พิมพ์ 17/6 แทน 17/7 -> เข้ารอบ มิ.ย. เงียบๆ ยอดรอบขาด 1,000)
+      const perCycle = new Map<string, { name: string; refs: string[] }>();
       // เลขใบสั่งเติมห้ามซ้ำในสาขา (เทียบกับของเดิม + ในไฟล์เดียวกัน)
       const seenRef = new Set(db.fuelEntries.filter((f) => f.branchId === branchId).map((f) => (f.refNo || '').trim()).filter(Boolean));
+      const thDate = (iso: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : iso; };
       for (const f of fuel) {
         const rv = resolveCycleForDate(db, f.date, true);
         if (rv.invalid || !rv.cycle) continue;
@@ -521,10 +530,20 @@ async function startServer() {
         db.fuelEntries.push(entry);
         createdEntries.push(entry);
         created++;
+        const pc = perCycle.get(rv.cycle.id) || { name: rv.cycle.name, refs: [] };
+        pc.refs.push(`${rn || '(ไม่มีเลข)'} (${thDate(f.date)}, ${f.plateNo})`);
+        perCycle.set(rv.cycle.id, pc);
       }
       await saveRecords('fuelEntries', createdEntries);
       if (createdCycles.size) await flushCollection('cycles');
       if (createdCycles.size) summary.push(`เปิดรอบใหม่อัตโนมัติ: ${[...createdCycles].join(', ')}`);
+      // ⚠️ เตือนเมื่อใบในไฟล์เดียวกระจายเข้าหลายรอบ — ให้ตรวจวันที่ใบส่วนน้อยว่าพิมพ์ผิดเดือน/ปีไหม
+      if (perCycle.size > 1) {
+        const groups = [...perCycle.values()].sort((a, b) => b.refs.length - a.refs.length);
+        const minority = groups.slice(1); // ทุกกลุ่มที่ไม่ใช่กลุ่มใหญ่สุด
+        const detail = minority.map((g) => `${g.refs.join(', ')} -> เข้ารอบ "${g.name}"`).join(' | ');
+        summary.push(`⚠️ ใบในไฟล์กระจายเข้า ${perCycle.size} รอบ (ส่วนใหญ่เข้า "${groups[0].name}") — โปรดตรวจวันที่ของ: ${detail} ว่าพิมพ์เดือน/ปีถูกต้องไหม (ถ้าผิด ให้ลบใบนั้นในรอบที่เข้าไป แล้วแก้วันที่ในไฟล์และนำเข้าใหม่)`);
+      }
       if (skippedDup) summary.push(`⚠️ ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ`);
       if (closedCycles.size) summary.push(`⚠️ ข้ามรายการของรอบที่ปิดอยู่: ${[...closedCycles].join(', ')} (ให้ HQ เปิดรอบก่อน)`);
       res.status(201).json({ success: true, created, summary });
@@ -754,6 +773,10 @@ async function startServer() {
         extracted: ExtractedTripDocument; fileName: string; branchId: string; overwrite?: boolean;
       };
       if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
+      // guard เพดานหลวม: ใบจริงมี ~10-40 จุด; เกิน 1,000 = ข้อมูล parse เพี้ยน ไม่ใช่ใบจริง
+      if ((extracted?.receipts?.length || 0) > 1000) {
+        return res.status(422).json({ error: `ใบนี้มีใบรับมากผิดปกติ (${extracted.receipts.length} จุด) — ตรวจไฟล์ว่าถูกต้องไหม` });
+      }
       const db = await getDb();
 
       // 📅 เปิดรอบอัตโนมัติ: จัดใบเข้ารอบตาม "วันที่ในใบ" (1-15 / 16-สิ้นเดือน) สร้างรอบให้ถ้ายังไม่มี
