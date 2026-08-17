@@ -884,7 +884,21 @@ async function startServer() {
         return { ...recomputed, id: t.id, isVerified: t.isVerified, createdAt: t.createdAt };
       };
 
-      const inCycle = db.tripDocuments.filter((t) => t.cycleId === cycle.id);
+      // เลือกเฉพาะใบที่ระบุ (docNos) — สำหรับแก้ราคาเจาะจงหลัง master เปลี่ยน โดยไม่ให้
+      // ราคา master ตัวอื่นที่แก้หลังใบบันทึกรั่วเข้าใบทั้งรอบ (เคยเกือบพลาด: recalc ทั้งรอบ
+      // จะเปลี่ยน 126 ใบ +2,889 ทั้งที่ตั้งใจแก้ 6 ใบชัยนาท -274)
+      const docNos: string[] = Array.isArray(req.body?.docNos)
+        ? req.body.docNos.map((s: any) => String(s).trim()).filter(Boolean)
+        : [];
+      const docNoSet = new Set(docNos);
+      let inCycle = db.tripDocuments.filter((t) => t.cycleId === cycle.id);
+      let notFound: string[] = [];
+      if (docNoSet.size) {
+        const found = new Set(inCycle.map((t) => (t.documentNo || '').trim()));
+        notFound = docNos.filter((n) => !found.has(n));
+        inCycle = inCycle.filter((t) => docNoSet.has((t.documentNo || '').trim()));
+        if (!inCycle.length) return res.status(404).json({ error: `ไม่พบใบที่ระบุในรอบนี้: ${docNos.join(', ')}` });
+      }
 
       if (dryRun) {
         // จำแนกผลต่าง: <=0.10 บาท = ปัดเศษล้วน, >0.10 = ราคา/logic เปลี่ยน
@@ -912,18 +926,20 @@ async function startServer() {
           totalDelta: round2(newSum - oldSum),
           // ใบที่เปลี่ยนราคา/logic (ต่าง > 0.10) เรียงตามผลต่างมากสุด — ต้องดูก่อน apply
           priceChanges: priceChanged.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 50),
+          ...(docNoSet.size ? { scopedTo: docNos, notFound } : {}),
         });
       }
 
       const changed: TripDocument[] = [];
       db.tripDocuments = db.tripDocuments.map((t) => {
         if (t.cycleId !== cycle.id) return t;
+        if (docNoSet.size && !docNoSet.has((t.documentNo || '').trim())) return t; // จำกัดเฉพาะใบที่ระบุ
         const out = recompute(t);
         changed.push(out);
         return out;
       });
       await saveRecords('tripDocuments', changed);
-      res.json({ success: true, count: changed.length });
+      res.json({ success: true, count: changed.length, ...(docNoSet.size ? { scopedTo: docNos, notFound } : {}) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
