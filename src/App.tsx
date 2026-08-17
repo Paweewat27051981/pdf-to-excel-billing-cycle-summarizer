@@ -2187,6 +2187,12 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const [pending, setPending] = useState<Record<string, { price?: number; pieceThreshold?: number | null }>>({});
   const [resetKey, setResetKey] = useState(0);
   const [showExpired, setShowExpired] = useState(false); // false = แสดงเฉพาะราคาที่ใช้ได้ในรอบที่เลือก (ซ่อนราคาที่หมดอายุ)
+  // ผล rate-impact หลังแก้ราคา (แถบเตือนใบที่กระทบ) — ต้องอยู่ก่อน early return (React hook order)
+  const [impact, setImpact] = useState<any>(null);
+  const [impactBusy, setImpactBusy] = useState(false);
+  // สลับรอบ/สาขา -> เคลียร์แถบ + bump token (กัน response ที่ค้างท่อกลับมา set แถบของรอบเก่า)
+  const impactReqRef = useRef(0);
+  useEffect(() => { impactReqRef.current++; setImpact(null); }, [cycle?.id, branchId]);
   const onImportRates = async (files: FileList) => {
     const file = files[0];
     if (!file) return;
@@ -2222,8 +2228,15 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
       rateGroup: form.rateGroup?.trim() || '',
     };
     if (editId) {
+      // จังหวัดเดิมของ rate (ก่อนแก้) — ถ้าฟอร์มเปลี่ยนจังหวัด ใบจังหวัดเดิมต้องถูกตรวจด้วย
+      const prevRate = (db.rateMasters as RateMaster[]).find((x) => x.id === editId);
+      const prevProv = prevRate?.provinceName && prevRate.provinceName !== payload.provinceName ? [prevRate.provinceName] : [];
+      // rate เดิมเป็นแบบ keyword/หมวดพิเศษ (ไม่ผูกจังหวัด) -> ให้ server ตรวจทั้งรอบ (ค่าเดิม client เห็น server ไม่เห็น)
+      const wasKeywordBased = !!prevRate && ((prevRate.productCategory || 'normal') !== 'normal' ||
+        !!prevRate.receiverKeyword || !!prevRate.senderKeyword || !!prevRate.productKeyword);
       await api(`/api/rate-masters/${editId}`, 'PUT', payload);
       showToast('success', 'บันทึกการแก้ไขแล้ว');
+      void checkImpact([editId], prevProv, wasKeywordBased); // แก้ผ่านฟอร์มก็เปลี่ยนราคา/เงื่อนไขได้ -> เช็คใบที่กระทบเหมือน saveCell (Codex P2)
     } else {
       await api('/api/rate-masters', 'POST', payload);
       showToast('success', 'เพิ่มราคาแล้ว');
@@ -2298,12 +2311,14 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
         showToast('success', 'บันทึกราคาหลักแล้ว');
       }
       reload();
+      void checkImpact([r.id]); // ราคาเปลี่ยน -> เช็คว่ากระทบใบที่บันทึกแล้วในรอบนี้ไหม
     } catch (e: any) { showToast('error', e.message); }
   };
   const removeOverride = async (r: RateMaster) => {
     const o = ovFor(r); if (!o) return;
     await api(`/api/rate-overrides/${o.id}`, 'DELETE');
     showToast('success', 'กลับไปใช้ราคาหลักแล้ว'); reload();
+    void checkImpact([r.id]); // ลบ override = ราคากลับเป็นหลัก -> ใบที่คิดด้วย override อาจต้องอัปเดต
   };
 
   // ---- โหมดแก้หลายช่อง (batch) ----
@@ -2336,11 +2351,68 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
       }
       showToast('success', `บันทึก ${ids.length} ช่อง${cycleMode ? ` (เฉพาะรอบ ${cycle.name})` : ''} แล้ว`);
       setPending({}); reload();
+      void checkImpact(ids);
     } catch (e: any) { showToast('error', e.message); }
+  };
+
+  // ---- ตรวจใบที่กระทบหลังแก้ราคา (แก้ปัญหาถาวร: ใบเก่าค้างราคาเดิมเงียบๆ) ----
+  // หลังบันทึกราคา -> ถามระบบว่ามีใบที่บันทึกแล้วในรอบนี้ที่ยอดจะเปลี่ยนไหม -> แสดงแถบให้กดอัปเดต
+  const checkImpact = async (rateMasterIds: string[], extraProvinces: string[] = [], broad = false) => {
+    if (!cycle || cycle.status === 'closed' || !rateMasterIds.length) return;
+    const token = ++impactReqRef.current; // ทิ้ง response ที่กลับมาช้าหลังสลับรอบ/สาขา (Codex P2)
+    try {
+      const r = await api(`/api/cycles/${cycle.id}/rate-impact`, 'POST', { rateMasterIds, branchId, extraProvinces, broad });
+      if (token !== impactReqRef.current) return; // สลับหน้าจอไปแล้ว — ผลนี้เก่า ไม่ใช้
+      if (r?.affected?.length) setImpact({ ...r, _branchId: branchId }); // ผูกสาขาที่เช็คไว้กับผล
+      else setImpact(null);
+    } catch { /* เช็คไม่ได้ไม่ถือว่าพัง — ผู้ใช้ยัง recalculate เองได้ */ }
+  };
+  const applyImpact = async () => {
+    if (!impact?.affected?.length) return;
+    // กรองใบไม่มีเลขออก (ส่งค่าว่างไป server จะกลายเป็น recalc ทั้งรอบ — อันตราย)
+    const docNos = impact.affected.map((a: any) => (a.docNo || '').trim()).filter(Boolean);
+    const skipped = impact.affected.length - docNos.length;
+    if (!docNos.length) { showToast('error', 'ใบที่กระทบไม่มีเลขใบกระจาย — แก้ผ่าน Recalculate ทั้งรอบ (dry-run ก่อน) แทน'); return; }
+    if (skipped > 0) showToast('warning', `ข้าม ${skipped} ใบที่ไม่มีเลขใบกระจาย (ต้องแก้เอง)`);
+    const sign = impact.totalDelta > 0 ? '+' : '';
+    if (!window.confirm(`อัปเดต ${docNos.length} ใบให้ใช้ราคาใหม่? (รอบ ${impact.cycleName})\nยอดรวมรอบจะเปลี่ยน ${sign}${money(impact.totalDelta)} บาท`)) return;
+    setImpactBusy(true);
+    try {
+      // ใช้รอบ+สาขาจากตอนที่เช็ค (ไม่ใช่ค่าปัจจุบัน) — กันสลับหน้าจอแล้ว apply ผิดที่
+      const r = await api(`/api/cycles/${impact.cycleId}/recalculate`, 'POST', { docNos, branchId: impact._branchId });
+      showToast('success', `อัปเดต ${r.count} ใบตามราคาใหม่แล้ว`);
+      setImpact(null); reload();
+    } catch (e: any) { showToast('error', e.message); }
+    finally { setImpactBusy(false); }
   };
 
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
+      {/* ⚠️ แถบเตือน: ราคาที่เพิ่งแก้กระทบใบที่บันทึกแล้วในรอบนี้ */}
+      {impact && (
+        <div className="bg-amber-50 border-2 border-amber-400 rounded-xl p-3 mb-3 text-xs text-amber-900 space-y-2">
+          <div className="font-bold flex items-center gap-1.5">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            ราคาใหม่กระทบใบที่บันทึกแล้ว {impact.affected.length} ใบ ในรอบ {impact.cycleName}
+            (ยอดรวมจะเปลี่ยน {impact.totalDelta > 0 ? '+' : ''}{money(impact.totalDelta)} บาท)
+          </div>
+          <div className="max-h-32 overflow-y-auto space-y-0.5">
+            {impact.affected.map((a: any) => (
+              <div key={a.docNo}>• {a.docNo} ({a.plate}): ฿{money(a.old)} → ฿{money(a.new)} ({a.delta > 0 ? '+' : ''}{money(a.delta)})</div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => { void applyImpact(); }} disabled={impactBusy}
+              className="bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-4 py-1.5 font-bold disabled:opacity-50">
+              {impactBusy ? 'กำลังอัปเดต...' : `อัปเดต ${impact.affected.length} ใบตามราคาใหม่`}
+            </button>
+            <button onClick={() => setImpact(null)} disabled={impactBusy}
+              className="bg-white border border-amber-400 text-amber-800 rounded-lg px-4 py-1.5 font-semibold">
+              ไว้ก่อน (ใบเดิมคงราคาเดิม)
+            </button>
+          </div>
+        </div>
+      )}
       {/* นำเข้า/เทมเพลตราคาจาก Excel */}
       <div className="flex flex-wrap items-center gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5">
         <span className="text-xs font-semibold text-emerald-800">📥 นำเข้าราคาทั้งสาขาจาก Excel:</span>

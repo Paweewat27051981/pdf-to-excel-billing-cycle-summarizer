@@ -24,7 +24,7 @@ import {
   DeductionEntry,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument, normPlate, round2 } from './src/calc.js';
+import { computeTripDocument, normPlate, round2, textContains } from './src/calc.js';
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
 import { startOilPriceScheduler } from './src/experimental/oilPriceScheduler.js'; // [ทดลอง] auto 05:30 ไทย
@@ -887,11 +887,17 @@ async function startServer() {
       // เลือกเฉพาะใบที่ระบุ (docNos) — สำหรับแก้ราคาเจาะจงหลัง master เปลี่ยน โดยไม่ให้
       // ราคา master ตัวอื่นที่แก้หลังใบบันทึกรั่วเข้าใบทั้งรอบ (เคยเกือบพลาด: recalc ทั้งรอบ
       // จะเปลี่ยน 126 ใบ +2,889 ทั้งที่ตั้งใจแก้ 6 ใบชัยนาท -274)
-      const docNos: string[] = Array.isArray(req.body?.docNos)
-        ? req.body.docNos.map((s: any) => String(s).trim()).filter(Boolean)
-        : [];
+      const docNosRaw = Array.isArray(req.body?.docNos) ? req.body.docNos : null;
+      const docNos: string[] = docNosRaw ? docNosRaw.map((s: any) => String(s).trim()).filter(Boolean) : [];
+      // ส่ง docNos มาแต่กรองแล้วว่างหมด (เช่นเลขใบว่าง) -> ห้าม fallback เป็นทั้งรอบ (อันตราย) — 400 ชัดๆ
+      if (docNosRaw && !docNos.length) {
+        return res.status(400).json({ error: 'docNos ที่ส่งมาว่างทั้งหมด — ระบุเลขใบที่ต้องการ หรือไม่ส่ง docNos ถ้าต้องการทั้งรอบ' });
+      }
+      // เลขใบซ้ำได้ข้ามสาขา (unique ต่อสาขาเท่านั้น) — ระบุ scopeBranchId เมื่อใช้ docNos
+      // เพื่อไม่ให้ recompute ใบสาขาอื่นที่บังเอิญเลขตรงกัน (Codex P2)
+      const scopeBranchId: string = typeof req.body?.branchId === 'string' ? req.body.branchId : '';
       const docNoSet = new Set(docNos);
-      let inCycle = db.tripDocuments.filter((t) => t.cycleId === cycle.id);
+      let inCycle = db.tripDocuments.filter((t) => t.cycleId === cycle.id && (!scopeBranchId || t.branchId === scopeBranchId));
       let notFound: string[] = [];
       if (docNoSet.size) {
         const found = new Set(inCycle.map((t) => (t.documentNo || '').trim()));
@@ -933,6 +939,7 @@ async function startServer() {
       const changed: TripDocument[] = [];
       db.tripDocuments = db.tripDocuments.map((t) => {
         if (t.cycleId !== cycle.id) return t;
+        if (scopeBranchId && t.branchId !== scopeBranchId) return t;                // จำกัดสาขา (กันเลขซ้ำข้ามสาขา)
         if (docNoSet.size && !docNoSet.has((t.documentNo || '').trim())) return t; // จำกัดเฉพาะใบที่ระบุ
         const out = recompute(t);
         changed.push(out);
@@ -940,6 +947,96 @@ async function startServer() {
       });
       await saveRecords('tripDocuments', changed);
       res.json({ success: true, count: changed.length, ...(docNoSet.size ? { scopedTo: docNos, notFound } : {}) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ตรวจผลกระทบหลังแก้ราคา: ใบที่บันทึกแล้วในรอบนี้ ที่ "ราคาที่เพิ่งแก้" match และยอดจะเปลี่ยน
+  // -> UI แสดงแถบเตือน + ปุ่มอัปเดต (เรียก recalculate?docNos) — แก้ปัญหาถาวรเคสชัยนาท:
+  // แก้ราคา/override หลังใบถูกบันทึก ใบเก่าค้างราคาเดิมเงียบๆ ไม่มีใครรู้จนยอดไม่ตรง
+  app.post('/api/cycles/:id/rate-impact', async (req, res) => {
+    try {
+      const { rateMasterIds, branchId, extraProvinces, broad } = req.body as {
+        rateMasterIds: string[]; branchId?: string; extraProvinces?: string[]; broad?: boolean;
+      };
+      if (!Array.isArray(rateMasterIds) || !rateMasterIds.length) {
+        return res.status(400).json({ error: 'ต้องระบุ rateMasterIds' });
+      }
+      // จังหวัดเพิ่มเติมที่ต้องตรวจด้วย — เช่นแก้ "จังหวัด" ของ rate ผ่านฟอร์ม: ใบจังหวัดเดิม
+      // เคย match ตัวเก่าแต่ไม่ match ตัวใหม่ -> client ส่งจังหวัดเดิมมาให้ตรวจ (Codex P2)
+      const extraProvs: string[] = Array.isArray(extraProvinces)
+        ? extraProvinces.map((s) => String(s).trim()).filter(Boolean) : [];
+      const db = await getDb();
+      const cycle = db.cycles.find((c) => c.id === req.params.id);
+      if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
+      if (cycle.status === 'closed') return res.json({ closed: true, checked: 0, affected: [], totalDelta: 0 });
+      const rates = db.rateMasters.filter((r) => rateMasterIds.includes(r.id));
+      if (!rates.length) return res.status(404).json({ error: 'ไม่พบราคาที่ระบุ' });
+      const bId = branchId || rates[0].branchId || '';
+
+      // ใบในรอบ+สาขา ที่ "อาจ" เกี่ยวกับราคาที่แก้ — จับกว้างระดับจังหวัด (ไม่ใช้ matchRate แคบๆ)
+      // เหตุผล (Codex P2 สองรอบ): แก้อำเภอ/วันที่มีผล/สถานะ/เงื่อนไขพิเศษ ทำให้ใบที่เคย match
+      // ตัวเก่าไม่ match ตัวใหม่ -> ถ้ากรองด้วย rate ใหม่จะหลุด. จังหวัดกว้างพอครอบทั้งเก่า/ใหม่
+      // (recompute + delta จริงเป็นตัวกรองชั้นสุดท้าย จึงไม่รายงานเกินจริง; recompute เพิ่มไม่กี่ใบ)
+      // limitation: ถ้าแก้ "จังหวัด" ของ rate เอง ใบจังหวัดเดิมจะไม่ถูกตรวจ (พบยาก — เท่ากับสร้างเส้นทางใหม่)
+      const provinceHit = (prov: string, r: RateMaster) =>
+        textContains(prov, r.provinceName) || textContains(prov, (r as any).provinceShort || '') || textContains(r.provinceName || '', prov);
+      // rate แบบ keyword/หมวดพิเศษ (เช่น collect_back จับด้วยชื่อผู้ส่ง ไม่เช็คจังหวัด — Codex P2)
+      // -> จำกัดจังหวัดไม่ได้ ตรวจทั้งรอบ+สาขาไปเลย (แก้ rate พวกนี้นานๆ ครั้ง ยอม recompute เพิ่ม)
+      // broad=true จาก client: rate "ก่อนแก้" เคยเป็น keyword-based (client เห็นค่าเดิม server ไม่เห็น
+      // หลัง update แล้ว) เช่นแปลง collect_back->normal + ล้าง keyword -> ตรวจทั้งรอบเช่นกัน
+      const keywordBased = broad === true || rates.some((r) =>
+        (r.productCategory || 'normal') !== 'normal' || !!r.receiverKeyword || !!r.senderKeyword || !!r.productKeyword);
+      // ใบที่ปลายทางถูกแก้ด้วย DestinationOverride (keyword -> จังหวัดจริง): provinceRaw ในใบ
+      // เป็นค่าผิดจาก PDF แต่ recompute ใช้จังหวัดจริง -> ถ้าจังหวัดจริงของ override match rate
+      // ที่แก้ ให้รวมใบที่มี keyword นั้นด้วย (Codex P2)
+      const relevantOv = (db.destinationOverrides || []).filter((o) =>
+        o.status === 'active' && (!bId || o.branchId === bId) && rates.some((r) => provinceHit(o.province || '', r)));
+      // เช็คทุก field ที่ computeReceipt ใช้จับ override: docNote, ผู้รับ, ผู้ส่ง, ชื่อสินค้า (Codex P2)
+      const hitOverride = (t: TripDocument) => relevantOv.some((o) =>
+        textContains(t.docNote || '', o.keyword) ||
+        (t.receipts || []).some((rc) =>
+          textContains(rc.receiverName || '', o.keyword) ||
+          textContains(rc.senderName || '', o.keyword) ||
+          (rc.items || []).some((it) => textContains(it.productName || '', o.keyword))));
+      const inCycle = db.tripDocuments.filter((t) => t.cycleId === cycle.id && (!bId || t.branchId === bId));
+      const related = keywordBased ? inCycle : inCycle.filter((t) =>
+        (t.receipts || []).some((rc) => {
+          const prov = rc.provinceRaw || t.provinceRaw || '';
+          return rates.some((r) => provinceHit(prov, r)) ||
+            extraProvs.some((p) => textContains(prov, p) || textContains(p, prov));
+        }) || hitOverride(t)
+      );
+
+      // recompute เฉพาะใบที่เกี่ยว -> เทียบยอด (ไม่บันทึกอะไร — read only)
+      const affected: { docNo: string; plate: string; old: number; new: number; delta: number }[] = [];
+      for (const t of related) {
+        const extracted: ExtractedTripDocument = {
+          documentNo: t.documentNo,
+          documentDate: t.documentDate,
+          plateNo: t.plateNo,
+          provinceRaw: t.provinceRaw,
+          districtRaw: t.districtRaw,
+          rateChoice: t.rateType ?? undefined,
+          docNote: t.docNote,
+          receipts: t.receipts.map((r) => ({
+            receiptNo: r.receiptNo, receiverName: r.receiverName, senderName: r.senderName,
+            items: r.items, provinceRaw: r.provinceRaw, districtRaw: r.districtRaw,
+            manualBoxQty: r.manualBoxQty ?? undefined,
+          })),
+        };
+        const nw = recomputeTrip(db, cycle, extracted, t.fileName, t.branchId);
+        const delta = round2(nw.tripAmount - t.tripAmount);
+        if (Math.abs(delta) > 0.0001) {
+          affected.push({ docNo: t.documentNo, plate: t.plateNo, old: t.tripAmount, new: nw.tripAmount, delta });
+        }
+      }
+      affected.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+      res.json({
+        cycleId: cycle.id, cycleName: cycle.name, checked: related.length,
+        affected, totalDelta: round2(affected.reduce((s, a) => s + a.delta, 0)),
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
