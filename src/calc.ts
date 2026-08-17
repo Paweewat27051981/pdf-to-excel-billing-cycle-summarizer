@@ -303,6 +303,41 @@ export function matchCombinedFlat(
   return best;
 }
 
+// ราคาชุดแบบ "ชุดเป็นส่วนหนึ่งของใบ" (subset): ใบวิ่งครบทุกอำเภอในชุด + มีอำเภออื่นเพิ่ม
+// เช่น ชุด "เมือง+น้ำปาด"=2350 ใบวิ่ง เมือง+น้ำปาด+ท่าปลา -> ควรได้อย่างน้อยราคาชุด
+// (เดิมชุดต้องตรงเป๊ะเท่านั้น -> ใบที่วิ่ง "มากกว่า" ชุดกลับได้เหมาสูงสุดต่อจุดซึ่งอาจ "น้อยกว่า" ชุด)
+// คืนราคาชุดสูงสุดที่ใบวิ่งครบ (caller ใช้เป็น "พื้น" เทียบ max กับเหมาสูงสุดต่อจุด) — null ถ้าไม่มี
+export function matchCombinedFlatSubset(
+  province: string,
+  docDistricts: string[],
+  rates: RateMaster[],
+  refDate: string,
+  overrides?: Map<string, { price: number; pieceThreshold: number | null }>
+): number | null {
+  const dm = (a: string, b: string) => textContains(a, b) || textContains(b, a);
+  let best: number | null = null;
+  for (const r of rates) {
+    if (r.status !== 'active' || r.priceType !== 'flat') continue;
+    if ((r.productCategory || 'normal') !== 'normal') continue;
+    if (!(r.districtName || '').includes('+')) continue;
+    if (!isEffective(refDate, r.effectiveFrom, r.effectiveTo)) continue;
+    const provOk =
+      textContains(province, r.provinceName) ||
+      textContains(province, r.provinceShort) ||
+      textContains(r.provinceName, province);
+    if (!provOk) continue;
+    const rDistricts = r.districtName.split('+').map((s) => stripParen(s)).filter(Boolean);
+    // ชุดต้องเล็กกว่าใบ (subset แท้ — เคสตรงเป๊ะให้ matchCombinedFlat เดิมจัดการ ราคา/พฤติกรรมเดิม)
+    if (rDistricts.length >= docDistricts.length) continue;
+    const ok = rDistricts.every((rd) => docDistricts.some((dd) => dm(dd, rd)));
+    if (!ok) continue;
+    const ov = overrides?.get(r.id);
+    const eff = ov ? ov.price : r.price;
+    if (best === null || eff > best) best = eff; // ใบครอบหลายชุด -> พื้นสูงสุด
+  }
+  return best;
+}
+
 // ราคาเหมาแบบมีเงื่อนไขพิเศษ: จำนวนกล่อง(ขั้นบันได) + ชื่อผู้รับ/ผู้ส่ง/สินค้า
 // เช่น CP All ลำพูน (1-150=500, 151+=1200) หรือ adidas (สินค้า AD จากคูห์เน่ = เหมาต่อจังหวัด)
 export function matchTieredFlat(
@@ -606,9 +641,22 @@ export function computeTripDocument(
     receipts.filter((r) => r.normalQty > 0).map((r) => (r.districtRaw || '').trim()).filter(Boolean)
   )];
   const docProvince = receipts.find((r) => r.normalQty > 0)?.provinceRaw || extracted.provinceRaw;
-  const combinedFlat = docDistricts.length >= 2
+  let combinedFlat = docDistricts.length >= 2
     ? matchCombinedFlat(docProvince, docDistricts, ctx.rates, refDate, ctx.rateOverrides)
     : null;
+  // ไม่ตรงชุดพอดี -> ลองแบบ "ชุดเป็นส่วนหนึ่งของใบ": ใบวิ่งครบชุด + มีจุดอื่นเพิ่ม
+  // ราคาชุด = "พื้น" (floor): ใบวิ่งครบชุดต้องไม่ได้น้อยกว่าราคาชุด และไม่น้อยกว่าเหมาสูงสุดต่อจุด
+  // -> flatTotal = max(เหมาสูงสุดทุกจุด, ราคาชุดสูงสุดที่ครบ) — ถูกทุก combination แม้ใบครอบหลายชุด
+  // (Codex P2: เลือกชุดก่อนแล้วค่อยคิดจุดนอกชุด อาจแพ้ combination อื่น — ใช้ max รวมตัดปัญหา)
+  let combinedIsSubsetFloor = false; // subset = แค่ยกพื้นราคาเหมา ไม่บังคับทั้งใบเป็นเหมา (ชิ้นยังแข่งได้)
+  if (combinedFlat == null && docDistricts.length >= 2) {
+    const subFloor = matchCombinedFlatSubset(docProvince, docDistricts, ctx.rates, refDate, ctx.rateOverrides);
+    if (subFloor != null) {
+      const maxFlatAll = Math.max(0, ...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number));
+      combinedFlat = Math.max(subFloor, maxFlatAll);
+      combinedIsSubsetFloor = true;
+    }
+  }
 
   // ราคาเหมาแบบเงื่อนไขพิเศษ (จำนวนกล่อง/ผู้รับ/ผู้ส่ง/สินค้า) เช่น CP All ลำพูน, adidas
   const totalBoxes = trunc2(receipts.reduce((s, r) => s + r.totalQty, 0));
@@ -642,8 +690,12 @@ export function computeTripDocument(
     if (docThreshold != null) autoType = billingQty <= docThreshold ? 'flat' : 'piece';
     else autoType = pieceTotal > flatTotal ? 'piece' : 'flat';
   }
-  // ราคาขั้นบันได / ส่งหลายอำเภอตรงชุด -> คิดราคาเหมาเสมอ
-  if (combinedFlat != null || tieredFlat != null) autoType = 'flat';
+  // ราคาขั้นบันได / ส่งหลายอำเภอตรงชุดพอดี -> คิดราคาเหมาเสมอ
+  // (subset floor ไม่บังคับ — แค่ยกพื้นราคาเหมา ใบจำนวนมากที่คิดชิ้นแพงกว่ายังคิดชิ้นตามปกติ)
+  if ((combinedFlat != null && !combinedIsSubsetFloor) || tieredFlat != null) autoType = 'flat';
+  // subset floor: แม้จุดตัดชี้ให้คิดชิ้น แต่ถ้ายอดชิ้น "ต่ำกว่า" ราคาพื้นชุด -> ใช้เหมา (พื้นชุด)
+  // กติกา: ใบที่วิ่งครบชุดต้องไม่ได้น้อยกว่าราคาชุด (Codex P2: จุดตัด+ชิ้นถูก เลี่ยงพื้นได้)
+  if (autoType === 'piece' && combinedIsSubsetFloor && combinedFlat != null && pieceTotal < combinedFlat) autoType = 'flat';
 
   // เลือกแบบเดียวกันทั้งใบ: ผู้ใช้เลือกเอง > อัตโนมัติ > default (เหมาก่อน)
   let rateType: PriceType | null = extracted.rateChoice ?? null;
