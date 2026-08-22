@@ -562,6 +562,19 @@ async function startServer() {
       const buffer = Buffer.from(fileBase64.replace(/^data:[^;]+;base64,/, ''), 'base64');
       const { rates, summary } = parseRateExcel(buffer);
       if (!rates.length) return res.status(422).json({ error: 'อ่านไฟล์ไม่พบราคา — ตรวจสอบหัวคอลัมน์ จังหวัด/อำเภอ/ราคา' });
+      // ด่านสุดท้ายก่อนเขียน DB (กันแม้ parser พลาด): ต้องมีจังหวัด + ราคา > 0 เสมอ
+      // ส่วน "อำเภอ" ต้องมี ยกเว้นราคาที่ตั้งใจครอบทั้งจังหวัด (หมวดพิเศษ/มีเงื่อนไขจำกัด
+      // เช่น เก็บคืนทั้งจังหวัด, CP All ขั้นบันได, คูห์เน่ตาม keyword) — ตรงกับกติกาใน parser
+      const scoped = (r: any) => (r.productCategory || 'normal') !== 'normal' ||
+        !!r.receiverKeyword || !!r.senderKeyword || !!r.productKeyword || r.minQty != null || r.maxQty != null;
+      const bad = rates.filter((r) => !String(r.provinceName || '').trim() || !(Number(r.price) > 0) ||
+        (!String(r.districtName || '').trim() && !scoped(r)));
+      if (bad.length) {
+        const ex = bad.slice(0, 5).map((r) => `${r.provinceName || '(ไม่มีจังหวัด)'}/${r.districtName || '(ไม่มีอำเภอ)'} ฿${r.price}`).join(', ');
+        return res.status(422).json({ error: `ไฟล์มี ${bad.length} แถวที่กรอกไม่ครบ (ต้องมีจังหวัด+ราคา>0 และงานปกติต้องระบุอำเภอ): ${ex}${bad.length > 5 ? ' ...' : ''}` });
+      }
+      // เพดานหลวมกันไฟล์ผิด/parse เพี้ยน (ตารางราคาจริงต่อสาขา ~ไม่กี่ร้อยแถว)
+      if (rates.length > 5000) return res.status(422).json({ error: `ไฟล์มีราคามากผิดปกติ (${rates.length} แถว) — ตรวจว่าเลือกไฟล์ตารางราคาถูกไฟล์ไหม` });
       const db = await getDb();
       let removed = 0;
       if (replaceExisting) {

@@ -328,11 +328,16 @@ export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: 
     const fheader = flatRows[fh];
     const fp = colOf(fheader, 'จังหวัด'), fd = colOf(fheader, 'อำเภอ'), fr = colOf(fheader, 'ราคา', 'เหมา');
     if (fp < 0 || fd < 0 || fr < 0) throw new Error('ชีตราคาเหมาต้องมีคอลัมน์ จังหวัด / อำเภอ / ราคา');
+    let nSkipFlat = 0;
     for (const row of flatRows.slice(fh + 1)) {
       const prov = String(row[fp] ?? '').trim();
       const dist = stripAmphoe(row[fd]);
-      const flatPrice = Number(row[fr]);
-      if (!prov || !dist || !(flatPrice > 0)) continue;
+      const rawPrice = row[fr];
+      const flatPrice = Number(rawPrice);
+      // แถวว่างจริง (ไม่มีทั้งจังหวัด/อำเภอ/ราคา) = ท้ายตาราง ข้ามเงียบ
+      if (!prov && !dist && (rawPrice === '' || rawPrice == null)) continue;
+      // กรอกไม่ครบ/ราคาไม่ถูกต้อง -> ข้ามแต่ "รายงานให้เห็น" (เดิมข้ามเงียบ ผู้ใช้ไม่รู้ว่าตกหล่น)
+      if (!prov || !dist || !(flatPrice > 0)) { nSkipFlat++; continue; }
       const base = {
         provinceName: prov, provinceShort: '', districtName: dist, destinationName: `${dist} จ.${prov}`,
         productCategory: 'normal' as const, status: 'active' as const, effectiveFrom: '2020-01-01', effectiveTo: null,
@@ -348,6 +353,7 @@ export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: 
     summary.push(`ราคาเหมา ${nFlat} อำเภอ (ในนี้เป็นราคาชุดส่งหลายอำเภอ ${nCombined})`);
     summary.push(`ราคาชิ้น ${nPiece} อำเภอ`);
     if (provNoPiece.size) summary.push(`จังหวัดที่ไม่มีราคาชิ้น (คิดเหมาล้วน): ${[...provNoPiece].join(', ')}`);
+    if (nSkipFlat) summary.push(`⚠️ ข้าม ${nSkipFlat} แถวในชีตราคาเหมา ที่กรอกจังหวัด/อำเภอ/ราคาไม่ครบ — ตรวจไฟล์ว่าตกหล่นไหม`);
   }
 
   // ---- ชีต "พิเศษ": ทุกหมวด/เงื่อนไข (เก็บคืน·Peat·บวกเพิ่ม·กลุ่มราคา·จุดตัด·ขั้นบันได·keyword ผู้รับ/ผู้ส่ง/สินค้า) ----
@@ -373,32 +379,45 @@ export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: 
         if (s.includes('บวก') || n.includes('addon')) return 'fixed_addon';
         return 'normal';
       };
-      let nAdv = 0;
+      let nAdv = 0, nSkipNoDist = 0, nSkipBadPrice = 0;
       for (const row of rows.slice(h + 1)) {
         const prov = cellS(row, ci.prov);
         const price = numN(row, ci.price);
-        if (!prov || !(price != null && price > 0)) continue;
+        if (!prov && !cellS(row, ci.dist)) continue; // แถวว่างจริง — ข้ามเงียบ
+        if (!prov) { nSkipNoDist++; continue; }
+        if (!(price != null && price > 0)) { nSkipBadPrice++; continue; }
         const cat = catOf(cellS(row, ci.cat));
         // เก็บคืน/งานปกติ เลือกเหมา/ชิ้นได้ · Peat = ชิ้นเสมอ · บวกเพิ่ม = เหมาเสมอ
         let pt: 'flat' | 'piece' = cellS(row, ci.type).includes('ชิ้น') ? 'piece' : 'flat';
         if (cat === 'peat_mass') pt = 'piece';
         if (cat === 'fixed_addon') pt = 'flat';
         const dist = stripAmphoe(cellS(row, ci.dist));
+        const kwRecv = cellS(row, ci.recv), kwSend = cellS(row, ci.send), kwProd = cellS(row, ci.prod);
+        const qMin = numN(row, ci.min), qMax = numN(row, ci.max);
+        // ราคาระดับ "ทั้งจังหวัด" (ไม่ระบุอำเภอ) จะ match ทุกอำเภอในจังหวัดนั้น
+        // อนุญาตเฉพาะกรณีที่ตั้งใจจริง: หมวดพิเศษ (เก็บคืน/Peat/บวกเพิ่ม เช่น "เก็บคืนทั้งจังหวัด")
+        // หรือมีเงื่อนไขจำกัดอยู่แล้ว (ขั้นบันไดจำนวนกล่อง / keyword ผู้รับ-ผู้ส่ง-สินค้า เช่น CP All, คูห์เน่)
+        // ส่วน "งานปกติ ไม่มีเงื่อนไข" ต้องมีอำเภอเสมอ — เคยหลุดเข้าจริง (แถว "ลำพูน" เข้าสาขาสาย3)
+        // ทำให้ทุกใบในจังหวัดนั้นถูกคิดด้วยราคานี้โดยไม่ตั้งใจ
+        const scopedByCondition = cat !== 'normal' || !!kwRecv || !!kwSend || !!kwProd || qMin != null || qMax != null;
+        if (!dist && !scopedByCondition) { nSkipNoDist++; continue; }
         rates.push({
           provinceName: prov, provinceShort: '', districtName: dist,
           destinationName: `${dist || 'ทั้งจังหวัด'} จ.${prov}`,
           productCategory: cat, priceType: pt, price, status: 'active', effectiveFrom: '2020-01-01', effectiveTo: null,
           rateGroup: cellS(row, ci.group) || undefined,
           pieceThreshold: numN(row, ci.thr),
-          minQty: numN(row, ci.min), maxQty: numN(row, ci.max),
-          receiverKeyword: cellS(row, ci.recv) || undefined,
-          senderKeyword: cellS(row, ci.send) || undefined,
-          productKeyword: cellS(row, ci.prod) || undefined,
+          minQty: qMin, maxQty: qMax,
+          receiverKeyword: kwRecv || undefined,
+          senderKeyword: kwSend || undefined,
+          productKeyword: kwProd || undefined,
           remark: cellS(row, ci.note) || undefined,
         });
         nAdv++;
       }
       if (nAdv) summary.push(`ราคาพิเศษ (เก็บคืน/Peat/บวกเพิ่ม/กลุ่ม/เงื่อนไข) ${nAdv} แถว`);
+      if (nSkipNoDist) summary.push(`⚠️ ข้าม ${nSkipNoDist} แถวในชีตพิเศษ ที่ไม่ระบุจังหวัด หรือเป็นงานปกติที่ไม่ระบุอำเภอและไม่มีเงื่อนไข (กันราคาครอบทั้งจังหวัดโดยไม่ตั้งใจ)`);
+      if (nSkipBadPrice) summary.push(`⚠️ ข้าม ${nSkipBadPrice} แถวในชีตพิเศษ ที่ราคาว่าง/ไม่ใช่ตัวเลข/ไม่เกิน 0`);
     }
   }
 
