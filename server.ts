@@ -572,6 +572,26 @@ async function startServer() {
     }
   });
 
+  // ลบ "ราคาเฉพาะรอบ" ที่ผูกกับราคาหลักที่ถูกลบไป
+  // ถ้าไม่ลบตาม override จะกลายเป็นขยะกำพร้าที่ชี้ไปยัง rateMasterId ที่ไม่มีแล้ว
+  // (เจอจริง 2026-08-22: 616 จาก 1,162 รายการเป็นกำพร้า) — ไม่ทำให้คิดเงินผิดเพราะจับคู่ไม่ติด
+  // แต่กินที่ + ถูกคัดลอกต่อไปทุกรอบตั้งแต่มีคัดลอกอัตโนมัติ ทำให้พอกขึ้นเรื่อยๆ
+  async function cascadeDeleteOverrides(db: DatabaseState, rateIds: string[]): Promise<number> {
+    if (!rateIds.length) return 0;
+    const set = new Set(rateIds);
+    const doomed = db.rateOverrides.filter((o) => set.has(o.rateMasterId));
+    if (!doomed.length) return 0;
+    db.rateOverrides = db.rateOverrides.filter((o) => !set.has(o.rateMasterId));
+    try {
+      // ลบเฉพาะ id ที่เกี่ยว (multi-path) — ห้าม flush ทั้ง node กัน Firebase "Write too large"
+      await removeRecords('rateOverrides', doomed.map((o) => o.id));
+    } catch (e: any) {
+      // ราคาหลักถูกลบไปแล้ว (สำเร็จ) — ลบ override ไม่สำเร็จไม่ควรทำให้ request พัง
+      console.error('[rates] ลบราคาเฉพาะรอบที่ผูกกับราคาที่ลบไม่สำเร็จ:', e.message);
+    }
+    return doomed.length;
+  }
+
   // ===================== Generic master CRUD helper =====================
   function masterRoutes<T extends { id: string }>(
     name: string,
@@ -609,7 +629,9 @@ async function startServer() {
         const db = await getDb();
         (db[key] as unknown as T[]) = (db[key] as unknown as T[]).filter((x) => x.id !== req.params.id) as any;
         if (isIdKeyed(key)) await removeRecord(key, req.params.id); else await saveDb(db);
-        res.json({ success: true });
+        // ลบราคาหลัก -> ลบราคาเฉพาะรอบที่ผูกอยู่ด้วย (ทำหลังลบตัวหลักสำเร็จแล้ว)
+        const removedOverrides = key === 'rateMasters' ? await cascadeDeleteOverrides(db, [req.params.id]) : 0;
+        res.json({ success: true, ...(removedOverrides ? { removedOverrides } : {}) });
       } catch (err: any) {
         res.status(500).json({ error: err.message });
       }
@@ -622,7 +644,9 @@ async function startServer() {
         const idset = new Set(ids);
         (db[key] as unknown as T[]) = (db[key] as unknown as T[]).filter((x) => !idset.has(x.id)) as any;
         if (isIdKeyed(key)) await removeRecords(key, ids); else await saveDb(db);
-        res.json({ success: true, deleted: ids.length });
+        // ลบราคาหลัก -> ลบราคาเฉพาะรอบที่ผูกอยู่ด้วย (ทำหลังลบตัวหลักสำเร็จแล้ว)
+        const removedOverrides = key === 'rateMasters' ? await cascadeDeleteOverrides(db, ids) : 0;
+        res.json({ success: true, deleted: ids.length, ...(removedOverrides ? { removedOverrides } : {}) });
       } catch (err: any) {
         res.status(500).json({ error: err.message });
       }
@@ -982,7 +1006,9 @@ async function startServer() {
       const db = await getDb();
       db.rateMasters = db.rateMasters.filter((r) => r.id !== req.params.id);
       await removeRecord('rateMasters', req.params.id); // ลบแค่ node เดียว
-      res.json({ success: true });
+      // ลบราคาเฉพาะรอบที่ผูกกับราคานี้ด้วย ไม่งั้นเหลือเป็นขยะกำพร้าที่ชี้ไปยัง id ที่ไม่มีแล้ว
+      const removedOverrides = await cascadeDeleteOverrides(db, [req.params.id]);
+      res.json({ success: true, ...(removedOverrides ? { removedOverrides } : {}) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -995,7 +1021,9 @@ async function startServer() {
       const db = await getDb();
       db.rateMasters = db.rateMasters.filter((r) => !idset.has(r.id));
       await removeRecords('rateMasters', ids); // ลบเฉพาะ node ที่ระบุ (1 round-trip)
-      res.json({ success: true, deleted: ids.length });
+      // ลบราคาเฉพาะรอบที่ผูกกับราคาเหล่านี้ด้วย (กันขยะกำพร้า)
+      const removedOverrides = await cascadeDeleteOverrides(db, ids);
+      res.json({ success: true, deleted: ids.length, ...(removedOverrides ? { removedOverrides } : {}) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
