@@ -10,7 +10,7 @@ import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
 } from './types';
-import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas } from './excel-export';
+import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas, exportRatesToExcel } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
@@ -2238,26 +2238,64 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
   // สลับรอบ/สาขา -> เคลียร์แถบ + bump token (กัน response ที่ค้างท่อกลับมา set แถบของรอบเก่า)
   const impactReqRef = useRef(0);
   useEffect(() => { impactReqRef.current++; setImpact(null); }, [cycle?.id, branchId]);
+  // นำเข้าราคาแบบผสาน: ตรวจก่อน (dryRun) -> โชว์ว่าอะไร ใหม่/อัปเดต/เท่าเดิม -> ให้ยืนยันแล้วค่อยเขียนจริง
   const onImportRates = async (files: FileList) => {
     if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     const file = files[0];
     if (!file) return;
     if (!/\.xlsx?$/i.test(file.name)) return showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)');
-    const existing = (db.rateMasters as RateMaster[]).filter((r) => (r.productCategory || 'normal') === 'normal').length;
-    if (existing > 0) {
-      const ok = await confirmAction({ title: 'นำเข้าราคาจาก Excel', text: `จะลบราคาเดิมของสาขานี้เฉพาะหมวดที่อยู่ในไฟล์ (งานปกติ + ชีต "พิเศษ" ถ้ามี เช่น เก็บคืน/Peat/บวกเพิ่ม) แล้วแทนที่ด้วยไฟล์นี้`, confirmText: 'ลบของเดิม + นำเข้า', danger: true });
-      if (!ok) return;
-    }
-    const replaceExisting = existing > 0;
     const b64 = await new Promise<string>((resolve) => { const r = new FileReader(); r.onload = () => resolve((r.result as string).split(',')[1]); r.readAsDataURL(file); });
+    const clearFile = () => { if (rateFileRef.current) rateFileRef.current.value = ''; };
+    setImporting(true);
+    let prev: any;
+    try {
+      prev = await api('/api/import-rates?dryRun=1', 'POST', { branchId, fileBase64: b64 });
+    } catch (e: any) { setImporting(false); clearFile(); return showToast('error', e.message); }
+    setImporting(false);
+
+    const money = (n: any) => Number(n).toLocaleString('th-TH', { maximumFractionDigits: 2 });
+    if (!prev.createdCount && !prev.updatedCount) {
+      clearFile();
+      return alertBox('ไม่มีอะไรต้องเปลี่ยน', [
+        `ราคาในไฟล์ตรงกับระบบทั้งหมด (${prev.sameCount} รายการ)`,
+        ...(prev.missingCount ? [`มีในระบบแต่ไม่มีในไฟล์ ${prev.missingCount} รายการ — คงไว้ตามเดิม`] : []),
+      ].join('\n'));
+    }
+    // แสดงตัวอย่างรายการที่จะเปลี่ยน ให้เห็นราคาเก่า -> ใหม่ ก่อนตัดสินใจ
+    const esc = (t: any) => String(t).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+    const rows = (items: any[], total: number, cap: number, fmt: (x: any) => string) =>
+      [...items.slice(0, cap).map(fmt), ...(total > cap ? [`<div style="color:#64748b">...และอีก ${total - cap} รายการ</div>`] : [])].join('');
+    const html = [
+      `<div style="text-align:left;font-size:13px;line-height:1.7">`,
+      `<div><b>🆕 เพิ่มใหม่ ${prev.createdCount}</b> · <b>🔄 อัปเดตราคา ${prev.updatedCount}</b> · ⏸️ เท่าเดิม ${prev.sameCount}</div>`,
+      prev.missingCount ? `<div style="color:#64748b">ℹ️ มีในระบบแต่ไม่มีในไฟล์ ${prev.missingCount} รายการ — คงไว้ตามเดิม (ไม่ลบ)</div>` : '',
+      prev.updated?.length ? `<div style="margin-top:10px"><b>🔄 ราคาที่จะเปลี่ยน</b></div>` +
+        rows(prev.updated, prev.updatedCount, 15, (u: any) => {
+          const pr = Number(u.oldPrice) !== Number(u.newPrice)
+            ? `<span style="color:#dc2626">${money(u.oldPrice)}</span> → <b style="color:#059669">${money(u.newPrice)}</b>` : `${money(u.newPrice)}`;
+          const th = (u.oldThreshold ?? null) !== (u.newThreshold ?? null)
+            ? ` <span style="color:#64748b">· จุดตัด ${u.oldThreshold ?? '-'} → ${u.newThreshold ?? '-'}</span>` : '';
+          return `<div>${esc(u.label)} ${pr}${th}</div>`;
+        }) : '',
+      prev.created?.length ? `<div style="margin-top:10px"><b>🆕 ราคาที่จะเพิ่ม</b></div>` +
+        rows(prev.created, prev.createdCount, 10, (c: any) => `<div>${esc(c.label)} <b>${money(c.price)}</b></div>`) : '',
+      `</div>`,
+    ].join('');
+    const ok = await confirmAction({
+      title: 'ยืนยันนำเข้าราคา (ผสานกับของเดิม)',
+      html,
+      confirmText: `นำเข้า (${prev.createdCount + prev.updatedCount} รายการ)`,
+    });
+    if (!ok) { clearFile(); return; }
+
     setImporting(true);
     try {
-      const res = await api('/api/import-rates', 'POST', { branchId, fileBase64: b64, replaceExisting });
-      showToast('success', `นำเข้าราคาสำเร็จ — สร้าง ${res.created} แถว${res.removed ? ` (ลบเดิม ${res.removed})` : ''}`);
+      const res = await api('/api/import-rates', 'POST', { branchId, fileBase64: b64 });
+      showToast('success', `นำเข้าสำเร็จ — เพิ่มใหม่ ${res.createdCount} · อัปเดต ${res.updatedCount} · เท่าเดิม ${res.sameCount}`);
       if (res.summary?.length) alertBox('สรุปการนำเข้าราคา', res.summary.join('\n'));
       reload();
     } catch (e: any) { showToast('error', e.message); }
-    finally { setImporting(false); if (rateFileRef.current) rateFileRef.current.value = ''; }
+    finally { setImporting(false); clearFile(); }
   };
   const add = async () => {
     if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
@@ -2482,6 +2520,9 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
         <button type="button" onClick={() => downloadRateTemplate()} className="bg-white border border-emerald-400 text-emerald-700 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />ดาวน์โหลดเทมเพลต</button>
         <input ref={rateFileRef} type="file" aria-label="นำเข้าราคา Excel" accept=".xls,.xlsx" className="hidden" onChange={(e) => e.target.files && onImportRates(e.target.files)} />
         <button type="button" disabled={importing || !branchId || !canEdit} title={canEdit ? '' : 'เฉพาะบัญชีผู้ดูแลราคา (admin)'} onClick={() => rateFileRef.current?.click()} className="bg-emerald-600 disabled:bg-natural-muted text-white rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />{importing ? 'กำลังนำเข้า...' : 'นำเข้าราคา (.xlsx)'}</button>
+        <button type="button" disabled={!canEdit || !allRates.length} title={canEdit ? 'ดาวน์โหลดราคาปัจจุบันเป็น Excel รูปแบบเดียวกับไฟล์นำเข้า' : 'เฉพาะบัญชีผู้ดูแลราคา (admin)'}
+          onClick={() => exportRatesToExcel(db.branches.find((b) => b.id === branchId)?.name || 'สาขา', allRates)}
+          className="bg-white border border-emerald-400 disabled:opacity-40 text-emerald-700 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />ส่งออกราคา ({allRates.length})</button>
         <span className="text-[11px] text-emerald-700/80">เหมาต่ออำเภอ + ชิ้นต่อจังหวัด/อำเภอ · ระบบเทียบ max ให้อัตโนมัติ</span>
       </div>
 

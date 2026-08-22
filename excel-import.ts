@@ -399,7 +399,10 @@ export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: 
         // หรือมีเงื่อนไขจำกัดอยู่แล้ว (ขั้นบันไดจำนวนกล่อง / keyword ผู้รับ-ผู้ส่ง-สินค้า เช่น CP All, คูห์เน่)
         // ส่วน "งานปกติ ไม่มีเงื่อนไข" ต้องมีอำเภอเสมอ — เคยหลุดเข้าจริง (แถว "ลำพูน" เข้าสาขาสาย3)
         // ทำให้ทุกใบในจังหวัดนั้นถูกคิดด้วยราคานี้โดยไม่ตั้งใจ
-        const scopedByCondition = cat !== 'normal' || !!kwRecv || !!kwSend || !!kwProd || qMin != null || qMax != null;
+        // นับ "กลุ่มราคา" เป็นเงื่อนไขจำกัดด้วย — ราคาระดับจังหวัดที่ผูกกลุ่มรถ (เช่น ลำพูน กลุ่ม 2)
+        // ใช้เฉพาะรถกลุ่มนั้น ไม่ได้ครอบทุกใบในจังหวัด ถ้าไม่นับจะถูกข้ามเงียบทุกครั้งที่นำเข้า
+        const scopedByCondition = cat !== 'normal' || !!cellS(row, ci.group) ||
+          !!kwRecv || !!kwSend || !!kwProd || qMin != null || qMax != null || numN(row, ci.thr) != null;
         if (!dist && !scopedByCondition) { nSkipNoDist++; continue; }
         rates.push({
           provinceName: prov, provinceShort: '', districtName: dist,

@@ -918,3 +918,105 @@ export async function exportCostAreas(
   a.click();
   URL.revokeObjectURL(url);
 }
+
+// ===========================================================================
+// ส่งออกราคาขนส่งของสาขา -> ไฟล์ Excel "รูปแบบเดียวกับไฟล์นำเข้า" เป๊ะๆ
+// (หัวคอลัมน์/ชื่อชีตตรงกับ downloadRateTemplate + parseRateExcel)
+// จุดประสงค์: ดาวน์โหลด -> แก้ในไฟล์ -> นำเข้ากลับ แล้วได้ผลเหมือนเดิมทุกแถว
+//   ชีต "เหมาคัน" = งานปกติ+เหมา ที่ไม่มีเงื่อนไขใดๆ
+//   ชีต "รายชิ้น" = งานปกติ+ชิ้น ที่ไม่มีเงื่อนไขใดๆ
+//   ชีต "พิเศษ"  = ที่เหลือทั้งหมด (หมวดพิเศษ/กลุ่ม/จุดตัด/ขั้นบันได/keyword)
+// ===========================================================================
+export async function exportRatesToExcel(branchName: string, rates: RateMaster[]) {
+  // ส่งออกเฉพาะราคาที่ "ใช้งานอยู่ ณ วันนี้" — ราคาที่หมดอายุแล้วเก็บไว้เป็นประวัติในระบบ
+  // ไม่ใส่ลงไฟล์ เพราะไฟล์นำเข้าไม่มีคอลัมน์วันที่มีผล ถ้าใส่ไปจะนำกลับเข้ามาเป็นราคาที่ใช้งานอยู่
+  const today = new Date().toISOString().slice(0, 10);
+  const active = rates.filter((r) => r.status !== 'inactive' &&
+    (!r.effectiveFrom || r.effectiveFrom <= today) && (!r.effectiveTo || r.effectiveTo >= today));
+  const skipped = rates.length - active.length;
+  // แถวที่ "ไม่มีเงื่อนไขพิเศษ" เท่านั้นจึงกลับเข้าชีตพื้นฐานได้ ไม่งั้นเงื่อนไขจะหายตอนนำเข้ากลับ
+  const isPlain = (r: RateMaster) =>
+    (r.productCategory || 'normal') === 'normal' && !r.rateGroup && !r.receiverKeyword &&
+    !r.senderKeyword && !r.productKeyword && r.minQty == null && r.maxQty == null &&
+    r.pieceThreshold == null && !!String(r.districtName || '').trim();
+  const sortTH = (a: RateMaster, b: RateMaster) =>
+    (a.provinceName || '').localeCompare(b.provinceName || '', 'th') ||
+    (a.districtName || '').localeCompare(b.districtName || '', 'th');
+
+  const wb = await newWorkbook();
+
+  // ---- ชีต เหมาคัน: งานปกติ + เหมา ----
+  const flats = active.filter((r) => isPlain(r) && r.priceType === 'flat').sort(sortTH);
+  const f = wb.addWorksheet('เหมาคัน');
+  styleHeaderRow(f.addRow(['ลำดับ', 'จังหวัด', 'อำเภอ', 'ราคา เหมา']));
+  flats.forEach((r, i) => {
+    const row = f.addRow([i + 1, r.provinceName, r.districtName, r.price]);
+    row.eachCell((c, col) => bodyCell(c, { align: col === 1 || col === 4 ? 'right' : 'left' }));
+  });
+  [8, 18, 26, 12].forEach((w, i) => (f.getColumn(i + 1).width = w));
+
+  // ---- ชีต รายชิ้น: งานปกติ + ชิ้น (ระบุอำเภอทุกแถว = override ตรงตัว ไม่ต้องเดา default) ----
+  // เฉพาะที่ "มีราคาเหมาคู่กัน" เท่านั้น เพราะตอนนำเข้า parser ใช้ชีตนี้เป็นตารางค้นหาให้แถวเหมา
+  // ราคาชิ้นที่ไม่มีเหมาคู่ (orphan) ต้องส่งไปชีต "พิเศษ" ไม่งั้นนำเข้ากลับแล้วหายเงียบ
+  const flatKeys = new Set(flats.map((r) => `${r.provinceName}|${r.districtName}`));
+  const allPieces = active.filter((r) => isPlain(r) && r.priceType === 'piece').sort(sortTH);
+  const pieces = allPieces.filter((r) => flatKeys.has(`${r.provinceName}|${r.districtName}`));
+  const orphanPieces = allPieces.filter((r) => !flatKeys.has(`${r.provinceName}|${r.districtName}`));
+  const p = wb.addWorksheet('รายชิ้น');
+  styleHeaderRow(p.addRow(['จังหวัด', 'อำเภอ', 'ราคา รายชิ้น']));
+  pieces.forEach((r) => {
+    const row = p.addRow([r.provinceName, r.districtName, r.price]);
+    row.eachCell((c, col) => bodyCell(c, { align: col === 3 ? 'right' : 'left' }));
+  });
+  [18, 20, 14].forEach((w, i) => (p.getColumn(i + 1).width = w));
+
+  // ---- ชีต พิเศษ: ที่เหลือทั้งหมด ----
+  const catLabel = (c?: string) =>
+    c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat' : c === 'fixed_addon' ? 'บวกเพิ่ม' : 'งานปกติ';
+  const specials = [...active.filter((r) => !isPlain(r)), ...orphanPieces].sort(sortTH);
+  const s = wb.addWorksheet('พิเศษ');
+  styleHeaderRow(s.addRow(['หมวด', 'จังหวัด', 'อำเภอ', 'ประเภทราคา', 'ราคา', 'กลุ่ม', 'จุดตัดชิ้น', 'กล่องตั้งแต่', 'ถึงกล่อง', 'ผู้รับ', 'ผู้ส่ง', 'สินค้า', 'หมายเหตุ']));
+  specials.forEach((r) => {
+    const row = s.addRow([
+      catLabel(r.productCategory), r.provinceName, r.districtName || '',
+      r.priceType === 'piece' ? 'ชิ้น' : 'เหมา', r.price,
+      r.rateGroup || '', r.pieceThreshold ?? '', r.minQty ?? '', r.maxQty ?? '',
+      r.receiverKeyword || '', r.senderKeyword || '', r.productKeyword || '', r.remark || '',
+    ]);
+    row.eachCell((c, col) => bodyCell(c, { align: col === 5 || col === 7 || col === 8 || col === 9 ? 'right' : 'left' }));
+  });
+  [10, 12, 14, 10, 8, 10, 9, 11, 9, 14, 14, 14, 26].forEach((w, i) => (s.getColumn(i + 1).width = w));
+
+  // ---- ชีต วิธีใช้: เตือนกติกาสำคัญตอนนำกลับเข้าระบบ ----
+  const g = wb.addWorksheet('วิธีใช้');
+  [`ราคาขนส่ง — สาขา ${branchName}`,
+    '',
+    `ส่งออก ${active.length} รายการ (เหมา ${flats.length} · ชิ้น ${pieces.length} · พิเศษ ${specials.length})`,
+    ...(orphanPieces.length ? [`ในชีต "พิเศษ" มีราคาชิ้น ${orphanPieces.length} รายการที่ไม่มีราคาเหมาคู่กัน`] : []),
+    ...(skipped ? [`ไม่รวมราคาที่หมดอายุ/ปิดใช้แล้ว ${skipped} รายการ (ยังอยู่ในระบบเป็นประวัติ)`] : []),
+    '',
+    'ไฟล์นี้ใช้นำเข้ากลับได้ทันที (ปุ่ม "นำเข้าราคา") — รูปแบบเดียวกับเทมเพลต',
+    '',
+    'การนำเข้าเป็นแบบ "ผสาน (merge)":',
+    '  - แถวที่ตรงกับราคาเดิม แต่ราคาต่าง = อัปเดตราคานั้น (เก็บประวัติการแก้ไว้)',
+    '  - แถวที่ไม่มีในระบบ = เพิ่มใหม่',
+    '  - ราคาที่มีในระบบแต่ลบออกจากไฟล์นี้ = ระบบคงไว้ตามเดิม (ไม่ถูกลบ)',
+    '    ถ้าต้องการลบราคา ให้ลบในหน้า Master ราคาขนส่ง โดยตรง',
+    '',
+    'ห้ามแก้หัวคอลัมน์และชื่อชีต — ระบบใช้ชื่อเหล่านี้อ่านไฟล์',
+    'แก้ได้เฉพาะค่าในตาราง เช่น ราคา หรือเพิ่มแถวใหม่ต่อท้าย',
+  ].forEach((t, i) => {
+    const r = g.addRow([t]);
+    r.getCell(1).font = i === 0 ? { name: FONT, size: 16, bold: true, color: { argb: C.title } } : { name: FONT, size: 13 };
+  });
+  g.getColumn(1).width = 90;
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ราคาขนส่ง_${branchName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
+}

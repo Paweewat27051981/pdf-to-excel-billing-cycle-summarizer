@@ -678,9 +678,14 @@ async function startServer() {
   });
 
   // นำเข้า "ตารางราคา" จาก Excel (2 ชีต เหมาคัน/รายชิ้น) -> สร้าง rate masters
+  // นำเข้าราคาแบบ "ผสาน (merge)": เทียบไฟล์กับราคาเดิมของสาขา แล้วบอกว่าอะไร ใหม่/อัปเดต/เท่าเดิม
+  // - dryRun=1 -> ตรวจอย่างเดียว ไม่เขียน DB (ให้ผู้ใช้ดู diff ก่อนยืนยัน)
+  // - ราคาที่มีในระบบแต่ไม่มีในไฟล์ -> คงไว้เฉยๆ (เจ้าของสั่ง: ไม่ลบอัตโนมัติ กันใบใหม่หาราคาไม่เจอ)
+  // - อัปเดตราคาเก็บ rateMasterHistory เหมือนแก้ทีละช่อง เพื่อตรวจย้อนหลังได้
   app.post('/api/import-rates', requireRateEditor, async (req, res) => {
     try {
-      const { branchId, fileBase64, replaceExisting } = req.body as { branchId: string; fileBase64: string; replaceExisting?: boolean };
+      const { branchId, fileBase64 } = req.body as { branchId: string; fileBase64: string };
+      const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true' || req.body?.dryRun === true;
       if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
       if (!fileBase64) return res.status(400).json({ error: 'ต้องส่งไฟล์ Excel' });
       const buffer = Buffer.from(fileBase64.replace(/^data:[^;]+;base64,/, ''), 'base64');
@@ -689,8 +694,9 @@ async function startServer() {
       // ด่านสุดท้ายก่อนเขียน DB (กันแม้ parser พลาด): ต้องมีจังหวัด + ราคา > 0 เสมอ
       // ส่วน "อำเภอ" ต้องมี ยกเว้นราคาที่ตั้งใจครอบทั้งจังหวัด (หมวดพิเศษ/มีเงื่อนไขจำกัด
       // เช่น เก็บคืนทั้งจังหวัด, CP All ขั้นบันได, คูห์เน่ตาม keyword) — ตรงกับกติกาใน parser
-      const scoped = (r: any) => (r.productCategory || 'normal') !== 'normal' ||
-        !!r.receiverKeyword || !!r.senderKeyword || !!r.productKeyword || r.minQty != null || r.maxQty != null;
+      const scoped = (r: any) => (r.productCategory || 'normal') !== 'normal' || !!r.rateGroup ||
+        !!r.receiverKeyword || !!r.senderKeyword || !!r.productKeyword ||
+        r.minQty != null || r.maxQty != null || r.pieceThreshold != null;
       const bad = rates.filter((r) => !String(r.provinceName || '').trim() || !(Number(r.price) > 0) ||
         (!String(r.districtName || '').trim() && !scoped(r)));
       if (bad.length) {
@@ -699,20 +705,125 @@ async function startServer() {
       }
       // เพดานหลวมกันไฟล์ผิด/parse เพี้ยน (ตารางราคาจริงต่อสาขา ~ไม่กี่ร้อยแถว)
       if (rates.length > 5000) return res.status(422).json({ error: `ไฟล์มีราคามากผิดปกติ (${rates.length} แถว) — ตรวจว่าเลือกไฟล์ตารางราคาถูกไฟล์ไหม` });
+
       const db = await getDb();
-      let removed = 0;
-      if (replaceExisting) {
-        // ลบเฉพาะหมวดที่อยู่ในไฟล์นำเข้า (งานปกติ/เก็บคืน/Peat/บวกเพิ่ม) แล้วแทนที่ด้วยไฟล์
-        const cats = new Set(rates.map((r) => r.productCategory || 'normal'));
-        const before = db.rateMasters.length;
-        db.rateMasters = db.rateMasters.filter((r) => !(r.branchId === branchId && cats.has(r.productCategory || 'normal')));
-        removed = before - db.rateMasters.length;
+      // กุญแจจับคู่ "ราคาเดียวกัน" — ต้องระบุเงื่อนไขให้ครบ ไม่งั้นราคาคนละเงื่อนไขจะทับกัน
+      // *ไม่* รวมวันที่มีผล (effectiveFrom/To) เพราะไฟล์นำเข้าไม่มีคอลัมน์วันที่ (parser ตั้ง 2020-01-01 เสมอ)
+      // ถ้าเอาวันที่มาเป็นกุญแจ ราคาที่ขึ้นรอบใหม่ (เช่น นครสวรรค์ effectiveFrom=2026-05-01) จะไม่ match
+      // แล้วกลายเป็น "สร้างใหม่" ทั้งหมด = ราคาซ้ำซ้อนเต็ม DB และคิดเงินผิด
+      const norm = (v: any) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, '');
+      const keyOf = (r: any) => [
+        norm(r.provinceName), norm(r.districtName), r.productCategory || 'normal', r.priceType,
+        norm(r.rateGroup), norm(r.receiverKeyword), norm(r.senderKeyword), norm(r.productKeyword),
+        r.minQty ?? '', r.maxQty ?? '',
+      ].join('|');
+
+      // เทียบเฉพาะราคาที่ "ใช้งานอยู่ ณ วันนี้" — ราคาเก่าที่หมดอายุแล้วต้องคงไว้เป็นประวัติ ห้ามถูกทับ
+      const today = new Date().toISOString().slice(0, 10);
+      const inEffect = (r: RateMaster) =>
+        (!r.effectiveFrom || r.effectiveFrom <= today) && (!r.effectiveTo || r.effectiveTo >= today);
+      const all = db.rateMasters.filter((r) => r.branchId === branchId);
+      const mine = all.filter((r) => r.status !== 'inactive' && inEffect(r));
+      const expiredCount = all.length - mine.length;
+      // ถ้ามีหลายแถวที่กุญแจเดียวกัน แปลว่าแยกจากกันไม่ได้ด้วยข้อมูลในไฟล์ -> ไม่แตะ กันอัปเดตผิดตัว
+      const byKey = new Map<string, RateMaster>();
+      const ambiguous = new Set<string>();
+      for (const r of mine) {
+        const k = keyOf(r);
+        if (byKey.has(k)) ambiguous.add(k); else byKey.set(k, r);
       }
+
+      const label = (r: any) => `${r.districtName || 'ทั้งจังหวัด'} จ.${r.provinceName}` +
+        `${(r.productCategory || 'normal') !== 'normal' ? ` [${r.productCategory}]` : ''}` +
+        ` (${r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'})`;
+
+      const created: any[] = [], updated: any[] = [], same: any[] = [];
+      const seenKeys = new Set<string>();
+      const dupInFile: string[] = [];
+      const ambiguousRows: string[] = [];
+      for (const r of rates) {
+        const k = keyOf(r);
+        if (seenKeys.has(k)) { dupInFile.push(label(r)); continue; } // แถวซ้ำในไฟล์เอง -> ใช้ตัวแรก
+        seenKeys.add(k);
+        if (ambiguous.has(k)) { ambiguousRows.push(label(r)); continue; } // ซ้ำในระบบ -> ข้าม ให้แก้มือ
+        const old = byKey.get(k);
+        if (!old) { created.push({ key: k, row: r, label: label(r), price: r.price }); continue; }
+        // จุดตัดชิ้นไม่อยู่ในกุญแจ (แก้จุดตัด = แก้ราคาเดิม ไม่ใช่สร้างใหม่) จึงต้องเทียบตรงนี้ด้วย
+        const thrOf = (x: any) => (x.pieceThreshold == null || x.pieceThreshold === '' ? null : Number(x.pieceThreshold));
+        const oldThr = thrOf(old), newThr = thrOf(r);
+        if (Number(old.price) !== Number(r.price) || oldThr !== newThr) {
+          updated.push({ key: k, row: r, old, label: label(r), oldPrice: old.price, newPrice: r.price,
+            oldThreshold: oldThr, newThreshold: newThr });
+        } else same.push({ key: k, label: label(r) });
+      }
+      // ราคาที่ระบบมีแต่ไม่มีในไฟล์ — รายงานให้เห็น แต่ "ไม่แตะ" ตามที่เจ้าของกำหนด
+      // ไม่นับกลุ่มที่กุญแจซ้ำ (ambiguous) ซ้ำเข้ามาอีก เพราะรายงานแยกไว้แล้ว ไม่งั้นผู้ใช้เห็นตัวเลขซ้ำซ้อน
+      const missing = mine
+        .filter((r) => !seenKeys.has(keyOf(r)) && !ambiguous.has(keyOf(r)))
+        .map((r) => ({ label: label(r), price: r.price }));
+
+      const preview = {
+        branchId,
+        createdCount: created.length, updatedCount: updated.length,
+        sameCount: same.length, missingCount: missing.length,
+        created: created.slice(0, 100).map((c) => ({ label: c.label, price: c.price })),
+        updated: updated.slice(0, 100).map((u) => ({ label: u.label, oldPrice: u.oldPrice, newPrice: u.newPrice,
+          oldThreshold: u.oldThreshold, newThreshold: u.newThreshold })),
+        missing: missing.slice(0, 100),
+        duplicateInFile: dupInFile.slice(0, 50),
+        ambiguousCount: ambiguousRows.length,
+        ambiguous: ambiguousRows.slice(0, 50),
+        expiredCount,
+        summary: [
+          ...summary,
+          ...(dupInFile.length ? [`⚠️ ในไฟล์มีแถวซ้ำกันเอง ${dupInFile.length} แถว — ใช้แถวแรก`] : []),
+          ...(ambiguousRows.length ? [`⚠️ ข้าม ${ambiguousRows.length} แถว: ในระบบมีราคาเงื่อนไขเหมือนกันหลายรายการ แยกไม่ออกว่าจะอัปเดตตัวไหน — แก้ในหน้า Master โดยตรง (${ambiguousRows.slice(0, 3).join(', ')}${ambiguousRows.length > 3 ? ' ...' : ''})`] : []),
+          ...(expiredCount ? [`ℹ️ ไม่นับราคาที่หมดอายุ/ปิดใช้แล้ว ${expiredCount} รายการ — คงไว้เป็นประวัติ`] : []),
+          ...(missing.length ? [`ℹ️ มีในระบบแต่ไม่มีในไฟล์ ${missing.length} รายการ — คงไว้ตามเดิม (ไม่ลบ)`] : []),
+        ],
+      };
+      if (dryRun) return res.json({ dryRun: true, ...preview });
+
+      // ---- เขียนจริง: เพิ่มของใหม่ + อัปเดตที่ราคาเปลี่ยน (พร้อมบันทึกประวัติ) ----
       const now = new Date().toISOString();
-      for (const r of rates) db.rateMasters.push({ ...r, branchId, id: generateId('rate'), createdBy: 'import', createdAt: now } as RateMaster);
-      // เขียนเฉพาะ node /rateMasters (ไม่ใช่ทั้ง DB) — set ทับทั้ง node จึงรองรับการลบของเดิมด้วย
-      await flushCollection('rateMasters');
-      res.status(201).json({ success: true, created: rates.length, removed, summary });
+      const newRows: RateMaster[] = created.map((c) => ({
+        ...c.row, branchId, id: generateId('rate'), status: 'active',
+        effectiveFrom: c.row.effectiveFrom || '2020-01-01', effectiveTo: c.row.effectiveTo ?? null,
+        createdBy: 'import', createdAt: now,
+      } as RateMaster));
+      const histories: RateMasterHistory[] = [];
+      const changedRows: RateMaster[] = [];
+      for (const u of updated) {
+        const idx = db.rateMasters.findIndex((x) => x.id === u.old.id);
+        if (idx === -1) continue; // ถูกลบไประหว่างรอยืนยัน -> ข้าม
+        const cur = db.rateMasters[idx];
+        const curThr = cur.pieceThreshold == null ? null : Number(cur.pieceThreshold);
+        const priceSame = Number(cur.price) === Number(u.row.price);
+        if (priceSame && curThr === u.newThreshold) continue; // มีคนแก้ให้ตรงแล้ว -> ไม่ต้องเขียนซ้ำ
+        // ประวัติบันทึกเฉพาะตอน "ราคา" เปลี่ยน (โครงสร้าง history เก็บ old/newPrice)
+        if (!priceSame) {
+          histories.push({
+            id: generateId('rhist'), rateMasterId: cur.id, oldPrice: cur.price, newPrice: u.row.price,
+            changedBy: 'import', changedAt: now, changeReason: 'นำเข้าราคาจาก Excel',
+          });
+        }
+        // อัปเดตราคา + จุดตัดชิ้น — คงวันที่มีผล/เงื่อนไข/ผู้สร้างเดิมไว้ทั้งหมด
+        db.rateMasters[idx] = { ...cur, price: u.row.price, pieceThreshold: u.newThreshold, updatedBy: 'import', updatedAt: now };
+        changedRows.push(db.rateMasters[idx]);
+      }
+      for (const r of newRows) db.rateMasters.push(r);
+      // อัปเดต cache ให้ครบก่อนเขียน — โหมด db.json เขียนไฟล์จาก cache ปัจจุบัน
+      // ถ้า push ประวัติทีหลัง ประวัติจะหายเมื่อ process ดับก่อนการเขียนครั้งถัดไป
+      for (const h of histories) db.rateMasterHistory.push(h);
+      // เขียนแบบ granular (id-keyed) — ไม่แตะรายการอื่น ไม่ต้องเขียนทั้ง node
+      if (newRows.length || changedRows.length) await saveRecords('rateMasters', [...newRows, ...changedRows]);
+      if (histories.length) await saveRecords('rateMasterHistory', histories);
+
+      res.status(201).json({
+        success: true, ...preview,
+        // ids ของราคาที่เปลี่ยน -> client เอาไปเช็คใบที่กระทบต่อได้ทันที (rate-impact)
+        changedRateIds: [...changedRows.map((r) => r.id), ...newRows.map((r) => r.id)],
+      });
     } catch (err: any) {
       console.error('import-rates error:', err);
       res.status(500).json({ error: `นำเข้าราคาไม่สำเร็จ: ${err.message}` });
