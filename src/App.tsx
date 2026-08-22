@@ -50,7 +50,10 @@ const EMPTY: DatabaseState = {
 };
 
 
-type BranchAuth = { id: string; name: string; isHQ: boolean };
+type BranchAuth = { id: string; name: string; isHQ: boolean; canEditRates?: boolean; isSystemUser?: boolean };
+// token เซสชัน (server ใช้ตัดสินสิทธิ์ เช่น การแก้ราคา) — เก็บแยกจากข้อมูลผู้ใช้
+const TOKEN_KEY = 'branchToken';
+const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
 type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity' | 'fueltrip';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
@@ -83,9 +86,11 @@ export default function App() {
     for (let attempt = 1; attempt <= MAX; attempt++) {
       let res: Response;
       try {
+        const tk = getToken();
         res = await fetch(API_PREFIX + url, {
           method,
-          headers: { 'Content-Type': 'application/json' },
+          // แนบ token ให้ server ตรวจสิทธิ์ (เช่น แก้ราคาได้เฉพาะ admin)
+          headers: { 'Content-Type': 'application/json', ...(tk ? { Authorization: `Bearer ${tk}` } : {}) },
           body: body ? JSON.stringify(body) : undefined,
         });
       } catch {
@@ -103,7 +108,9 @@ export default function App() {
   };
 
   // branchId ที่ใช้กรอง/บันทึก
-  const effBranchId = auth?.isHQ ? workBranchId : (auth?.id || '');
+  // admin (ผู้ใช้ระบบ) ทำงานได้เหมือน HQ ทุกอย่าง — เลือกสาขาที่จะทำงานเองได้
+  const isHQLike = !!(auth?.isHQ || auth?.isSystemUser);
+  const effBranchId = isHQLike ? workBranchId : (auth?.id || '');
 
   // lazy load ต่องวด: db.tripDocuments ตอนนี้ครอบคลุมงวดไหน ('' = ยังไม่โหลด, 'all' = ทุกงวด, อื่น = cycleId)
   const tripsLoadedRef = useRef<string>('');
@@ -157,6 +164,36 @@ export default function App() {
     fetch(API_PREFIX + '/api/config').then((r) => r.json()).then((c) => setAiEnabled(!!c.aiEnabled)).catch(() => setAiEnabled(false));
   }, []);
 
+  // ซิงก์สิทธิ์จาก server ทุกครั้งที่เปิดแอป — ค่าที่เก็บใน localStorage อาจล้าสมัย
+  // (เช่น HQ ได้สิทธิ์ชั่วคราวเพราะยังไม่มีบัญชี admin หรือถูกถอนสิทธิ์ไปแล้ว)
+  useEffect(() => {
+    if (!auth) return;
+    fetch(API_PREFIX + '/api/session', { headers: { Authorization: `Bearer ${getToken()}` } })
+      .then(async (r) => {
+        // เซสชันหมดอายุ/เซิร์ฟเวอร์ restart -> ล้างข้อมูลเข้าระบบแล้วกลับไปหน้า login
+        // (ถ้าปล่อยค้างไว้ ผู้ใช้จะอยู่ในแอปพร้อม token ตาย แล้วบันทึกอะไรไม่ได้เลย — Codex P2)
+        if (r.status === 401) {
+          localStorage.removeItem('branchAuth');
+          try { localStorage.removeItem(TOKEN_KEY); } catch { /* ไม่เป็นไร */ }
+          setAuth(null); setWorkBranchId(''); setDb(EMPTY);
+          notify('warning', 'เซสชันหมดอายุ — กรุณาเข้าสู่ระบบใหม่');
+          return null;
+        }
+        return r.ok ? r.json() : null;
+      })
+      .then((sess) => {
+        if (!sess?.ok) return;
+        setAuth((prev) => {
+          if (!prev) return prev;
+          if (prev.canEditRates === sess.canEditRates && prev.isHQ === sess.isHQ) return prev;
+          const next = { ...prev, isHQ: sess.isHQ, canEditRates: sess.canEditRates };
+          try { localStorage.setItem('branchAuth', JSON.stringify(next)); } catch { /* ไม่เป็นไร */ }
+          return next;
+        });
+      })
+      .catch(() => { /* ออฟไลน์/เซิร์ฟเวอร์ยังไม่พร้อม -> ใช้ค่าที่มีไปก่อน server บังคับสิทธิ์อยู่แล้ว */ });
+  }, [auth?.id]);
+
   // โหลดข้อมูลตามสาขาที่เลือก (HQ workBranchId='' = ทุกสาขา)
   useEffect(() => {
     if (!auth) { fetch(API_PREFIX + '/api/state?tripsCycleId=current').then((r) => r.json()).then(setDb).finally(() => { setLoading(false); setBooted(true); }); return; }
@@ -181,18 +218,23 @@ export default function App() {
   const doLogin = async (a: BranchAuth) => {
     localStorage.setItem('branchAuth', JSON.stringify(a));
     setAuth(a);
-    setWorkBranchId(a.isHQ ? '' : a.id);
+    // HQ และ admin (ผู้ใช้ระบบ ไม่ใช่สาขาจริง) ต้องเลือกสาขาที่จะทำงานเอง
+    setWorkBranchId(a.isHQ || a.isSystemUser ? '' : a.id);
     if (a.isHQ) setTab('dashboard'); // HQ เริ่มที่ภาพรวมทุกสาขา
     setLoading(true);
   };
-  const logout = () => { localStorage.removeItem('branchAuth'); setAuth(null); setWorkBranchId(''); setDb(EMPTY); };
+  const logout = () => {
+    localStorage.removeItem('branchAuth');
+    try { localStorage.removeItem(TOKEN_KEY); } catch { /* ไม่เป็นไร */ }
+    setAuth(null); setWorkBranchId(''); setDb(EMPTY);
+  };
 
   // ยังไม่ login -> หน้าเลือกสาขา + รหัสผ่าน
   if (!auth) return <BranchLogin branches={db.branches} api={api} onLogin={doLogin} />;
 
   const cycle = db.cycles.find((c) => c.id === selectedCycleId) || null;
   const cycleTrips = db.tripDocuments.filter((t) => t.cycleId === selectedCycleId);
-  const activeBranchName = db.branches.find((b) => b.id === effBranchId)?.name || (auth.isHQ ? '— เลือกสาขา —' : auth.name);
+  const activeBranchName = db.branches.find((b) => b.id === effBranchId)?.name || (isHQLike ? '— เลือกสาขา —' : auth.name);
 
   const tabs: [Tab, string, any][] = [
     ['calc', 'คำนวณค่าเที่ยว', Calculator],
@@ -205,10 +247,10 @@ export default function App() {
     ['destfix', 'แก้ปลายทาง 📍', MapPin],
     ['vehicles', 'รถ & คนขับ', Truck],
   ];
-  if (auth.isHQ) tabs.push(['driverkpi', 'วิเคราะห์รายได้ พขร 🔒', TrendingUp]);
-  if (auth.isHQ) tabs.push(['activity', 'บันทึกการแก้ไข 📋', History]);
-  if (auth.isHQ) tabs.push(['branches', 'จัดการสาขา', Building2]);
-  if (auth.isHQ) tabs.push(['fueltrip', '🧪 ค่าจ้างรถร่วม (น้ำมัน)', Beaker]);
+  if (isHQLike) tabs.push(['driverkpi', 'วิเคราะห์รายได้ พขร 🔒', TrendingUp]);
+  if (isHQLike) tabs.push(['activity', 'บันทึกการแก้ไข 📋', History]);
+  if (isHQLike) tabs.push(['branches', 'จัดการสาขา', Building2]);
+  if (isHQLike) tabs.push(['fueltrip', '🧪 ค่าจ้างรถร่วม (น้ำมัน)', Beaker]);
 
   const activeTabLabel = tabs.find(([k]) => k === tab)?.[1] || '';
 
@@ -259,11 +301,11 @@ export default function App() {
           <div className="flex items-center gap-2.5 flex-wrap ml-auto">
             <div className="flex items-center gap-1.5 bg-natural-secondary border border-natural-border rounded-full px-3 py-1.5">
               <Building2 className="w-4 h-4 text-brand-navy" />
-              {auth.isHQ ? (
+              {isHQLike ? (
                 <select aria-label="เลือกสาขา" value={workBranchId} onChange={(e) => setWorkBranchId(e.target.value)}
                   className="bg-transparent text-xs font-bold text-brand-navy outline-none cursor-pointer">
                   <option value="">🌐 ทุกสาขา (ภาพรวม)</option>
-                  {db.branches.filter((b) => !b.isHQ && b.status === 'active').map((b) => (
+                  {db.branches.filter((b) => !b.isHQ && !b.isSystemUser && b.status === 'active').map((b) => (
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
@@ -271,9 +313,10 @@ export default function App() {
                 <span className="text-xs font-bold text-brand-navy">{activeBranchName}</span>
               )}
               {auth.isHQ && <span className="text-[10px] bg-brand-red text-white rounded-full px-1.5 py-0.5 font-bold">HQ</span>}
+              {auth.canEditRates && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 font-bold" title="แก้ไข/นำเข้าราคาได้">ADMIN</span>}
             </div>
             <CycleBar cycles={db.cycles} selectedCycleId={selectedCycleId} setSelectedCycleId={setSelectedCycleId}
-              onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} isHQ={auth.isHQ} />
+              onCreated={(id: string) => fetchState(id)} api={api} showToast={showToast} isHQ={isHQLike} />
           </div>
         </header>
 
@@ -289,11 +332,11 @@ export default function App() {
               reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
-            {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={auth.isHQ} />}
+            {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={isHQLike} />}
             {tab === 'driverkpi' && <DriverKpiTab db={db} cycle={cycle} />}
             {tab === 'costarea' && <CostAreaTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
             {tab === 'reports' && <ReportsTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
-            {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+            {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} canEdit={!!auth.canEditRates} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'destfix' && <DestFixTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'vehicles' && <VehiclesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -324,6 +367,7 @@ function BranchLogin({ branches, api, onLogin }: any) {
     setBusy(true);
     try {
       const r = await api('/api/branch-login', 'POST', { branchId, password });
+      try { localStorage.setItem(TOKEN_KEY, r.token || ''); } catch { /* โหมดไม่อนุญาตเก็บ -> ใช้ได้จนปิดแท็บ */ }
       onLogin(r.branch);
     } catch (e: any) { notify('error', e.message); }
     finally { setBusy(false); }
@@ -359,7 +403,7 @@ function BranchLogin({ branches, api, onLogin }: any) {
 // Tab: จัดการสาขา (เฉพาะ HQ)
 // ===========================================================================
 function BranchesTab({ db, api, reload, showToast }: any) {
-  const realBranches = (db.branches as Branch[]).filter((b) => !b.isHQ);
+  const realBranches = (db.branches as Branch[]).filter((b) => !b.isHQ && !b.isSystemUser);
   const defaultSource = realBranches[0]?.id || '';
   const blank = { name: '', password: '1234', cloneFrom: defaultSource };
   const [form, setForm] = useState(blank);
@@ -428,6 +472,7 @@ function BranchesTab({ db, api, reload, showToast }: any) {
   };
   const del = async (b: Branch) => {
     if (b.isHQ) return showToast('warning', 'ลบสำนักงานใหญ่ไม่ได้');
+    if (b.canEditRates || b.isSystemUser) return showToast('warning', 'ลบบัญชีผู้ดูแลราคา (admin) ไม่ได้ — ถ้าต้องการปิดใช้งาน ให้เปลี่ยนสถานะแทน');
     if (!(await confirmDelete(`สาขา "${b.name}"`))) return;
     await api(`/api/branches/${b.id}`, 'DELETE');
     reload();
@@ -464,7 +509,7 @@ function BranchesTab({ db, api, reload, showToast }: any) {
             {(db.branches as Branch[]).map((b) => (
               <Fragment key={b.id}>
               <tr className="border-t border-natural-border">
-                <td className="px-4 py-2 font-semibold text-brand-navy">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}{!b.isHQ && (b.serviceAreaText || '').trim() && <span className="text-[10px] bg-brand-navy text-white rounded-full px-1.5 py-0.5 ml-1" title={b.serviceAreaText}>📍 ตั้งพื้นที่แล้ว</span>}{!b.isHQ && b.collectBackHalfPiece && <span className="text-[10px] bg-amber-500 text-white rounded-full px-1.5 py-0.5 ml-1" title="เก็บสินค้าคืน คิดครึ่งราคาชิ้นปกติอัตโนมัติ">♻ เก็บคืน½</span>}</td>
+                <td className="px-4 py-2 font-semibold text-brand-navy">{b.name} {b.isHQ && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1">HQ</span>}{b.canEditRates && <span className="text-[10px] bg-emerald-600 text-white rounded-full px-1.5 py-0.5 ml-1" title="บัญชีผู้ดูแลราคา — แก้/นำเข้าราคาได้เพียงผู้เดียว">ADMIN</span>}{!b.isHQ && (b.serviceAreaText || '').trim() && <span className="text-[10px] bg-brand-navy text-white rounded-full px-1.5 py-0.5 ml-1" title={b.serviceAreaText}>📍 ตั้งพื้นที่แล้ว</span>}{!b.isHQ && b.collectBackHalfPiece && <span className="text-[10px] bg-amber-500 text-white rounded-full px-1.5 py-0.5 ml-1" title="เก็บสินค้าคืน คิดครึ่งราคาชิ้นปกติอัตโนมัติ">♻ เก็บคืน½</span>}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.vehicles.filter((v: Vehicle) => v.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length}</td>
                 <td className="px-4 py-2 text-natural-muted">{countMaster(b.id)}</td>
@@ -2169,7 +2214,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
 // ===========================================================================
 // Tab: Master ราคาขนส่ง
 // ===========================================================================
-function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
+function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false }: any) {
   const blank = { destinationName: '', provinceName: '', provinceShort: '', districtName: '', priceType: 'flat', price: 0, pieceThreshold: '', productCategory: 'normal', minQty: '', maxQty: '', receiverKeyword: '', senderKeyword: '', productKeyword: '', rateGroup: '', effectiveFrom: '2020-01-01', effectiveTo: null, status: 'active' };
   const [form, setForm] = useState<any>(blank);
   const [sel, setSel] = useState<Set<string>>(new Set());
@@ -2194,6 +2239,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const impactReqRef = useRef(0);
   useEffect(() => { impactReqRef.current++; setImpact(null); }, [cycle?.id, branchId]);
   const onImportRates = async (files: FileList) => {
+    if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     const file = files[0];
     if (!file) return;
     if (!/\.xlsx?$/i.test(file.name)) return showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)');
@@ -2214,6 +2260,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
     finally { setImporting(false); if (rateFileRef.current) rateFileRef.current.value = ''; }
   };
   const add = async () => {
+    if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     if (!form.provinceName || !form.price) return showToast('warning', 'กรอกจังหวัดและราคา');
     // Peat mass คิดชิ้นเสมอ · บวกเพิ่มตายตัว = เหมา · เก็บคืน/งานปกติ เลือกเหมา/ชิ้นได้ (เก็บคืนเหมา = ใช้เมื่อเก็บคืนอย่างเดียว)
     const priceType = form.productCategory === 'peat_mass' ? 'piece' : form.productCategory === 'fixed_addon' ? 'flat' : form.priceType;
@@ -2284,10 +2331,12 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const allChecked = rates.length > 0 && rates.every((r) => sel.has(r.id));
   const toggleAll = () => setSel(allChecked ? new Set() : new Set(rates.map((r) => r.id)));
   const delOne = async (r: RateMaster) => {
+    if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     if (!(await confirmDelete(`ราคา ${r.destinationName || r.provinceName}`))) return;
     await api(`/api/rate-masters/${r.id}`, 'DELETE'); reload();
   };
   const bulkDel = async () => {
+    if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     if (!sel.size) return;
     if (!(await confirmDelete(`ราคา ${sel.size} รายการที่เลือก`))) return;
     await api('/api/rate-masters/bulk-delete', 'POST', { ids: [...sel] });
@@ -2303,6 +2352,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const effTh = (r: RateMaster) => { const o = cycleMode ? ovFor(r) : null; return o ? (o.pieceThreshold ?? null) : (r.pieceThreshold ?? null); };
   // บันทึกช่อง: โหมดหลัก -> แก้ราคาหลัก; โหมดเฉพาะรอบ -> upsert override (เก็บราคา+จุดตัดคู่กัน)
   const saveCell = async (r: RateMaster, field: 'price' | 'pieceThreshold', value: number | null) => {
+    if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     try {
       if (cycleMode) {
         const price = field === 'price' ? (value as number) : effPrice(r);
@@ -2318,6 +2368,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
     } catch (e: any) { showToast('error', e.message); }
   };
   const removeOverride = async (r: RateMaster) => {
+    if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     const o = ovFor(r); if (!o) return;
     await api(`/api/rate-overrides/${o.id}`, 'DELETE');
     showToast('success', 'กลับไปใช้ราคาหลักแล้ว'); reload();
@@ -2327,9 +2378,11 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   // ---- โหมดแก้หลายช่อง (batch) ----
   const pendingCount = Object.keys(pending).length;
   const markPending = (r: RateMaster, field: 'price' | 'pieceThreshold', value: number | null) =>
+    !canEdit ? showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)') :
     setPending((p) => ({ ...p, [r.id]: { ...p[r.id], [field]: value } }));
   const clearBatch = () => { setPending({}); setResetKey((k) => k + 1); };
   const saveAll = async () => {
+    if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     const ids = Object.keys(pending);
     if (!ids.length) return;
     try {
@@ -2416,12 +2469,19 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
           </div>
         </div>
       )}
+      {/* สิทธิ์แก้ราคา: เฉพาะบัญชีผู้ดูแลราคา (admin) — คนอื่นดูได้อย่างเดียว (server บังคับอีกชั้น) */}
+      {!canEdit && (
+        <div className="bg-slate-100 border border-slate-300 rounded-xl p-3 mb-3 text-xs text-slate-700 flex items-center gap-2 font-semibold">
+          <Lock className="w-4 h-4 shrink-0" />
+          โหมดดูอย่างเดียว — การแก้ไข/นำเข้าราคา ทำได้เฉพาะบัญชีผู้ดูแลราคา (admin)
+        </div>
+      )}
       {/* นำเข้า/เทมเพลตราคาจาก Excel */}
       <div className="flex flex-wrap items-center gap-2 mb-3 bg-emerald-50 border border-emerald-200 rounded-xl p-2.5">
         <span className="text-xs font-semibold text-emerald-800">📥 นำเข้าราคาทั้งสาขาจาก Excel:</span>
         <button type="button" onClick={() => downloadRateTemplate()} className="bg-white border border-emerald-400 text-emerald-700 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />ดาวน์โหลดเทมเพลต</button>
         <input ref={rateFileRef} type="file" aria-label="นำเข้าราคา Excel" accept=".xls,.xlsx" className="hidden" onChange={(e) => e.target.files && onImportRates(e.target.files)} />
-        <button type="button" disabled={importing || !branchId} onClick={() => rateFileRef.current?.click()} className="bg-emerald-600 disabled:bg-natural-muted text-white rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />{importing ? 'กำลังนำเข้า...' : 'นำเข้าราคา (.xlsx)'}</button>
+        <button type="button" disabled={importing || !branchId || !canEdit} title={canEdit ? '' : 'เฉพาะบัญชีผู้ดูแลราคา (admin)'} onClick={() => rateFileRef.current?.click()} className="bg-emerald-600 disabled:bg-natural-muted text-white rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />{importing ? 'กำลังนำเข้า...' : 'นำเข้าราคา (.xlsx)'}</button>
         <span className="text-[11px] text-emerald-700/80">เหมาต่ออำเภอ + ชิ้นต่อจังหวัด/อำเภอ · ระบบเทียบ max ให้อัตโนมัติ</span>
       </div>
 

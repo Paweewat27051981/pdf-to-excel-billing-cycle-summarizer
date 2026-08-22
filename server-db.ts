@@ -211,6 +211,9 @@ function normalizeTrips(list: any[]): any[] {
 const ID_KEYED: (keyof DatabaseState)[] = [
   'tripDocuments', 'fuelEntries', 'deductions', 'rateOverrides', 'rateMasters', 'rateMasterHistory',
   // master ที่แก้ผ่าน masterRoutes (CRUD ทีละรายการ) -> id-keyed = เขียนแค่ record เดียว ไม่เขียนทั้ง tree
+  // 'branches' ต้องอยู่ในนี้ด้วย: เดิมเขียนทั้ง tree (saveDb) -> Firebase ตอบ "Write too large"
+  // ทำให้เพิ่ม/แก้สาขาไม่ได้เลยเมื่อ DB โตขึ้น (พบตอนจะสร้าง user admin)
+  'branches',
   'vehicles', 'receiverGroups', 'receiverGroupAliases', 'conversionRules', 'manualBoxSenders', 'destinationOverrides', 'moneyCategories',
   'oilPrices', 'tripDistances', 'mountainRoutes', // [ทดลอง] ราคาน้ำมัน OR + cache ระยะลูป + master ขึ้นเขา
 ];
@@ -234,7 +237,8 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
   const kArr = <T,>(v: any): T[] | undefined => (v == null ? undefined : (toArray(v) as T[]));
   return {
     settings: { ...seed.settings, ...(state.settings || {}) },
-    branches: state.branches && state.branches.length ? state.branches : seed.branches,
+    // branches เขียนแบบ id-keyed แล้ว (เดิม array) -> อ่านได้ทั้ง 2 แบบ; ว่างจริง -> ใช้ seed
+    branches: (() => { const arr = toArray(state.branches) as DatabaseState['branches']; return arr.length ? arr : seed.branches; })(),
     cycles: state.cycles ?? [],
     vehicles: withBranch(kArr(state.vehicles), seed.vehicles),
     rateMasters: withBranch(kArr(state.rateMasters), seed.rateMasters),

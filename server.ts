@@ -2,6 +2,7 @@ import express from 'express';
 import compression from 'compression';
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { getDb, peekCache, peekCacheAsync, warmCacheOnBoot, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed } from './server-db.js';
@@ -191,12 +192,55 @@ async function startServer() {
     try {
       const db = await getDb();
       db.settings = { ...db.settings, ...req.body };
-      await saveDb(db);
+      // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
+      await flushCollection('settings');
       res.json(db.settings);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // ===================== SESSION (ตรวจสิทธิ์ฝั่ง server) =====================
+  // เก็บใน memory: restart แล้วหาย -> ผู้ใช้ล็อกอินใหม่ (ยอมรับได้ ปลอดภัยกว่าเก็บถาวร)
+  // ใช้ตัดสิน "ใครแก้ราคาได้" ไม่ให้ client โกหกได้ (เดิมไม่มี session เลย ใครยิง API ก็แก้ได้)
+  type Session = { branchId: string; name: string; isHQ: boolean; canEditRates: boolean; at: number };
+  const sessions = new Map<string, Session>();
+  const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 วัน
+  const newToken = () => `${Date.now().toString(36)}-${randomUUID()}`;
+  const getSession = (req: any): Session | null => {
+    const raw = String(req.headers['authorization'] || '');
+    const token = raw.startsWith('Bearer ') ? raw.slice(7).trim() : '';
+    if (!token) return null;
+    const s = sessions.get(token);
+    if (!s) return null;
+    if (Date.now() - s.at > SESSION_TTL_MS) { sessions.delete(token); return null; }
+    return s;
+  };
+  // ด่านสิทธิ์ "แก้ราคา" — ใช้กับทุก endpoint ที่แตะ Master ราคา/ราคาเฉพาะรอบ/นำเข้า Excel
+  // อ่านสิทธิ์จาก DB ปัจจุบันทุกครั้ง (ไม่เชื่อค่าที่ติดมากับ token ตอน login):
+  // ถอนสิทธิ์/ปิดบัญชีแล้วต้องมีผลทันที ไม่ต้องรอ token หมดอายุ (Codex P2)
+  const requireRateEditor = async (req: any, res: any, next: any) => {
+    try {
+      const sess = getSession(req);
+      if (!sess) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบใหม่ (เซสชันหมดอายุ)' });
+      const db = await getDb();
+      const me = db.branches.find((b) => b.id === sess.branchId);
+      if (!me || me.status !== 'active') {
+        return res.status(403).json({ error: 'บัญชีนี้ถูกปิดใช้งานแล้ว — ติดต่อผู้ดูแลระบบ' });
+      }
+      if (me.canEditRates) return next();
+      // ยังไม่มีบัญชีผู้ดูแลราคาในระบบเลย (เช่น ติดตั้งใหม่) -> ให้ HQ ทำแทนได้ชั่วคราว
+      // กันสถานการณ์ "ล็อกตาย" ที่ไม่มีใครแก้ราคาได้เลยและสร้าง admin ไม่ได้ (Codex P1)
+      const hasAnyEditor = db.branches.some((b) => b.canEditRates && b.status === 'active');
+      if (!hasAnyEditor && me.isHQ) {
+        console.warn('[rate-guard] ยังไม่มีบัญชีผู้ดูแลราคา — อนุญาต HQ ชั่วคราว (ควรสร้างบัญชี admin)');
+        return next();
+      }
+      return res.status(403).json({ error: `บัญชี "${me.name}" ไม่มีสิทธิ์แก้ไขราคา — ใช้บัญชีผู้ดูแลราคา (admin) เท่านั้น` });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  };
 
   // ===================== BRANCH LOGIN =====================
   // ตรวจรหัสผ่านสาขา -> คืนข้อมูลสาขา (ไม่คืน password)
@@ -209,7 +253,78 @@ async function startServer() {
       if (String(branch.password) !== String(password)) {
         return res.status(401).json({ error: 'รหัสผ่านไม่ถูกต้อง' });
       }
-      res.json({ ok: true, branch: { id: branch.id, name: branch.name, isHQ: !!branch.isHQ } });
+      // สิทธิ์แก้ราคา: ธงในฐานข้อมูล หรือ HQ ตอนที่ยังไม่มีบัญชี admin เลย (bootstrap — Codex P1)
+      const hasAnyEditor = db.branches.some((b) => b.canEditRates && b.status === 'active');
+      const canEditRates = !!branch.canEditRates || (!hasAnyEditor && !!branch.isHQ);
+      const token = newToken();
+      sessions.set(token, { branchId: branch.id, name: branch.name, isHQ: !!branch.isHQ, canEditRates, at: Date.now() });
+      res.json({
+        ok: true, token,
+        branch: { id: branch.id, name: branch.name, isHQ: !!branch.isHQ, canEditRates, isSystemUser: !!branch.isSystemUser },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ด่านจัดการบัญชี/สาขา — ต้องเป็น HQ หรือ admin เท่านั้น
+  // สำคัญด้านความปลอดภัย: ถ้าปล่อยเปิด ใครก็ยิง PUT /api/branches/:id ตั้ง canEditRates:true
+  // ให้ตัวเอง แล้วข้ามด่านแก้ราคาทั้งหมดได้ (Codex P1)
+  const requireBranchAdmin = async (req: any, res: any, next: any) => {
+    try {
+      const sess = getSession(req);
+      if (!sess) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบใหม่ (เซสชันหมดอายุ)' });
+      const db = await getDb();
+      const me = db.branches.find((b) => b.id === sess.branchId);
+      if (!me || me.status !== 'active') return res.status(403).json({ error: 'บัญชีนี้ถูกปิดใช้งานแล้ว' });
+      if (!me.isHQ && !me.canEditRates) {
+        return res.status(403).json({ error: 'จัดการสาขา/บัญชีได้เฉพาะสำนักงานใหญ่ (HQ) หรือผู้ดูแลราคา (admin)' });
+      }
+      // เฉพาะ HQ เท่านั้นที่แตะ "ฟิลด์ความปลอดภัย" ได้ — กันยกระดับสิทธิ์ตัวเอง (Codex P1)
+      // ถ้าไม่ล็อกครบ: admin ตั้ง isHQ:true ให้ตัวเอง หรือแก้รหัสผ่านบัญชี HQ แล้วสวมสิทธิ์ HQ ได้
+      const body = req.body || {};
+      if (!me.isHQ) {
+        const isCreate = req.method === 'POST' && !req.params?.id;
+        // สร้างสาขาใหม่: ต้องตั้งรหัสผ่าน/สถานะได้ (จำเป็นต่อการใช้งาน ไม่ใช่การยกระดับสิทธิ์)
+        // แต่ห้ามติดธงสิทธิ์มาตั้งแต่แรก — มอบสิทธิ์เป็นเรื่องของ HQ เท่านั้น (Codex P2)
+        const SECURITY_FIELDS = isCreate
+          ? ['canEditRates', 'isSystemUser', 'isHQ', 'id']
+          : ['canEditRates', 'isSystemUser', 'isHQ', 'password', 'id', 'status'];
+        const touched = SECURITY_FIELDS.filter((f) => Object.prototype.hasOwnProperty.call(body, f));
+        if (touched.length) {
+          return res.status(403).json({ error: `ตั้งค่า/แก้ไขข้อมูลด้านสิทธิ์ (${touched.join(', ')}) ได้เฉพาะสำนักงานใหญ่ (HQ)` });
+        }
+        // ห้ามแตะบัญชี HQ / บัญชีระบบอื่น (สร้าง/ลบ/แก้) แม้ไม่ได้ส่งฟิลด์ความปลอดภัย
+        const targetId = String(req.params?.id || '');
+        if (targetId) {
+          const target = db.branches.find((b) => b.id === targetId);
+          if (target && (target.isHQ || (target.isSystemUser && target.id !== me.id))) {
+            return res.status(403).json({ error: 'แก้ไข/ลบบัญชีสำนักงานใหญ่หรือบัญชีระบบได้เฉพาะ HQ' });
+          }
+        }
+        // สร้างสาขาใหม่: กันตั้งค่าสิทธิ์มาตั้งแต่แรก (ครอบคลุมโดย SECURITY_FIELDS ด้านบนแล้ว)
+      }
+      next();
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  };
+
+  // ต่ออายุ/ตรวจเซสชัน — client เรียกตอนเปิดแอปเพื่อรู้ว่า token ยังใช้ได้ + สิทธิ์ปัจจุบัน
+  app.get('/api/session', async (req, res) => {
+    const s = getSession(req);
+    if (!s) return res.status(401).json({ error: 'เซสชันหมดอายุ' });
+    try {
+      const db = await getDb();
+      const me = db.branches.find((b) => b.id === s.branchId);
+      // บัญชีถูกลบ/ปิดใช้งานระหว่างที่ยังถือ token อยู่ -> ให้ client เด้งกลับหน้า login (Codex P2)
+      if (!me || me.status !== 'active') {
+        return res.status(401).json({ error: 'บัญชีนี้ถูกปิดใช้งานหรือถูกลบแล้ว — กรุณาเข้าสู่ระบบใหม่' });
+      }
+      const hasAnyEditor = db.branches.some((b) => b.canEditRates && b.status === 'active');
+      // สิทธิ์ที่ใช้ได้จริง = ธงในฐานข้อมูล หรือ HQ ตอนที่ยังไม่มีบัญชี admin (bootstrap)
+      const canEditRates = !!me?.canEditRates || (!hasAnyEditor && !!me?.isHQ);
+      res.json({ ok: true, branchId: s.branchId, name: me?.name || s.name, isHQ: !!me?.isHQ, canEditRates, hasAnyEditor });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -217,7 +332,7 @@ async function startServer() {
 
   // ===================== CLONE MASTER ระหว่างสาขา =====================
   // คัดลอก กฎตัวหาร/กลุ่มผู้รับ/alias/ประเภทเงิน/ผู้ส่งกล่อง จากสาขาต้นแบบ -> สาขาปลายทาง
-  app.post('/api/branches/clone', async (req, res) => {
+  app.post('/api/branches/clone', requireBranchAdmin, async (req, res) => {
     try {
       const { sourceBranchId, targetBranchId, replace } = req.body as {
         sourceBranchId: string; targetBranchId: string; replace?: boolean;
@@ -256,7 +371,11 @@ async function startServer() {
         db.manualBoxSenders.push({ ...m, id: generateId('mbs'), branchId: targetBranchId });
       }
 
-      await saveDb(db);
+      // เขียนเฉพาะ node ที่แตะ (ทั้ง 5 เป็น id-keyed) — เดิม saveDb เขียนทั้ง tree 36MB
+      // ทำให้ Firebase ตอบ "Write too large" เมื่อ DB โต -> คัดลอกกฎไม่สำเร็จ
+      for (const key of ['receiverGroups', 'receiverGroupAliases', 'conversionRules', 'moneyCategories', 'manualBoxSenders'] as const) {
+        await flushCollection(key);
+      }
       res.json({ ok: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -349,7 +468,8 @@ async function startServer() {
         year, month, half, startDate, endDate, status: 'open', createdAt: new Date().toISOString(),
       };
       db.cycles.push(newCycle);
-      await saveDb(db);
+      // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
+      await flushCollection('cycles');
       res.status(201).json(newCycle);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -363,7 +483,8 @@ async function startServer() {
       if (idx === -1) return res.status(404).json({ error: 'ไม่พบรอบ' });
       const { status } = req.body;
       if (status) db.cycles[idx].status = status;
-      await saveDb(db);
+      // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
+      await flushCollection('cycles');
       res.json(db.cycles[idx]);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -385,7 +506,8 @@ async function startServer() {
       }
       const name = db.cycles[idx].name;
       db.cycles.splice(idx, 1);
-      await saveDb(db);
+      // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
+      await flushCollection('cycles');
       res.json({ success: true, name });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -396,9 +518,11 @@ async function startServer() {
   function masterRoutes<T extends { id: string }>(
     name: string,
     key: keyof DatabaseState,
-    idPrefix: string
+    idPrefix: string,
+    guard?: (req: any, res: any, next: any) => void   // ด่านสิทธิ์ (ถ้ามี) เช่น ราคาเฉพาะรอบต้องเป็น admin
   ) {
-    app.post(`/api/${name}`, async (req, res) => {
+    const g = guard ?? ((_req: any, _res: any, next: any) => next());
+    app.post(`/api/${name}`, g, async (req, res) => {
       try {
         const db = await getDb();
         const item = { ...req.body, id: generateId(idPrefix) } as T;
@@ -409,7 +533,7 @@ async function startServer() {
         res.status(500).json({ error: err.message });
       }
     });
-    app.put(`/api/${name}/:id`, async (req, res) => {
+    app.put(`/api/${name}/:id`, g, async (req, res) => {
       try {
         const db = await getDb();
         const arr = db[key] as unknown as T[];
@@ -422,7 +546,7 @@ async function startServer() {
         res.status(500).json({ error: err.message });
       }
     });
-    app.delete(`/api/${name}/:id`, async (req, res) => {
+    app.delete(`/api/${name}/:id`, g, async (req, res) => {
       try {
         const db = await getDb();
         (db[key] as unknown as T[]) = (db[key] as unknown as T[]).filter((x) => x.id !== req.params.id) as any;
@@ -433,7 +557,7 @@ async function startServer() {
       }
     });
     // ลบเป็นกลุ่ม (ติ๊กหลายรายการแล้วลบทีเดียว)
-    app.post(`/api/${name}/bulk-delete`, async (req, res) => {
+    app.post(`/api/${name}/bulk-delete`, g, async (req, res) => {
       try {
         const ids: string[] = req.body?.ids || [];
         const db = await getDb();
@@ -466,8 +590,8 @@ async function startServer() {
     }
   });
 
-  masterRoutes<Branch>('branches', 'branches', 'br');
-  masterRoutes<RateOverride>('rate-overrides', 'rateOverrides', 'rov');
+  masterRoutes<Branch>('branches', 'branches', 'br', requireBranchAdmin); // จัดการสาขา/บัญชี = HQ หรือ admin
+  masterRoutes<RateOverride>('rate-overrides', 'rateOverrides', 'rov', requireRateEditor); // ราคาเฉพาะรอบ = admin เท่านั้น
   masterRoutes<MoneyCategory>('money-categories', 'moneyCategories', 'cat');
   masterRoutes<ManualBoxSender>('manual-box-senders', 'manualBoxSenders', 'mbs');
   masterRoutes<Vehicle>('vehicles', 'vehicles', 'veh');
@@ -479,7 +603,7 @@ async function startServer() {
   masterRoutes<DeductionEntry>('deductions', 'deductions', 'ded');
 
   // ===================== RATE MASTER (มีประวัติราคา) =====================
-  app.post('/api/rate-masters', async (req, res) => {
+  app.post('/api/rate-masters', requireRateEditor, async (req, res) => {
     try {
       const db = await getDb();
       const item: RateMaster = {
@@ -554,7 +678,7 @@ async function startServer() {
   });
 
   // นำเข้า "ตารางราคา" จาก Excel (2 ชีต เหมาคัน/รายชิ้น) -> สร้าง rate masters
-  app.post('/api/import-rates', async (req, res) => {
+  app.post('/api/import-rates', requireRateEditor, async (req, res) => {
     try {
       const { branchId, fileBase64, replaceExisting } = req.body as { branchId: string; fileBase64: string; replaceExisting?: boolean };
       if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
@@ -596,7 +720,7 @@ async function startServer() {
   });
 
   // นำเข้าราคาแบบชุด (เขียน DB ครั้งเดียว) — ใช้ตอน import ตารางราคาทั้งสาขา
-  app.post('/api/rate-masters/bulk-create', async (req, res) => {
+  app.post('/api/rate-masters/bulk-create', requireRateEditor, async (req, res) => {
     try {
       const { rates } = req.body as { rates: Partial<RateMaster>[] };
       if (!Array.isArray(rates) || !rates.length) return res.status(400).json({ error: 'ต้องส่ง rates เป็น array' });
@@ -618,7 +742,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/rate-masters/:id', async (req, res) => {
+  app.put('/api/rate-masters/:id', requireRateEditor, async (req, res) => {
     try {
       const db = await getDb();
       const idx = db.rateMasters.findIndex((r) => r.id === req.params.id);
@@ -648,7 +772,7 @@ async function startServer() {
   });
 
   // แก้ราคาหลักหลายช่องทีเดียว = เขียน DB ครั้งเดียว (คงบันทึกประวัติราคาไว้)
-  app.post('/api/rate-masters/bulk-update', async (req, res) => {
+  app.post('/api/rate-masters/bulk-update', requireRateEditor, async (req, res) => {
     try {
       const updates = (req.body?.updates || []) as { id: string; price?: number; pieceThreshold?: number | null; changeReason?: string; updatedBy?: string }[];
       if (!Array.isArray(updates) || !updates.length) return res.status(400).json({ error: 'ต้องส่ง updates เป็น array' });
@@ -684,7 +808,7 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/rate-masters/:id', async (req, res) => {
+  app.delete('/api/rate-masters/:id', requireRateEditor, async (req, res) => {
     try {
       const db = await getDb();
       db.rateMasters = db.rateMasters.filter((r) => r.id !== req.params.id);
@@ -695,7 +819,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/rate-masters/bulk-delete', async (req, res) => {
+  app.post('/api/rate-masters/bulk-delete', requireRateEditor, async (req, res) => {
     try {
       const ids: string[] = req.body?.ids || [];
       const idset = new Set(ids);
@@ -709,7 +833,7 @@ async function startServer() {
   });
 
   // ตั้งวันเริ่ม/สิ้นสุดมีผลของหลายราคาพร้อมกัน (เขียนครั้งเดียว) — ใช้ตอนอัปเดตราคาทั้งสาขา (ปิดเก่า/เปิดใหม่)
-  app.post('/api/rate-masters/bulk-set-effective', async (req, res) => {
+  app.post('/api/rate-masters/bulk-set-effective', requireRateEditor, async (req, res) => {
     try {
       const { ids, effectiveTo, effectiveFrom } = req.body as { ids: string[]; effectiveTo?: string | null; effectiveFrom?: string };
       if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ต้องส่ง ids เป็น array' });
@@ -738,7 +862,7 @@ async function startServer() {
   });
 
   // ราคาเฉพาะรอบ: สร้างหรืออัปเดต (1 รอบ + 1 ราคาหลัก = 1 override)
-  app.post('/api/rate-overrides/upsert', async (req, res) => {
+  app.post('/api/rate-overrides/upsert', requireRateEditor, async (req, res) => {
     try {
       const { branchId, cycleId, rateMasterId, price, pieceThreshold } = req.body as RateOverride;
       if (!branchId || !cycleId || !rateMasterId) return res.status(400).json({ error: 'ข้อมูลไม่ครบ' });
@@ -757,7 +881,7 @@ async function startServer() {
   });
 
   // ราคาเฉพาะรอบเป็นชุด (บันทึกหลายช่องทีเดียว = เขียน DB ครั้งเดียว กัน server ฟรีล่มตอนบันทึกเยอะ)
-  app.post('/api/rate-overrides/bulk-upsert', async (req, res) => {
+  app.post('/api/rate-overrides/bulk-upsert', requireRateEditor, async (req, res) => {
     try {
       const items = (req.body?.items || []) as RateOverride[];
       if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'ต้องส่ง items เป็น array' });
