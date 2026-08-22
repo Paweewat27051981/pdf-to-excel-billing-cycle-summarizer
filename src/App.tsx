@@ -2264,7 +2264,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast }: any) {
   const catLabel = (c?: string) => c === 'collect_back' ? 'เก็บคืน' : c === 'peat_mass' ? 'Peat mass' : c === 'fixed_addon' ? 'บวกเพิ่มตายตัว' : 'งานปกติ';
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
-  const allRates: RateMaster[] = db.rateMasters;
+  // กรองเฉพาะสาขาที่กำลังทำงานอยู่เสมอ — ปกติ server กรองมาให้แล้ว (/api/state?branchId=)
+  // แต่ถ้า state ถูกโหลดตอนยังไม่เลือกสาขา (เช่น HQ สลับสาขาแล้ว state เก่ายังค้าง)
+  // จะได้ราคาปนทุกสาขา -> หน้า Master โชว์จังหวัดของสาขาอื่น (เคสจริง: สาย3 เห็นภาคเหนือ)
+  const allRates: RateMaster[] = (db.rateMasters as RateMaster[]).filter((r) => r.branchId === branchId);
   const nm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, '');
   // ราคาที่ "ใช้ได้ในรอบที่เลือก" (ช่วง effectiveFrom/To ทับกับรอบ) — ซ่อนราคาที่หมดอายุ/คนละช่วง เว้นแต่กด "รวมที่หมดอายุ"
   const effForCycle = (r: RateMaster) => !cycle || ((!r.effectiveFrom || r.effectiveFrom <= cycle.endDate) && (!r.effectiveTo || r.effectiveTo >= cycle.startDate));
