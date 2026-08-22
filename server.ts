@@ -467,10 +467,50 @@ async function startServer() {
         name: `${thaiMonth} ${(year + 543) % 100} รอบ ${half === 'first' ? '1-15' : '16-31'}`,
         year, month, half, startDate, endDate, status: 'open', createdAt: new Date().toISOString(),
       };
+      // ---- คัดลอก "ราคาเฉพาะรอบ" จากรอบก่อนหน้า 1 รอบ (ทุกสาขา) ----
+      // เดิมขึ้นรอบใหม่แล้วราคาเฉพาะรอบหายหมด ต้องตั้งใหม่ทุกรอบ (สาย3 ~311 รายการ/รอบ)
+      // กติกา (เจ้าของกำหนด): คัดลอกจาก "รอบล่าสุดที่มีอยู่จริง" ก่อนหน้ารอบใหม่
+      //   - ปกติคือรอบติดกัน (ก.ย.1-15 <- ส.ค.16-31)
+      //   - ถ้ารอบติดกันไม่เคยถูกสร้าง ให้ข้ามไปเอารอบเก่าสุดที่มีข้อมูลแทน (ยืนยันแล้ว: ดีกว่าได้ 0 รายการ)
+      //   - คัดลอกทุกรายการ ไม่สนว่าราคาซ้ำกับราคาหลักหรือไม่
+      //
+      // ⚠️ ลำดับสำคัญ: ต้องคัดลอกราคา "ให้เสร็จก่อน" แล้วค่อยประกาศรอบใหม่ (flushCollection('cycles'))
+      // ถ้าประกาศรอบก่อน แล้วมีคนสร้างรอบถัดไปจังหวะนั้นพอดี รอบใหม่จะมองเห็นรอบนี้เป็น "รอบก่อนหน้า"
+      // ทั้งที่ยังไม่มีราคาเลย -> คัดลอกได้ 0 รายการ แล้วราคาหายเงียบๆ (Codex P2)
+      let copiedOverrides = 0;
+      let copiedFrom: string | null = null;
+      try {
+        // หา "รอบก่อนหน้า" = รอบที่เรียงตามเวลาแล้วอยู่ติดกันก่อนรอบใหม่ (ข้ามรอบที่ยังไม่มีอยู่จริง)
+        const ord = (c: { year: number; month: number; half: string }) =>
+          c.year * 100 + c.month * 2 + (c.half === 'first' ? 0 : 1);
+        const target = ord(newCycle);
+        const prev = db.cycles
+          .filter((c) => c.id !== newCycle.id && ord(c) < target)
+          .sort((a, b) => ord(b) - ord(a))[0];
+        if (prev) {
+          const src = db.rateOverrides.filter((o) => o.cycleId === prev.id);
+          if (src.length) {
+            const copies: RateOverride[] = src.map((o) => ({
+              id: generateId('rov'), branchId: o.branchId, cycleId: newCycle.id,
+              rateMasterId: o.rateMasterId, price: o.price, pieceThreshold: o.pieceThreshold ?? null,
+            }));
+            for (const c of copies) db.rateOverrides.push(c);
+            await saveRecords('rateOverrides', copies);
+            copiedOverrides = copies.length;
+            copiedFrom = prev.name;
+          }
+        }
+      } catch (e: any) {
+        // คัดลอกพลาดไม่ทำให้สร้างรอบล้มเหลว — รอบยังเปิดได้ แค่ต้องตั้งราคาเอง
+        console.error('[cycles] คัดลอกราคาเฉพาะรอบไม่สำเร็จ:', e.message);
+      }
+
+      // ประกาศรอบใหม่เป็นลำดับสุดท้าย (ราคาพร้อมแล้ว)
       db.cycles.push(newCycle);
       // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
       await flushCollection('cycles');
-      res.status(201).json(newCycle);
+
+      res.status(201).json({ ...newCycle, copiedOverrides, copiedFrom });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -506,9 +546,27 @@ async function startServer() {
       }
       const name = db.cycles[idx].name;
       db.cycles.splice(idx, 1);
+      // ลำดับสำคัญ: ลบ "รอบ" ให้ลงดิสก์ก่อน แล้วค่อยลบราคาเฉพาะรอบที่ผูกอยู่
+      // ถ้าลบราคาก่อนแล้วเขียนรอบพลาด -> ราคาหายถาวรทั้งที่รอบยังอยู่ = ข้อมูลเงินหาย กู้ไม่ได้ (Codex P2)
+      // สลับลำดับแล้ว กรณีแย่สุดคือเหลือ override กำพร้า ซึ่งไม่กระทบการคำนวณและเก็บกวาดทีหลังได้
       // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
       await flushCollection('cycles');
-      res.json({ success: true, name });
+
+      // ลบราคาเฉพาะรอบของรอบนี้ทิ้งด้วย ไม่งั้นกลายเป็นขยะกำพร้าถาวร
+      // (สำคัญขึ้นมากตั้งแต่มีการคัดลอกอัตโนมัติ — รอบใหม่พกมาหลายร้อยรายการ)
+      const orphans = db.rateOverrides.filter((o) => o.cycleId === id);
+      if (orphans.length) {
+        db.rateOverrides = db.rateOverrides.filter((o) => o.cycleId !== id);
+        // ลบเฉพาะ id ที่เกี่ยว (multi-path update) — ห้าม flush ทั้ง node
+        // เพราะ rateOverrides จะโตเร็วมากตั้งแต่มีคัดลอกอัตโนมัติ (~87+/รอบ) แล้วชน Firebase "Write too large"
+        try {
+          await removeRecords('rateOverrides', orphans.map((o) => o.id));
+        } catch (e: any) {
+          // รอบถูกลบไปแล้ว (สำเร็จ) — ลบราคาไม่สำเร็จไม่ควรทำให้ทั้ง request พัง
+          console.error('[cycles] ลบราคาเฉพาะรอบที่กำพร้าไม่สำเร็จ:', e.message);
+        }
+      }
+      res.json({ success: true, name, removedOverrides: orphans.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

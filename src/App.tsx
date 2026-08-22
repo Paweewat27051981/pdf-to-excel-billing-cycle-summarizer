@@ -555,7 +555,10 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
   const create = async () => {
     try {
       const c = await api('/api/cycles', 'POST', { year, month, half });
-      showToast('success', `เปิดรอบ "${c.name}" สำเร็จ`);
+      // บอกให้ชัดว่าคัดลอกราคาเฉพาะรอบมาให้กี่รายการ จากรอบไหน (ไม่งั้นผู้ใช้ไม่รู้ว่ามีราคาทับอยู่)
+      showToast('success', c.copiedOverrides
+        ? `เปิดรอบ "${c.name}" สำเร็จ — คัดลอกราคาเฉพาะรอบ ${c.copiedOverrides} รายการจาก "${c.copiedFrom}"`
+        : `เปิดรอบ "${c.name}" สำเร็จ`);
       setOpen(false);
       onCreated(c.id);
     } catch (e: any) { showToast('error', e.message); }
@@ -2231,6 +2234,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
   const [batch, setBatch] = useState(false);
   const [pending, setPending] = useState<Record<string, { price?: number; pieceThreshold?: number | null }>>({});
   const [resetKey, setResetKey] = useState(0);
+  // ค่าล่าสุดที่ "บันทึกสำเร็จ/กำลังบันทึก" ของแต่ละช่อง — ใช้กัน onBlur ยิงซ้ำตอน React ทำลาย input
+  // (พอบันทึกเสร็จ reload() ทำให้ค่าเปลี่ยน -> key เปลี่ยน -> unmount -> onBlur ยิงด้วยค่าเก่าใน DOM
+  //  แล้วเขียนทับกลับเป็นค่าเดิม เจอจริง: ราชบุรี วัดเพลง 7.25<->8.25 สลับ 6 ครั้งใน 1 ชม.)
+  const lastSaved = useRef<Map<string, number | null>>(new Map());
   const [showExpired, setShowExpired] = useState(false); // false = แสดงเฉพาะราคาที่ใช้ได้ในรอบที่เลือก (ซ่อนราคาที่หมดอายุ)
   // ผล rate-impact หลังแก้ราคา (แถบเตือนใบที่กระทบ) — ต้องอยู่ก่อน early return (React hook order)
   const [impact, setImpact] = useState<any>(null);
@@ -2384,6 +2391,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
 
   // ---- ราคาเฉพาะรอบ ----
   const cycleMode = mode === 'cycle' && cycle;
+  // กุญแจต้องผูก "โหมด+รอบ" ด้วย — ไม่งั้นบันทึกราคาในรอบหนึ่งแล้วสลับไปอีกรอบ
+  // พอกรอกเลขเดิมจะถูกมองว่าเป็นการยิงซ้ำ แล้วไม่บันทึกเงียบๆ (Codex P2)
+  const cellKeyOf = (id: string, field: 'price' | 'pieceThreshold') =>
+    `${cycleMode ? `c:${cycle?.id || ''}` : 'b'}|${id}:${field}`;
   const ovFor = (r: RateMaster): RateOverride | null =>
     (db.rateOverrides || []).find((o: RateOverride) => o.cycleId === cycle?.id && o.rateMasterId === r.id) || null;
   const effPrice = (r: RateMaster) => { const o = cycleMode ? ovFor(r) : null; return o ? o.price : r.price; };
@@ -2391,6 +2402,8 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
   // บันทึกช่อง: โหมดหลัก -> แก้ราคาหลัก; โหมดเฉพาะรอบ -> upsert override (เก็บราคา+จุดตัดคู่กัน)
   const saveCell = async (r: RateMaster, field: 'price' | 'pieceThreshold', value: number | null) => {
     if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
+    const cellKey = cellKeyOf(r.id, field);
+    lastSaved.current.set(cellKey, value); // จำไว้ว่าช่องนี้เพิ่งบันทึกค่าอะไรไป (ใช้กัน onBlur ซ้ำตอน unmount)
     try {
       if (cycleMode) {
         const price = field === 'price' ? (value as number) : effPrice(r);
@@ -2403,12 +2416,18 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
       }
       reload();
       void checkImpact([r.id]); // ราคาเปลี่ยน -> เช็คว่ากระทบใบที่บันทึกแล้วในรอบนี้ไหม
-    } catch (e: any) { showToast('error', e.message); }
+    } catch (e: any) {
+      lastSaved.current.delete(cellKey); // บันทึกไม่สำเร็จ -> ให้ลองใหม่ได้
+      showToast('error', e.message);
+    }
   };
   const removeOverride = async (r: RateMaster) => {
     if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     const o = ovFor(r); if (!o) return;
     await api(`/api/rate-overrides/${o.id}`, 'DELETE');
+    // ล้างค่าที่จำไว้ของแถวนี้ ไม่งั้นถ้าผู้ใช้ตั้งราคาเดิมซ้ำอีกครั้งจะถูกมองว่าเป็นการยิงซ้ำแล้วไม่บันทึก
+    lastSaved.current.delete(cellKeyOf(r.id, 'price'));
+    lastSaved.current.delete(cellKeyOf(r.id, 'pieceThreshold'));
     showToast('success', 'กลับไปใช้ราคาหลักแล้ว'); reload();
     void checkImpact([r.id]); // ลบ override = ราคากลับเป็นหลัก -> ใบที่คิดด้วย override อาจต้องอัปเดต
   };
@@ -2418,7 +2437,7 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
   const markPending = (r: RateMaster, field: 'price' | 'pieceThreshold', value: number | null) =>
     !canEdit ? showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)') :
     setPending((p) => ({ ...p, [r.id]: { ...p[r.id], [field]: value } }));
-  const clearBatch = () => { setPending({}); setResetKey((k) => k + 1); };
+  const clearBatch = () => { setPending({}); lastSaved.current.clear(); setResetKey((k) => k + 1); };
   const saveAll = async () => {
     if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
     const ids = Object.keys(pending);
@@ -2652,13 +2671,13 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
                 <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
                 <td className="py-1.5 px-1">
                   <input type="number" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}-${resetKey}`} defaultValue={effPrice(r)} aria-label={`ราคา ${r.destinationName}`}
-                    onBlur={(e) => { const v = +e.target.value; if (v !== effPrice(r)) { batch ? markPending(r, 'price', v) : saveCell(r, 'price', v); } }}
+                    onBlur={(e) => { const v = +e.target.value; if (v === lastSaved.current.get(cellKeyOf(r.id, 'price'))) return; if (v !== effPrice(r)) { batch ? markPending(r, 'price', v) : saveCell(r, 'price', v); } }}
                     className={`w-20 border rounded px-1 py-0.5 text-xs text-right outline-none ${pending[r.id]?.price !== undefined ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-300' : cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
                   {pending[r.id]?.price !== undefined ? <span className="text-[9px] text-violet-700 ml-0.5 font-bold">รอบันทึก</span> : cycleMode && ovFor(r) && <span className="text-[9px] text-amber-700 ml-0.5">เฉพาะรอบ</span>}
                 </td>
                 <td className="py-1.5 px-1">
                   <input type="number" key={`t-${r.id}-${cycleMode ? 'c' : 'b'}-${effTh(r) ?? ''}-${resetKey}`} defaultValue={effTh(r) ?? ''} placeholder="-" aria-label={`จุดตัด ${r.destinationName}`}
-                    onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v !== effTh(r)) { batch ? markPending(r, 'pieceThreshold', v) : saveCell(r, 'pieceThreshold', v); } }}
+                    onBlur={(e) => { const raw = e.target.value.trim(); const v = raw === '' ? null : +raw; if (v === lastSaved.current.get(cellKeyOf(r.id, 'pieceThreshold'))) return; if (v !== effTh(r)) { batch ? markPending(r, 'pieceThreshold', v) : saveCell(r, 'pieceThreshold', v); } }}
                     className={`w-16 border rounded px-1 py-0.5 text-xs text-right outline-none ${pending[r.id]?.pieceThreshold !== undefined ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-300' : cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
                 </td>
                 <td className="py-1.5 px-1">{r.effectiveFrom}</td>
