@@ -255,13 +255,33 @@ async function startServer() {
   const jastranFile = (date: string) => path.join(JASTRAN_DIR, `jb-${date}.json`);
   const isYmd = (d: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
 
+  // อ่าน token ได้ 2 ทาง: env หรือไฟล์ agent-token.txt ใน jastran-data/
+  //
+  // ทำไมต้องมีทางที่ 2: env_file ของ docker-compose ถูกอ่านตอน "สร้าง" container เท่านั้น
+  // และ .env ไม่ได้เป็น volume -> แก้ .env แล้ว Stop/Start ค่าไม่เข้า ต้อง recreate container
+  // ซึ่งบน NAS ที่ container อยู่ใน Project จะกดยาก + เสี่ยงเว็บล่ม
+  // ส่วน jastran-data/ เป็น volume อยู่แล้ว -> วางไฟล์แล้ว restart ธรรมดาก็มีผลทันที
+  //
+  // ปลอดภัย: jastran-data/ ไม่ได้ถูกเสิร์ฟด้วย express.static (ต่างจาก uploads/)
+  // อ่านสดทุกครั้ง ไม่ cache -> เปลี่ยน token แล้วมีผลทันทีโดยไม่ต้อง restart ด้วยซ้ำ
+  const TOKEN_FILE = path.join(JASTRAN_DIR, 'agent-token.txt');
+  const readAgentToken = () => {
+    // trim ทั้งสองทาง: ก๊อปวาง token แล้วติดช่องว่าง/ขึ้นบรรทัดใหม่มาด้วยเป็นเรื่องปกติ
+    // ถ้าไม่ trim จะได้ 403 โดยหาสาเหตุไม่เจอ (ตาเปล่ามองไม่เห็นช่องว่าง)
+    // ผลข้างเคียง: token ที่ "ตั้งใจ" ให้มีช่องว่างหัวท้ายจะใช้ไม่ได้ — ซึ่งไม่ควรมีใครทำ
+    const fromEnv = (process.env.AGENT_TOKEN || '').trim();
+    if (fromEnv) return fromEnv;
+    try { return fs.readFileSync(TOKEN_FILE, 'utf8').trim(); }
+    catch { return ''; }   // ไม่มีไฟล์ = ยังไม่ตั้ง token (ปิดช่องทางไว้)
+  };
+
   // agent ส่งใบกระจายเข้ามา (แทนที่ไฟล์ของวันนั้น — ส่งซ้ำได้ ข้อมูลล่าสุดชนะ)
   app.post('/api/jastran/trips', async (req, res) => {
     try {
       const token = String(req.headers['x-agent-token'] || '');
-      const expect = process.env.AGENT_TOKEN || '';
-      // ต้องตั้ง AGENT_TOKEN ใน .env ก่อนใช้ — ไม่ตั้ง = ปิดช่องทางนี้ (กันคนอื่นยิงเข้ามา)
-      if (!expect) return res.status(503).json({ error: 'ยังไม่ได้ตั้ง AGENT_TOKEN บนเซิร์ฟเวอร์' });
+      const expect = readAgentToken();
+      // ต้องตั้ง token ก่อนใช้ — ไม่ตั้ง = ปิดช่องทางนี้ (กันคนอื่นยิงเข้ามา)
+      if (!expect) return res.status(503).json({ error: 'ยังไม่ได้ตั้ง AGENT_TOKEN บนเซิร์ฟเวอร์ (ตั้งใน .env หรือไฟล์ jastran-data/agent-token.txt)' });
       // เทียบแบบ timing-safe — `!==` หยุดทันทีที่ตัวอักษรต่างกัน
       // ทำให้เดา token ทีละตัวได้จากเวลาตอบกลับ (timing attack)
       const a = Buffer.from(token), b = Buffer.from(expect);
