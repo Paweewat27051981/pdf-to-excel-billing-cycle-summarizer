@@ -2,7 +2,7 @@ import express from 'express';
 import compression from 'compression';
 import path from 'path';
 import fs from 'fs';
-import { randomUUID } from 'crypto';
+import { randomUUID, timingSafeEqual } from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import { getDb, peekCache, peekCacheAsync, warmCacheOnBoot, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed } from './server-db.js';
@@ -25,7 +25,7 @@ import {
   DeductionEntry,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument, normPlate, round2, textContains } from './src/calc.js';
+import { computeTripDocument, normPlate, normDoc, round2, textContains } from './src/calc.js';
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
 import { startOilPriceScheduler } from './src/experimental/oilPriceScheduler.js'; // [ทดลอง] auto 05:30 ไทย
@@ -241,6 +241,170 @@ async function startServer() {
       return res.status(500).json({ error: err.message });
     }
   };
+
+  // ===================== ใบกระจายจากจัสทราน (เก็บบน NAS ไม่เก็บใน Firebase) =====================
+  // เจ้าของกำหนด: หน้าคำนวณค่าเที่ยวทำงานเหมือนเดิมทุกอย่าง เปลี่ยนแค่ "วิธีนำเข้า"
+  // agent บนเครื่องจัสทรานส่งใบกระจายมาที่นี่ -> เก็บเป็นไฟล์ JSON รายวันบน NAS
+  // -> หน้าเว็บดึงไปเข้า flow เดิม (preview -> ตรวจ -> กดบันทึกทีละใบ)
+  // ⚠️ ห้ามวางใต้ uploads/ — โฟลเดอร์นั้นถูกเสิร์ฟสาธารณะด้วย express.static
+  //    (ใครก็โหลด /api/uploads/jastran/jb-2026-08-18.json ได้ = ข้อมูลรั่ว แม้ POST จะมี token)
+  //    ใช้โฟลเดอร์แยกที่ mount บน NAS เหมือนกันแต่ไม่ถูกเสิร์ฟ
+  const JASTRAN_DIR = path.join(process.cwd(), 'jastran-data');
+  fs.mkdirSync(JASTRAN_DIR, { recursive: true });
+
+  const jastranFile = (date: string) => path.join(JASTRAN_DIR, `jb-${date}.json`);
+  const isYmd = (d: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+
+  // agent ส่งใบกระจายเข้ามา (แทนที่ไฟล์ของวันนั้น — ส่งซ้ำได้ ข้อมูลล่าสุดชนะ)
+  app.post('/api/jastran/trips', async (req, res) => {
+    try {
+      const token = String(req.headers['x-agent-token'] || '');
+      const expect = process.env.AGENT_TOKEN || '';
+      // ต้องตั้ง AGENT_TOKEN ใน .env ก่อนใช้ — ไม่ตั้ง = ปิดช่องทางนี้ (กันคนอื่นยิงเข้ามา)
+      if (!expect) return res.status(503).json({ error: 'ยังไม่ได้ตั้ง AGENT_TOKEN บนเซิร์ฟเวอร์' });
+      // เทียบแบบ timing-safe — `!==` หยุดทันทีที่ตัวอักษรต่างกัน
+      // ทำให้เดา token ทีละตัวได้จากเวลาตอบกลับ (timing attack)
+      const a = Buffer.from(token), b = Buffer.from(expect);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return res.status(403).json({ error: 'token ไม่ถูกต้อง' });
+      }
+
+      const { date, docs } = req.body as { date: string; docs: any[] };
+      if (!isYmd(date)) return res.status(400).json({ error: 'ต้องระบุ date รูปแบบ YYYY-MM-DD' });
+      if (!Array.isArray(docs)) return res.status(400).json({ error: 'ต้องส่ง docs เป็น array' });
+      // กันไฟล์ใหญ่ผิดปกติ (ใบกระจายจริง ~130 ใบ/วัน)
+      if (docs.length > 2000) return res.status(413).json({ error: `ส่งมา ${docs.length} ใบ มากผิดปกติ` });
+
+      const payload = { date, receivedAt: new Date().toISOString(), count: docs.length, docs };
+      // เขียนแบบ atomic (tmp + rename) — agent ส่งซ้ำวันเดิมได้ ถ้าเขียนทับตรงๆ
+      // คนที่อ่านอยู่พร้อมกันจะได้ JSON ครึ่งไฟล์ (พัง) หรือไฟล์เสียถาวรถ้า crash กลางคัน
+      // แพทเทิร์นเดียวกับ snapshot ใน server-db.ts
+      const target = jastranFile(date);
+      // tmp ต้องไม่ซ้ำต่อ request — ถ้าสองคำขอของวันเดียวกันมาพร้อมกัน จะ rename ทับ tmp ของกันและกัน
+      // (ตัวหนึ่ง rename ไปแล้ว อีกตัว rename ต่อ -> ENOENT หรือได้ข้อมูลของคำขอผิดตัว)
+      const tmp = `${target}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+      await fs.promises.writeFile(tmp, JSON.stringify(payload), 'utf8');
+      // Windows คืน EPERM/EBUSY ถ้า rename ทับไฟล์ที่มีคนเปิดอ่านอยู่พอดี (Linux/NAS ไม่มีปัญหานี้)
+      // agent ส่งซ้ำวันเดียวกันพร้อมกันได้ -> ลองใหม่สั้นๆ แทนที่จะโยน 500 ทิ้งข้อมูล
+      let renamed = false;
+      for (let i = 0; i < 5 && !renamed; i++) {
+        try {
+          await fs.promises.rename(tmp, target);
+          renamed = true;
+        } catch (e: any) {
+          if (i === 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(e?.code)) {
+            await fs.promises.unlink(tmp).catch(() => {});   // ไม่ทิ้งไฟล์ขยะไว้
+            throw e;
+          }
+          await new Promise((r) => setTimeout(r, 50 * (i + 1)));
+        }
+      }
+      console.log(`[jastran] รับใบกระจาย ${docs.length} ใบ วันที่ ${date}`);
+      res.json({ success: true, date, count: docs.length });
+    } catch (err: any) {
+      console.error('[jastran/trips] error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // หน้าเว็บถามว่ามีใบของวันไหนบ้าง (ไว้โชว์ตัวเลขข้างปุ่ม)
+  app.get('/api/jastran/available', async (req, res) => {
+    try {
+      // ต้องล็อกอินก่อน — ข้อมูลใบกระจายเป็นข้อมูลธุรกิจ ไม่ควรเปิดสาธารณะ
+      // (ย้ายไฟล์ออกจาก uploads/ แล้ว แต่ถ้า API ยังเปิด ก็เท่ากับประตูหลังยังเปิดอยู่ — Codex P1)
+      if (!getSession(req)) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบก่อน' });
+      // นับเฉพาะใบที่สาขานั้น "เปิดดูได้จริง" — ไม่งั้นตัวเลขบนปุ่มไม่ตรงกับรายการที่เปิดได้
+      // และสาขาหนึ่งจะเห็นปริมาณงานของสาขาอื่น
+      const dbA = await getDb();
+      const sessA = getSession(req)!;
+      const meA = dbA.branches.find((b) => b.id === sessA.branchId);
+      // HQ เลือกสาขาทำงานได้ -> ใช้ค่าที่ส่งมา · สาขาปกติบังคับเป็นของตัวเอง (ไม่เชื่อ query)
+      const isHQLikeA = !!(meA?.isHQ || meA?.isSystemUser);
+      const scopeBranch = isHQLikeA ? String(req.query.branchId || '') : sessA.branchId;
+      const ownerOf = new Map<string, string>();
+      for (const v of dbA.vehicles) {
+        const k = normPlate(v.plateNo || '');
+        if (k && !ownerOf.has(k)) ownerOf.set(k, v.branchId);
+      }
+      const visibleTo = (d: any) => {
+        if (!scopeBranch) return true;
+        const owner = ownerOf.get(normPlate(String(d?.plateNo || '')));
+        return !owner || owner === scopeBranch;   // ทะเบียนไม่รู้จัก -> ให้เห็น (ไม่ตกหล่น)
+      };
+
+      const files = await fs.promises.readdir(JASTRAN_DIR).catch(() => [] as string[]);
+      const days: { date: string; count: number; receivedAt: string }[] = [];
+      for (const f of files) {
+        const m = /^jb-(\d{4}-\d{2}-\d{2})\.json$/.exec(f);
+        if (!m) continue;
+        try {
+          const j = JSON.parse(await fs.promises.readFile(path.join(JASTRAN_DIR, f), 'utf8'));
+          const n = Array.isArray(j.docs) ? j.docs.filter(visibleTo).length : 0;
+          if (!n) continue;   // วันที่สาขานี้ไม่มีใบเลย -> ไม่ต้องโชว์
+          days.push({ date: m[1], count: n, receivedAt: j.receivedAt || '' });
+        } catch { /* ไฟล์เสีย -> ข้าม ไม่ให้ล้มทั้ง endpoint */ }
+      }
+      days.sort((a, b) => b.date.localeCompare(a.date));
+      res.json({ days });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ดึงใบของวันที่ระบุ + บอกว่าใบไหน "บันทึกไปแล้ว" (เทียบเลขใบกับที่มีในระบบ)
+  app.get('/api/jastran/trips', async (req, res) => {
+    try {
+      if (!getSession(req)) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบก่อน' });
+      const date = String(req.query.date || '');
+      if (!isYmd(date)) return res.status(400).json({ error: 'ต้องระบุ date=YYYY-MM-DD' });
+      const f = jastranFile(date);
+      if (!fs.existsSync(f)) return res.json({ date, count: 0, docs: [] });
+      const j = JSON.parse(await fs.promises.readFile(f, 'utf8'));
+      const docs: any[] = Array.isArray(j.docs) ? j.docs : [];
+
+      // ใบที่บันทึกแล้ว — ต้องเทียบด้วย "กติกาเดียวกับกฎเหล็ก" ที่ใช้ตอนบันทึกจริง:
+      //   ต่อสาขา + เทียบด้วย .trim() (ไม่ใช่ normDoc ที่ตัดอักขระพิเศษ) + เลขว่างไม่นับซ้ำ
+      // ถ้าเทียบคนละแบบ จะบล็อกใบที่บันทึกได้จริง หรือปล่อยใบที่ซ้ำจริงผ่าน
+      const db = await getDb();
+      const sess = getSession(req)!;   // ผ่านด่านข้างบนมาแล้ว
+      // สาขาที่ดูได้: HQ ดูได้ทุกสาขา · สาขาปกติดูได้เฉพาะของตัวเอง (ไม่เชื่อ query จากผู้ใช้)
+      const asked = String(req.query.branchId || '');
+      // อ่านสิทธิ์จาก DB ปัจจุบัน ไม่เชื่อค่าที่ติดมากับ token (แพทเทิร์นเดียวกับ requireRateEditor)
+      const me = db.branches.find((b) => b.id === sess.branchId);
+      const isHQLike = !!(me?.isHQ || me?.isSystemUser);
+      const branchId = isHQLike ? asked : sess.branchId;
+
+      // ⭐ กรองใบตามสาขา — ใบจากจัสทรานไม่มี branchId (จัสทรานไม่รู้จักสาขาของเรา)
+      //    แต่ Master รถผูกสาขาไว้แล้ว -> ใช้ "ทะเบียนรถ" เป็นตัวแยก
+      //    ได้ทั้งความปลอดภัย (สาขาอื่นไม่เห็นใบเรา) และใช้งานง่ายขึ้น (ไม่ต้องไล่หาในใบทั้งวัน)
+      //    ใบที่ทะเบียนไม่อยู่ใน Master เลย -> แสดงให้ทุกสาขาเห็น (ไม่งั้นตกหล่นไปเฉยๆ)
+      const plateOwner = new Map<string, string>();
+      for (const v of db.vehicles) {
+        const k = normPlate(v.plateNo || '');
+        if (k && !plateOwner.has(k)) plateOwner.set(k, v.branchId);
+      }
+      const visible = branchId
+        ? docs.filter((d) => {
+            const owner = plateOwner.get(normPlate(String(d.plateNo || '')));
+            return !owner || owner === branchId;   // ไม่รู้จักทะเบียน -> ให้เห็น
+          })
+        : docs;
+
+      const savedByBranch = new Set(
+        db.tripDocuments
+          .filter((t) => !branchId || t.branchId === branchId)
+          .map((t) => (t.documentNo || '').trim())
+          .filter(Boolean)
+      );
+      const withFlag = visible.map((d) => {
+        const dn = String(d.documentNo || '').trim();
+        return { ...d, _alreadySaved: dn ? savedByBranch.has(dn) : false };
+      });
+      res.json({ date, receivedAt: j.receivedAt || '', count: withFlag.length, total: docs.length, docs: withFlag });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // ===================== BRANCH LOGIN =====================
   // ตรวจรหัสผ่านสาขา -> คืนข้อมูลสาขา (ไม่คืน password)

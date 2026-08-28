@@ -54,7 +54,7 @@ type BranchAuth = { id: string; name: string; isHQ: boolean; canEditRates?: bool
 // token เซสชัน (server ใช้ตัดสินสิทธิ์ เช่น การแก้ราคา) — เก็บแยกจากข้อมูลผู้ใช้
 const TOKEN_KEY = 'branchToken';
 const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
-type Tab = 'calc' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity' | 'fueltrip';
+type Tab = 'calc' | 'jastran' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity' | 'fueltrip';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -122,7 +122,7 @@ export default function App() {
     try {
       // default: หน้าคำนวณโหลดแค่งวด, หน้าอื่นโหลดเต็ม (ใช้ข้ามงวด)
       // แท็บที่ใช้ข้อมูลแค่งวดเดียว (คำนวณ + น้ำมัน/รายการหัก) -> โหลดเฉพาะงวด; แท็บอื่นสรุปข้ามงวด -> เต็ม
-      const cycleScoped = tab === 'calc' || tab === 'fuel';
+      const cycleScoped = tab === 'calc' || tab === 'jastran' || tab === 'fuel';
       const scope = tripsScope || (cycleScoped ? 'cycle' : 'all');
       const params = new URLSearchParams();
       if (effBranchId) params.set('branchId', effBranchId);
@@ -205,12 +205,12 @@ export default function App() {
   // พอโหลดเสร็จ effect รันซ้ำ เห็นว่าแท็บนี้ต้องการเต็มแต่มีแค่งวดเดียว -> โหลดเต็มให้
   useEffect(() => {
     if (!auth || loading) return;
-    if (tab !== 'calc' && tab !== 'fuel' && tripsLoadedRef.current && tripsLoadedRef.current !== 'all') fetchState(selectedCycleId, 'all');
+    if (tab !== 'calc' && tab !== 'jastran' && tab !== 'fuel' && tripsLoadedRef.current && tripsLoadedRef.current !== 'all') fetchState(selectedCycleId, 'all');
   }, [tab, loading]);
 
   // อยู่หน้าคำนวณ + เปลี่ยนงวด แต่ใบที่โหลดไว้เป็นงวดอื่น -> โหลดใบงวดใหม่
   useEffect(() => {
-    if (!auth || !booted || (tab !== 'calc' && tab !== 'fuel') || !selectedCycleId) return;
+    if (!auth || !booted || (tab !== 'calc' && tab !== 'jastran' && tab !== 'fuel') || !selectedCycleId) return;
     const loaded = tripsLoadedRef.current;
     if (loaded && loaded !== 'all' && loaded !== selectedCycleId) fetchState(selectedCycleId, 'cycle');
   }, [selectedCycleId]);
@@ -238,6 +238,7 @@ export default function App() {
 
   const tabs: [Tab, string, any][] = [
     ['calc', 'คำนวณค่าเที่ยว', Calculator],
+    ['jastran', 'ดึงจากจัสทราน', Database],
     ['fuel', 'ค่าน้ำมัน & รายการหัก', Fuel],
     ['dashboard', 'Dashboard', Database],
     ['reports', 'รายงานต่อทะเบียน', FileSpreadsheet],
@@ -329,6 +330,8 @@ export default function App() {
           ) : (
             <>
             {tab === 'calc' && <CalcTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} aiEnabled={aiEnabled} branchId={effBranchId}
+              reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
+            {tab === 'jastran' && <JastranTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -859,8 +862,315 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
   );
 }
 
+// ===========================================================================
+// Tab: ดึงจากจัสทราน
+// หน้านี้ "เหมือนหน้าคำนวณค่าเที่ยวทุกอย่าง" ต่างแค่ที่มาของข้อมูล:
+// แทนที่จะลากไฟล์ Excel/PDF -> เลือกใบที่ agent ดึงมาจากจัสทรานให้อัตโนมัติ
+// หลังจากเลือกใบแล้ว ใช้ของเดิมทั้งหมด: preview -> ReviewBoard -> บันทึก -> TripCard
+// ===========================================================================
+function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, showToast }: any) {
+  // srcDocNo = เลขใบ "ตอนดึงมาจากจัสทราน" (ก่อนคนแก้) ใช้ชี้แถวในตารางให้ถูกใบ
+  // delivery  = สถานะส่งของใบนั้น ส่งต่อให้หน้ายืนยันเห็นด้วย (ตารางอย่างเดียวคนมองข้าม)
+  const [pending, setPending] = useState<{
+    extracted: ExtractedTripDocument; fileName: string; preview: TripDocument;
+    srcDocNo?: string; delivery?: { done: number; total: number };
+  } | null>(null);
+  const [filter, setFilter] = useState<'all' | 'divider' | 'warning'>('all');
+  const [search, setSearch] = useState('');
+  const [days, setDays] = useState<{ date: string; count: number; receivedAt: string }[]>([]);
+  const [docs, setDocs] = useState<any[]>([]);
+  const [date, setDate] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [onlyPending, setOnlyPending] = useState(true);   // ซ่อนใบที่บันทึกไปแล้ว
+  const reqRef = useRef(0);      // กันผลลัพธ์ที่มาช้าทับผลของวันที่เลือกล่าสุด
+  const dateRef = useRef('');    // อ่านค่าวันที่ล่าสุดได้ใน callback โดยไม่ต้องผูก dependency
+
+  // ⚠️ hook ทุกตัวต้องอยู่ "ก่อน" early return — ไม่งั้นจำนวน hook ต่างกันระหว่าง render
+  //    ทำให้ React พัง "Rendered more hooks than during the previous render" = จอขาว
+  useEffect(() => {
+    let alive = true;
+    const req = ++reqRef.current;
+    setDays([]); setDocs([]); setDate(''); dateRef.current = '';
+    (async () => {
+      if (!branchId) return;
+      setLoading(true);
+      try {
+        // ส่ง branchId ด้วย — HQ ที่เลือกสาขาทำงานอยู่ ต้องเห็นตัวเลขของสาขานั้น ไม่ใช่ทุกสาขา
+        const r = await api(`/api/jastran/available?branchId=${encodeURIComponent(branchId)}`);
+        if (!alive || req !== reqRef.current) return;
+        const list = r.days || [];
+        setDays(list);
+        if (list.length) await loadDate(list[0].date, req);
+      } catch { /* ไม่มีข้อมูลจัสทราน = ไม่เป็นไร แสดงข้อความแนะนำแทน */ }
+      finally { if (alive && req === reqRef.current) setLoading(false); }
+    })();
+    return () => { alive = false; };
+  }, [branchId]);   // สลับสาขา -> ต้องโหลดใหม่ ไม่งั้นเห็นใบของสาขาเดิมค้าง
+
+  // โหลดใบของวันที่เลือก — req ใช้ทิ้งผลของวันเก่าที่มาช้ากว่า
+  // (กดสลับวันเร็วๆ แล้วผลวันเก่ามาทีหลัง จะทับรายการของวันใหม่ = กดใบผิดวันเข้าไปคิดเงิน)
+  async function loadDate(d: string, req: number) {
+    setDate(d); dateRef.current = d; setDocs([]);
+    try {
+      // ส่ง branchId ด้วย — กฎ "เลขใบห้ามซ้ำ" เป็นต่อสาขา ถ้าไม่ส่งจะเช็คข้ามสาขาผิด
+      const r = await api(`/api/jastran/trips?date=${d}&branchId=${encodeURIComponent(branchId)}`);
+      if (req !== reqRef.current) return;
+      setDocs(r.docs || []);
+    } catch (e: any) {
+      if (req !== reqRef.current) return;
+      showToast('error', e.message); setDocs([]);
+    }
+  }
+
+  const pickDate = async (d: string) => {
+    const req = ++reqRef.current;
+    setLoading(true);
+    try { await loadDate(d, req); }
+    finally { if (req === reqRef.current) setLoading(false); }
+  };
+
+  const refresh = async () => {
+    const req = ++reqRef.current;
+    setLoading(true);
+    try {
+      const r = await api(`/api/jastran/available?branchId=${encodeURIComponent(branchId)}`);
+      if (req !== reqRef.current) return;
+      const list = r.days || [];
+      setDays(list);
+      // คงวันที่เลือกไว้ถ้ายังมีอยู่ ไม่งั้นเด้งไปวันล่าสุด
+      const keep = list.some((x: any) => x.date === dateRef.current) ? dateRef.current : (list[0]?.date || '');
+      if (keep) await loadDate(keep, req);
+      else { setDocs([]); setDate(''); dateRef.current = ''; }
+    } catch (e: any) { if (req === reqRef.current) showToast('error', e.message); }
+    finally { if (req === reqRef.current) setLoading(false); }
+  };
+
+  if (!cycle) return <EmptyHint text="กรุณาเลือกหรือเปิดรอบคำนวณก่อน" />;
+  if (!branchId) return <EmptyHint text="กรุณาเลือกสาขาก่อน (มุมเมนูบน) เพื่อเริ่มทำงาน" />;
+
+  // ---- ตั้งแต่จุดนี้ลงไป เหมือนหน้าคำนวณค่าเที่ยวทุกอย่าง ----
+  // ⚠️ ReviewBoard เรียกตัวนี้ทุกครั้งที่คนแก้ข้อมูล (แก้ปลายทาง/จำนวน/กล่อง)
+  //    ต้อง "คง" srcDocNo + delivery ของใบเดิมไว้ ไม่ใช่สร้าง pending ใหม่ทิ้งไป
+  //    ไม่งั้นพอคนแก้อะไรสักอย่าง: กล่องเตือน "ส่งไม่ครบ" หายทั้งที่ยังส่งไม่ครบ
+  //    และการติ๊ก "บันทึกแล้ว" ในตารางจะไม่ทำงาน
+  const preview = async (extracted: ExtractedTripDocument, fileName: string) => {
+    const p: TripDocument = await api('/api/trips/preview', 'POST', { cycleId: cycle.id, extracted, fileName, branchId });
+    setPending((prev) => ({ ...(prev || {}), extracted, fileName, preview: p }));
+  };
+
+  // เลือกใบ -> เข้า flow เดิม (preview -> ตรวจ -> กดบันทึก) ไม่มีอะไรใหม่
+  const useDoc = async (d: any) => {
+    // ตัด field ที่ระบบใส่มาเพื่อแสดงผล (_alreadySaved/_delivered/...) ออกก่อน
+    // ไม่งั้นจะถูกบันทึกติดไปในใบจริงตอนกดบันทึก
+    const clean: any = { ...d };
+    Object.keys(clean).forEach((k) => { if (k.startsWith('_')) delete clean[k]; });
+    if (Array.isArray(clean.receipts)) {
+      clean.receipts = clean.receipts.map((r: any) => {
+        const c = { ...r };
+        Object.keys(c).forEach((k) => { if (k.startsWith('_')) delete c[k]; });
+        return c;
+      });
+    }
+    // ⚠️ ต้องอ่าน 2 ค่านี้จาก d (ใบต้นทาง) ไม่ใช่ clean — เพราะ clean ถูกตัด _ ออกไปแล้ว
+    //    srcDocNo: คนแก้เลขใบตอนตรวจได้ ถ้าใช้เลขที่แก้แล้วจะติ๊ก "บันทึกแล้ว" ผิดแถว
+    //    delivery: ถ้าไม่ส่งต่อ หน้ายืนยัน (จุดที่ตัดสินใจเรื่องเงิน) จะไม่รู้เลยว่าส่งไม่ครบ
+    const srcDocNo = (d.documentNo || '').trim();
+    const delivery = (typeof d._delivered === 'number' && typeof d._totalReceipts === 'number')
+      ? { done: d._delivered, total: d._totalReceipts } : undefined;
+    const fileName = `จัสทราน ${date}`;
+    try {
+      const p: TripDocument = await api('/api/trips/preview', 'POST', { cycleId: cycle.id, extracted: clean, fileName, branchId });
+      setPending({ extracted: clean, fileName, preview: p, srcDocNo, delivery });
+    } catch (e: any) { showToast('error', e.message); }
+  };
+
+  const save = async (overwrite = false) => {
+    if (!pending) return;
+    try {
+      const saved = await api('/api/trips', 'POST', { extracted: pending.extracted, fileName: pending.fileName, branchId, overwrite });
+      const cy = saved?._cycle;
+      const msg = saved?._overwritten ? `ทับใบเดิม + บันทึกเข้ารอบ "${cy?.name}" แล้ว`
+        : saved?._cycleCreated ? `เปิดรอบ "${cy?.name}" อัตโนมัติ + บันทึกแล้ว` : `บันทึกเข้ารอบ "${cy?.name}" แล้ว`;
+      showToast('success', msg);
+      // ⚠️ ต้องใช้เลขใบ "ตอนดึงมา" ไม่ใช่ pending.extracted.documentNo
+      //    เพราะคนแก้เลขใบตอนตรวจได้ -> ถ้าใช้เลขที่แก้แล้ว จะไปติ๊กถูกผิดแถว
+      //    (แถวที่บันทึกจริงยังโชว์ให้กดซ้ำ ส่วนแถวที่ยังไม่ทำกลับถูกซ่อน)
+      const savedNo = (pending.srcDocNo || '').trim();
+      setPending(null);
+      // ทำเครื่องหมาย "บันทึกแล้ว" ในรายการทันที ไม่ต้องรอโหลดใหม่ -> กันกดซ้ำใบเดิม
+      if (savedNo) setDocs((prev) => prev.map((x: any) => ((x.documentNo || '').trim() === savedNo ? { ...x, _alreadySaved: true } : x)));
+      if (cy?.id && cy.id !== cycle?.id) gotoCycle(cy.id); // สลับไปรอบที่ใบนั้นเข้าจริง
+      else reload();
+    } catch (e: any) { showToast('error', e.message); }
+  };
+
+  const del = async (id: string) => {
+    if (!(await confirmDelete('ใบกระจายนี้'))) return;
+    await api(`/api/trips/${id}`, 'DELETE');
+    reload();
+  };
+
+  const recalc = async () => {
+    const ok = await confirmAction({
+      title: 'คำนวณใหม่ทั้งรอบ?',
+      text: 'ระบบจะคำนวณใบกระจายทุกใบในรอบนี้ใหม่ด้วย Master ราคา/เงื่อนไขปัจจุบัน ยอดที่บันทึกไว้อาจเปลี่ยน',
+      confirmText: 'คำนวณใหม่',
+    });
+    if (!ok) return;
+    await api(`/api/cycles/${cycle.id}/recalculate`, 'POST');
+    showToast('success', 'คำนวณใหม่ทั้งรอบด้วย Master ปัจจุบันแล้ว');
+    reload();
+  };
+
+  const exportExcel = async () => {
+    if (!cycleTrips.length) { showToast('warning', 'ยังไม่มีข้อมูลในรอบนี้'); return; }
+    await exportCycleToExcel(cycle, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles, db.rateMasters);
+    showToast('success', 'Export Excel สำเร็จ');
+  };
+
+  const q = search.trim().toLowerCase();
+  const visibleTrips = cycleTrips.filter((t: TripDocument) => {
+    if (filter === 'divider' && !t.receipts.some((r) => r.hasAdjustment)) return false;
+    if (filter === 'warning' && t.warnings.length === 0) return false;
+    if (q) {
+      const hay = [
+        t.documentNo, t.plateNo, t.driverName, t.provinceRaw, t.districtRaw,
+        ...t.receipts.map((r) => r.receiptNo),
+        ...t.receipts.map((r) => r.receiverName),
+        ...t.receipts.flatMap((r) => (r.items || []).map((it) => it.productName)),
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const totalTrip = cycleTrips.reduce((s: number, t: TripDocument) => s + t.tripAmount, 0);
+  const savedCount = docs.filter((d: any) => d._alreadySaved).length;
+  const shownDocs = onlyPending ? docs.filter((d: any) => !d._alreadySaved) : docs;
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* action bar — เหมือนหน้าคำนวณค่าเที่ยว */}
+      <div className="bg-white rounded-2xl border border-natural-border p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="text-sm">
+          <span className="font-bold text-brand-navy">{cycle.name}</span>
+          <span className="text-natural-muted ml-2">{cycleTrips.length} ใบกระจาย · ค่าเที่ยวรวม ฿{money(totalTrip)}</span>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={refresh} disabled={loading} className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1 disabled:opacity-50">
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />โหลดใหม่
+          </button>
+          <button onClick={recalc} className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1"><RefreshCw className="w-3.5 h-3.5" />Recalculate</button>
+          <button onClick={exportExcel} className="bg-brand-red text-white rounded-full px-4 py-2 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-4 h-4" />Export Excel</button>
+        </div>
+      </div>
+
+      {/* แหล่งข้อมูล: จัสทราน — แทนที่กล่องลากวางไฟล์ของหน้าคำนวณค่าเที่ยว */}
+      <div className="bg-white rounded-2xl border border-natural-border p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Database className="w-4 h-4 text-brand-navy" />
+          <h3 className="font-bold text-sm text-brand-navy">ใบกระจายจากจัสทราน</h3>
+          <span className="text-[11px] text-natural-muted">— เลือกใบแล้วตรวจ/แก้ได้เหมือนนำเข้าไฟล์ปกติ ก่อนกดบันทึก</span>
+        </div>
+
+        {days.length === 0 ? (
+          <p className="text-sm text-natural-muted py-6 text-center">
+            {loading ? 'กำลังโหลด...' : 'ยังไม่มีข้อมูลจากจัสทราน — ตรวจว่า agent บนเครื่องจัสทรานส่งข้อมูลเข้ามาแล้วหรือยัง'}
+          </p>
+        ) : (
+          <>
+            <div className="flex gap-1.5 flex-wrap mb-3 items-center">
+              {days.map((d) => (
+                <button key={d.date} onClick={() => pickDate(d.date)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${date === d.date ? 'bg-brand-navy text-white border-brand-navy' : 'border-natural-border text-natural-muted'}`}>
+                  {d.date} <span className="opacity-70">({d.count})</span>
+                </button>
+              ))}
+              {savedCount > 0 && (
+                <label className="flex items-center gap-1 text-[11px] text-natural-muted ml-auto cursor-pointer">
+                  <input type="checkbox" checked={onlyPending} onChange={(e) => setOnlyPending(e.target.checked)} />
+                  ซ่อนใบที่บันทึกแล้ว ({savedCount})
+                </label>
+              )}
+            </div>
+
+            {loading ? <p className="text-sm text-natural-muted py-6 text-center">กำลังโหลด...</p> : (
+              <div className="max-h-[55vh] overflow-y-auto border border-natural-border rounded-xl">
+                <table className="w-full text-xs">
+                  <thead className="bg-natural-bg sticky top-0">
+                    <tr className="text-left text-natural-muted">
+                      <th className="py-2 px-2">เลขใบกระจาย</th>
+                      <th className="py-2 px-2">ทะเบียน</th>
+                      <th className="py-2 px-2">ปลายทาง</th>
+                      <th className="py-2 px-2 text-right">จุดส่ง</th>
+                      <th className="py-2 px-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shownDocs.map((d: any, i: number) => {
+                      const partial = d._delivered != null && d._totalReceipts != null && d._delivered < d._totalReceipts;
+                      return (
+                        // key ต้องไม่พึ่งค่าจากภายนอกอย่างเดียว (อาจซ้ำ/ว่าง -> React ใช้ node ผิดแถว)
+                        <tr key={`${d.documentNo || 'no-doc'}-${i}`} className="border-t border-natural-border">
+                          <td className="py-1.5 px-2 font-semibold text-brand-navy">{d.documentNo}</td>
+                          <td className="py-1.5 px-2">{d.plateNo || <span className="text-amber-600">ไม่มี</span>}</td>
+                          <td className="py-1.5 px-2">{d.districtRaw} {d.provinceRaw}</td>
+                          <td className="py-1.5 px-2 text-right whitespace-nowrap">
+                            {d._delivered != null
+                              ? <span className={partial ? 'text-amber-700 font-semibold' : ''}>{d._delivered}/{d._totalReceipts}{partial ? ' ⚠️' : ''}</span>
+                              : (d.receipts?.length ?? 0)}
+                          </td>
+                          <td className="py-1.5 px-2 text-right">
+                            {d._alreadySaved
+                              ? <span className="text-[10px] text-natural-muted">บันทึกแล้ว</span>
+                              : <button onClick={() => useDoc(d)} className="bg-brand-navy text-white rounded-lg px-3 py-1 text-[11px] font-semibold">ตรวจใบนี้</button>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!shownDocs.length && (
+                      <tr><td colSpan={5} className="py-6 text-center text-natural-muted">
+                        {docs.length ? 'ใบของวันนี้บันทึกครบแล้ว' : 'ไม่มีใบในวันนี้'}
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-[11px] text-natural-muted mt-2">⚠️ = ส่งยังไม่ครบทุกจุด</p>
+          </>
+        )}
+      </div>
+
+      {/* review — ตัวเดียวกับหน้าคำนวณค่าเที่ยว */}
+      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} delivery={pending.delivery} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
+
+      {/* filter + search */}
+      <div className="flex flex-wrap items-center gap-2">
+        {([['all', 'ทั้งหมด'], ['divider', '🟧 เฉพาะมีตัวหาร'], ['warning', '⚠️ ต้องตรวจสอบ']] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${filter === k ? 'bg-brand-navy text-white border-brand-navy' : 'border-natural-border'}`}>{l}</button>
+        ))}
+        <div className="relative ml-auto">
+          <Search className="w-4 h-4 text-natural-muted absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input
+            value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="ค้นหา: เลขใบกระจาย / ทะเบียน / คนขับ / เลขใบรับ / ผู้รับ / ชื่อสินค้า"
+            className="border border-natural-border rounded-full pl-8 pr-8 py-1.5 text-xs w-72 focus:outline-none focus:border-brand-navy"
+          />
+          {search && <button onClick={() => setSearch('')} title="ล้าง" className="absolute right-2.5 top-1/2 -translate-y-1/2 text-natural-muted hover:text-rose-600 font-bold">×</button>}
+        </div>
+      </div>
+      {q && <div className="text-xs text-natural-muted -mt-2">พบ {visibleTrips.length} ใบ จากทั้งหมด {cycleTrips.length} ใบ</div>}
+
+      {/* saved trips */}
+      {visibleTrips.length === 0 ? <EmptyHint text={q ? `ไม่พบใบกระจายที่ตรงกับ "${search}"` : 'ยังไม่มีใบกระจายในรอบนี้'} /> :
+        visibleTrips.map((t: TripDocument) => <TripCard key={t.id} trip={t} onDelete={() => { void del(t.id); }} branchName={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} cycleName={cycle?.name || ''} />)}
+    </div>
+  );
+}
+
 // Review board — แก้ไข extracted + แสดงผล preview พร้อม badge
-function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '' }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
@@ -947,6 +1257,19 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
         <div className="rounded-xl bg-rose-50 border border-rose-300 px-3 py-2 text-xs text-rose-800">
           <div className="font-bold mb-0.5">🔒 บันทึกไม่ได้ — ต้องแก้ให้ครบก่อน:</div>
           <ul className="list-disc ml-5">{blockReasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+        </div>
+      )}
+
+      {/* 🚚 สถานะส่งจากจัสทราน — เตือนไม่บล็อก
+          ใบส่งไม่ครบทุกจุดยังคิดค่าเที่ยวได้จริง (JB0226014505 ส่ง 6/7 แต่คีย์เงินไปแล้ว)
+          ถ้าบล็อก = จ่ายขาด -> จึงแค่ทำให้คนเห็นชัดตอนกดยืนยัน แล้วให้คนตัดสิน */}
+      {delivery && delivery.done < delivery.total && (
+        <div className="rounded-xl bg-amber-50 border-2 border-amber-400 px-3 py-2 text-xs text-amber-900 flex gap-1.5 font-semibold">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>
+            จัสทรานแจ้งว่าใบนี้ <b>ส่งเสร็จ {delivery.done} จาก {delivery.total} จุด</b> (ยังไม่ครบ) —
+            ตรวจว่าจุดที่ยังไม่ส่งควรคิดค่าเที่ยวรอบนี้ไหม ถ้ายังไม่ควร ให้กดยกเลิกแล้วรอส่งครบก่อน
+          </span>
         </div>
       )}
 

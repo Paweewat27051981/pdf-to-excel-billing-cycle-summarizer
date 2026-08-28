@@ -15,6 +15,7 @@ db.json
 
 # รูปแนบที่ผู้ใช้อัปโหลด (หลักฐาน/ความลับลูกค้า) — เก็บบน NAS เท่านั้น ห้ามขึ้น repo
 uploads/
+jastran-data/
 
 # external agent skills (ไม่เกี่ยวกับโปรเจกต์)
 .agent/
