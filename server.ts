@@ -25,7 +25,7 @@ import {
   DeductionEntry,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument, normPlate, normDoc, round2, textContains } from './src/calc.js';
+import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle } from './src/calc.js';
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
 import { startOilPriceScheduler } from './src/experimental/oilPriceScheduler.js'; // [ทดลอง] auto 05:30 ไทย
@@ -271,6 +271,46 @@ async function startServer() {
   const jastranFile = (date: string) => path.join(JASTRAN_DIR, `jb-${date}.json`);
   const isYmd = (d: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
 
+  // "สาขานี้วิ่งปลายทางนี้ไหม" — ตัดสินจากราคาที่สาขามีใน Master
+  // ใช้ร่วมกันทั้ง /available (นับ) และ /trips (รายการ) เพื่อให้ตัวเลขบนปุ่มตรงกับที่เปิดได้จริง
+  // เทียบชื่อด้วย textContains ตัวเดียวกับ matchRate -> ผลตรงกับตอนคิดราคา
+  // ปลายทาง "จริง" ของใบ — ต้องผ่านกฎแก้ปลายทางก่อน ไม่งั้นกรองผิดสาขา
+  // ใบกระจายบางใบเขียนจังหวัดผิด (เคสจริง JB0626076941 เขียน "อุตรดิตถ์" แต่ส่งพิษณุโลก)
+  // กฎจับจาก ชื่อผู้รับ/ผู้ส่ง/ชื่อสินค้า เหมือน computeReceipt ใน calc.ts (บรรทัด ~409)
+  // ถ้ากรองด้วยจังหวัดดิบ ใบจะไปโผล่ผิดสาขา หรือหายถ้าสาขาไม่มีราคาจังหวัดที่เขียนผิด
+  const realProvinceOf = (d: any, overrides: any[]) => {
+    const hay = [d?.receiverName, d?.senderName]
+      .concat((d?.receipts || []).map((r: any) => r?.receiverName))
+      .concat((d?.receipts || []).map((r: any) => r?.senderName))
+      .concat((d?.receipts || []).flatMap((r: any) => (r?.items || []).map((it: any) => it?.productName)))
+      .filter(Boolean).join('  ');
+    const ov = overrides.find((o) => o.status === 'active' && o.keyword && textContains(hay, o.keyword));
+    return (ov && ov.province) ? ov.province : d?.provinceRaw;
+  };
+
+  const makeAreaCheck = (rates: any[]) => {
+    const active = rates.filter((r) => r.status === 'active');
+    // ⚠️ ห้ามใช้ provinceShort เทียบแบบ substring เด็ดขาด
+    //    ชื่อย่อ 2 ตัวอักษรไปโผล่กลางชื่อจังหวัดอื่นได้ เช่น
+    //      "กำแ[พช]ร"    ตรงกับ เพชรบูรณ์ (พช)  -> นครสวรรค์/พิษณุโลกเห็นใบกำแพงเพชร
+    //      "กำแพ[งเพชร]" มี "ชร" ตรงกับ เชียงราย (ชร) -> เชียงใหม่เห็นด้วย
+    //    พิสูจน์กับข้อมูลจริง: ใบกำแพงเพชร 1 ใบ ถูก 5 สาขาเห็นพร้อมกัน
+    //    ที่นี่ใช้เทียบ "ชื่อเต็มเท่านั้น" (ยังยอมให้มี อ./จ. นำหน้าได้ผ่าน textContains)
+    return (prov: string) => {
+      if (!active.length) return false;         // สาขาไม่มีราคาเลย = ไม่รู้ว่าวิ่งที่ไหน -> ไม่เดา
+      const p = String(prov || '').trim();
+      if (!p) return true;                      // ใบไม่มีจังหวัด -> ให้เห็น (ไม่ตกหล่น)
+      // ตรงระดับจังหวัด = สาขานี้วิ่งจังหวัดนั้น -> ให้เห็น
+      // ไม่เช็คลึกถึงอำเภอ เพราะปลายทางใหม่ที่ยังไม่มีราคาจะตกหล่น
+      // (เคสจริง: เชียงราย อ.เมือง — เชียงใหม่วิ่งเชียงรายแต่ยังไม่มีราคาอำเภอนี้
+      //  ถ้ากรองด้วยอำเภอจะไม่มีใครเห็นใบนี้เลย = ตกหล่น ไม่ได้เงิน)
+      // อำเภอปล่อยให้ ReviewBoard เตือน "ไม่เจอราคา" ตอนตรวจแทน
+      return active.some((r) =>
+        textContains(p, r.provinceName) || textContains(r.provinceName, p)
+      );
+    };
+  };
+
   // อ่าน token ได้ 2 ทาง: env หรือไฟล์ agent-token.txt ใน jastran-data/
   //
   // ทำไมต้องมีทางที่ 2: env_file ของ docker-compose ถูกอ่านตอน "สร้าง" container เท่านั้น
@@ -374,16 +414,52 @@ async function startServer() {
       // HQ เลือกสาขาทำงานได้ -> ใช้ค่าที่ส่งมา · สาขาปกติบังคับเป็นของตัวเอง (ไม่เชื่อ query)
       const isHQLikeA = !!(meA?.isHQ || meA?.isSystemUser);
       const scopeBranch = isHQLikeA ? String(req.query.branchId || '') : sessA.branchId;
-      const ownerOf = new Map<string, string>();
+      // เก็บ "ทุกสาขา" ที่มีทะเบียนนี้ ไม่ใช่เจ้าของคนแรกที่เจอ
+      // เคสจริง: 3ฒษ-2509 อยู่ทั้งนครสวรรค์และพิษณุโลก -> เดิมเดาเป็นนครสวรรค์
+      // ทำให้ใบพิษณุโลกไปโผล่ที่นครสวรรค์ (เจ้าของเห็นแล้วทัก)
+      const ownerOf = new Map<string, Set<string>>();
       for (const v of dbA.vehicles) {
         const k = normPlate(v.plateNo || '');
-        if (k && !ownerOf.has(k)) ownerOf.set(k, v.branchId);
+        if (!k) continue;
+        if (!ownerOf.has(k)) ownerOf.set(k, new Set());
+        ownerOf.get(k)!.add(v.branchId);
       }
-      const visibleTo = (d: any) => {
-        if (!scopeBranch) return true;
-        const owner = ownerOf.get(normPlate(String(d?.plateNo || '')));
-        return !owner || owner === scopeBranch;   // ทะเบียนไม่รู้จัก -> ให้เห็น (ไม่ตกหล่น)
+      // ต้องกรองเหมือน /trips เป๊ะ ไม่งั้นตัวเลขบนปุ่มไม่ตรงกับรายการที่เปิดได้
+      const inAreaA = makeAreaCheck(scopeBranch ? dbA.rateMasters.filter((r) => r.branchId === scopeBranch) : []);
+      const ovA = (dbA.destinationOverrides || []).filter((o: any) => !scopeBranch || o.branchId === scopeBranch);
+      // ต้องกรองเหมือน /trips ทุกโหมด ไม่งั้นตัวเลขบนปุ่มไม่ตรงกับรายการ
+      const unknownOnlyA = String(req.query.unknownPlate || '') === '1';
+      // ต้องนิยามเหมือน /trips เป๊ะ ไม่งั้นตัวเลขบนปุ่มไม่ตรงกับรายการ
+      const isUnknownPlateA = (d: any) => {
+        const owners = ownerOf.get(normPlate(String(d?.plateNo || '')));
+        if (!owners || owners.size === 0) return true;
+        if (owners.size === 1) return false;
+        return !Array.from(owners).some((b) => {
+          const chk = makeAreaCheck(dbA.rateMasters.filter((r) => r.branchId === b));
+          const ov = (dbA.destinationOverrides || []).filter((o: any) => o.branchId === b);
+          return chk(realProvinceOf(d, ov));
+        });
       };
+      const visibleTo = (d: any) => {
+        if (unknownOnlyA) return isUnknownPlateA(d);      // หน้า "ทะเบียนไม่รู้จัก" — ทุกสาขาเห็นเท่ากัน
+        if (!scopeBranch) return !isUnknownPlateA(d);
+        const owners = ownerOf.get(normPlate(String(d?.plateNo || '')));
+        // ทะเบียนอยู่สาขาเดียว -> ชี้ขาดได้
+        if (owners && owners.size === 1) return owners.has(scopeBranch);
+        // ทะเบียนอยู่หลายสาขา -> ชี้ขาดไม่ได้ ต้องเป็นหนึ่งในนั้น + ผ่านพื้นที่ด้วย
+        if (owners && owners.size > 1) {
+          if (!owners.has(scopeBranch)) return false;
+          // ใช้ปลายทาง "จริง" (ผ่านกฎแก้ปลายทางของสาขานี้) ไม่ใช่จังหวัดดิบในใบ
+          return inAreaA(realProvinceOf(d, ovA));
+        }
+        return false;   // ทะเบียนไม่รู้จัก -> ไปอยู่หน้า "ทะเบียนไม่รู้จัก" แทน
+      };
+
+      // กรองตามงวดที่เลือกอยู่ — ใบวันที่ 28/08 ต้องไม่โผล่ตอนเปิดงวด มิ.ย. รอบ 1-15
+      // ใช้ isDateInCycle ตัวเดียวกับตอนบันทึกใบจริง -> วันไหนเข้างวดไหน ตรงกันเสมอ
+      const cycIdA = String(req.query.cycleId || '');
+      const cyc = cycIdA ? dbA.cycles.find((c) => c.id === cycIdA) : null;
+      if (cycIdA && !cyc) return res.status(400).json({ error: 'ไม่พบรอบที่ระบุ' });
 
       const files = await fs.promises.readdir(JASTRAN_DIR).catch(() => [] as string[]);
       const days: { date: string; count: number; receivedAt: string }[] = [];
@@ -392,7 +468,10 @@ async function startServer() {
         if (!m) continue;
         try {
           const j = JSON.parse(await fs.promises.readFile(path.join(JASTRAN_DIR, f), 'utf8'));
-          const n = Array.isArray(j.docs) ? j.docs.filter(visibleTo).length : 0;
+          // กรองงวดที่ "ระดับใบ" ด้วย documentDate — ตัวเดียวกับที่ตอนบันทึกใช้เลือกงวด
+          // ไม่ใช้วันที่ของไฟล์ เพราะไฟล์ jb-16 อาจมีใบลงวันที่ 15 (คนละงวด) ปนมาได้
+          const inCyc = (d: any) => !cyc || isDateInCycle(String(d?.documentDate || ''), cyc);
+          const n = Array.isArray(j.docs) ? j.docs.filter((d: any) => inCyc(d) && visibleTo(d)).length : 0;
           if (!n) continue;   // วันที่สาขานี้ไม่มีใบเลย -> ไม่ต้องโชว์
           days.push({ date: m[1], count: n, receivedAt: j.receivedAt || '' });
         } catch { /* ไฟล์เสีย -> ข้าม ไม่ให้ล้มทั้ง endpoint */ }
@@ -420,6 +499,11 @@ async function startServer() {
       // ถ้าเทียบคนละแบบ จะบล็อกใบที่บันทึกได้จริง หรือปล่อยใบที่ซ้ำจริงผ่าน
       const db = await getDb();
       const sess = getSession(req)!;   // ผ่านด่านข้างบนมาแล้ว
+      // กันเปิดใบข้ามงวด — ต้องตรงกับที่ /available กรองไว้ ไม่งั้นกดจาก URL ตรงๆ ก็ยังเห็น
+      // ส่ง cycleId มาแต่หาไม่เจอ = พารามิเตอร์เพี้ยน -> ไม่ยอมปล่อยผ่านแบบไม่กรอง
+      const cycIdQ = String(req.query.cycleId || '');
+      const cycQ = cycIdQ ? db.cycles.find((c) => c.id === cycIdQ) : null;
+      if (cycIdQ && !cycQ) return res.status(400).json({ error: 'ไม่พบรอบที่ระบุ' });
       // สาขาที่ดูได้: HQ ดูได้ทุกสาขา · สาขาปกติดูได้เฉพาะของตัวเอง (ไม่เชื่อ query จากผู้ใช้)
       const asked = String(req.query.branchId || '');
       // อ่านสิทธิ์จาก DB ปัจจุบัน ไม่เชื่อค่าที่ติดมากับ token (แพทเทิร์นเดียวกับ requireRateEditor)
@@ -431,21 +515,71 @@ async function startServer() {
       //    แต่ Master รถผูกสาขาไว้แล้ว -> ใช้ "ทะเบียนรถ" เป็นตัวแยก
       //    ได้ทั้งความปลอดภัย (สาขาอื่นไม่เห็นใบเรา) และใช้งานง่ายขึ้น (ไม่ต้องไล่หาในใบทั้งวัน)
       //    ใบที่ทะเบียนไม่อยู่ใน Master เลย -> แสดงให้ทุกสาขาเห็น (ไม่งั้นตกหล่นไปเฉยๆ)
-      const plateOwner = new Map<string, string>();
+      // เก็บ "ทุกสาขา" ที่มีทะเบียนนี้ (ทะเบียนเดียวอาจลงไว้หลายสาขา — ดู /available)
+      const plateOwner = new Map<string, Set<string>>();
       for (const v of db.vehicles) {
         const k = normPlate(v.plateNo || '');
-        if (k && !plateOwner.has(k)) plateOwner.set(k, v.branchId);
+        if (!k) continue;
+        if (!plateOwner.has(k)) plateOwner.set(k, new Set());
+        plateOwner.get(k)!.add(v.branchId);
       }
-      const visible = branchId
-        ? docs.filter((d) => {
-            const owner = plateOwner.get(normPlate(String(d.plateNo || '')));
-            return !owner || owner === branchId;   // ไม่รู้จักทะเบียน -> ให้เห็น
-          })
-        : docs;
+      // กรอง 2 ชั้น: ทะเบียนรถ + พื้นที่ (จากราคาที่สาขานั้นมีใน Master)
+      //
+      // ทำไมต้องมีชั้นพื้นที่: รถในจัสทรานมี 1,712 คัน แต่ Master รถเรามีแค่ 75 คัน
+      // ทะเบียนส่วนใหญ่จึง "ไม่รู้จัก" -> ชั้นทะเบียนอย่างเดียวปล่อยผ่านหมด
+      // ผลคือเชียงใหม่เห็นใบของนครสวรรค์/พิจิตร/ตาก ปนกันทั้งตาราง
+      //
+      // ใช้ Master ราคาเป็นตัวบอกพื้นที่: สาขาไหนมีราคาที่ปลายทางไหน = สาขานั้นวิ่งที่นั่น
+      // (แหล่งความจริงเดียวกับที่ใช้คิดเงิน ไม่ต้อง sync รายการพื้นที่แยกอีกชุด)
+      // เทียบชื่อด้วย textContains ตัวเดียวกับ matchRate -> ผลตรงกับตอนคิดราคา
+      const inServiceArea = makeAreaCheck(branchId ? db.rateMasters.filter((r) => r.branchId === branchId) : []);
+      const ovT = (db.destinationOverrides || []).filter((o) => !branchId || o.branchId === branchId);
+      // โหมด "ทะเบียนไม่รู้จัก" — ใบที่ทะเบียนไม่มีใน Master รถ (หรือไม่มีทะเบียนเลย)
+      // แยกออกมาหน้าต่างหาก เพราะเดิมมันกระจายไปปนกับใบปกติของทุกสาขา -> คนดูสับสน
+      // ใบกลุ่มนี้ระบบไม่รู้ว่าเป็นของสาขาไหน จึงให้ทุกสาขาเห็นเหมือนกัน แล้วให้คนตัดสิน
+      const unknownOnly = String(req.query.unknownPlate || '') === '1';
+      // "ชี้ขาดสาขาไม่ได้" = ไม่รู้จักทะเบียน  หรือ  ทะเบียนอยู่หลายสาขาแต่ไม่มีสาขาไหนตรงพื้นที่
+      // เคสหลัง (Codex ชี้): ถ้าไม่ดัก ใบจะหายจากทั้งหน้าปกติและหน้านี้ = ไม่ได้เงิน
+      const isUnknownPlate = (d: any) => {
+        const owners = plateOwner.get(normPlate(String(d?.plateNo || '')));
+        if (!owners || owners.size === 0) return true;      // ไม่มีใน Master
+        if (owners.size === 1) return false;                // ชี้ขาดได้ -> ไปหน้าปกติ
+        // หลายสาขา: ถ้ามีสาขาเจ้าของสักรายที่พื้นที่ตรง -> ชี้ขาดได้
+        return !Array.from(owners).some((b) => {
+          const chk = makeAreaCheck(db.rateMasters.filter((r) => r.branchId === b));
+          const ov = (db.destinationOverrides || []).filter((o) => o.branchId === b);
+          return chk(realProvinceOf(d, ov));
+        });
+      };
 
+      // กรองงวดที่ระดับใบ (documentDate) ไม่ใช่วันที่ของไฟล์ — ตรงกับตอนบันทึก
+      const docs2 = cycQ ? docs.filter((d) => isDateInCycle(String(d?.documentDate || ''), cycQ)) : docs;
+      const visible = unknownOnly
+        ? docs2.filter(isUnknownPlate)
+        : branchId
+        ? docs2.filter((d) => {
+            const owners = plateOwner.get(normPlate(String(d.plateNo || '')));
+            // ทะเบียนอยู่สาขาเดียว -> ชี้ขาดได้
+            if (owners && owners.size === 1) return owners.has(branchId);
+            // ทะเบียนอยู่หลายสาขา -> ต้องเป็นหนึ่งในนั้น + พื้นที่ตรง
+            // (ถ้าไม่มีสาขาไหนพื้นที่ตรงเลย ใบจะถูกจัดเป็น "ชี้ขาดไม่ได้" ไปหน้าทะเบียนไม่รู้จัก)
+            if (owners && owners.size > 1) {
+              if (!owners.has(branchId)) return false;
+              // ใช้ปลายทาง "จริง" (ผ่านกฎแก้ปลายทางของสาขานี้) ไม่ใช่จังหวัดดิบในใบ
+              return inServiceArea(realProvinceOf(d, ovT));
+            }
+            // ทะเบียนไม่รู้จัก -> ไม่แสดงในหน้าปกติ ไปอยู่หน้า "ทะเบียนไม่รู้จัก" แทน
+            return false;
+          })
+        : docs2.filter((d) => !isUnknownPlate(d));   // HQ ไม่เลือกสาขา: ใบปกติทั้งหมด
+
+      // ปกติเช็คซ้ำ "ต่อสาขา" ตามกฎเหล็ก
+      // แต่หน้าทะเบียนไม่รู้จักทุกสาขาเห็นใบเดียวกัน -> ถ้าเช็คแค่สาขาตัวเอง
+      // สาขา B จะเห็นใบที่สาขา A บันทึกไปแล้วเป็น "ตรวจใบนี้" กดเข้าไปตรวจเสียเวลา
+      // แล้วโดน 409 ตอนกดบันทึก -> โหมดนี้จึงเช็คข้ามสาขา
       const savedByBranch = new Set(
         db.tripDocuments
-          .filter((t) => !branchId || t.branchId === branchId)
+          .filter((t) => unknownOnly || !branchId || t.branchId === branchId)
           .map((t) => (t.documentNo || '').trim())
           .filter(Boolean)
       );
@@ -1351,6 +1485,21 @@ async function startServer() {
         const dups = db.tripDocuments.filter(
           (t) => t.branchId === branchId && (t.documentNo || '').trim() === docNo
         );
+        // 🔒 ด่านที่ 2: ซ้ำ "ข้ามสาขา" — หน้าดึงจากจัสทรานทำให้ใบทะเบียนไม่รู้จัก
+        //    ปรากฏกับทุกสาขา ถ้าเช็คแค่สาขาตัวเอง สองสาขาจะบันทึกใบเดียวกันได้ = จ่ายซ้ำ
+        //    ตรวจข้อมูลจริงแล้ว 1,012 ใบไม่มีเลขซ้ำข้ามสาขาเลย -> เพิ่มด่านนี้ไม่กระทบของเดิม
+        //    ไม่ให้ overwrite ข้ามสาขา (ใบของสาขาอื่น ห้ามลบทับ)
+        if (!dups.length) {
+          const other = db.tripDocuments.find(
+            (t) => t.branchId !== branchId && (t.documentNo || '').trim() === docNo
+          );
+          if (other) {
+            const b = db.branches.find((x) => x.id === other.branchId);
+            return res.status(409).json({
+              error: `เลขใบกระจาย ${docNo} ถูกบันทึกไปแล้วโดยสาขา "${b?.name || other.branchId}" — ห้ามบันทึกซ้ำ (ถ้าเป็นใบของสาขาคุณจริง ให้สาขานั้นลบออกก่อน)`,
+            });
+          }
+        }
         if (dups.length) {
           if (!overwrite) {
             const dup = dups[0];

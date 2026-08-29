@@ -54,7 +54,7 @@ type BranchAuth = { id: string; name: string; isHQ: boolean; canEditRates?: bool
 // token เซสชัน (server ใช้ตัดสินสิทธิ์ เช่น การแก้ราคา) — เก็บแยกจากข้อมูลผู้ใช้
 const TOKEN_KEY = 'branchToken';
 const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } };
-type Tab = 'calc' | 'jastran' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity' | 'fueltrip';
+type Tab = 'calc' | 'jastran' | 'jastran-unknown' | 'rates' | 'rules' | 'vehicles' | 'fuel' | 'dashboard' | 'branches' | 'reports' | 'driverkpi' | 'costarea' | 'destfix' | 'activity' | 'fueltrip';
 type Toast = { type: 'success' | 'error' | 'warning'; message: string };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -122,7 +122,7 @@ export default function App() {
     try {
       // default: หน้าคำนวณโหลดแค่งวด, หน้าอื่นโหลดเต็ม (ใช้ข้ามงวด)
       // แท็บที่ใช้ข้อมูลแค่งวดเดียว (คำนวณ + น้ำมัน/รายการหัก) -> โหลดเฉพาะงวด; แท็บอื่นสรุปข้ามงวด -> เต็ม
-      const cycleScoped = tab === 'calc' || tab === 'jastran' || tab === 'fuel';
+      const cycleScoped = tab === 'calc' || tab === 'jastran' || tab === 'jastran-unknown' || tab === 'fuel';
       const scope = tripsScope || (cycleScoped ? 'cycle' : 'all');
       const params = new URLSearchParams();
       if (effBranchId) params.set('branchId', effBranchId);
@@ -205,12 +205,12 @@ export default function App() {
   // พอโหลดเสร็จ effect รันซ้ำ เห็นว่าแท็บนี้ต้องการเต็มแต่มีแค่งวดเดียว -> โหลดเต็มให้
   useEffect(() => {
     if (!auth || loading) return;
-    if (tab !== 'calc' && tab !== 'jastran' && tab !== 'fuel' && tripsLoadedRef.current && tripsLoadedRef.current !== 'all') fetchState(selectedCycleId, 'all');
+    if (tab !== 'calc' && tab !== 'jastran' && tab !== 'jastran-unknown' && tab !== 'fuel' && tripsLoadedRef.current && tripsLoadedRef.current !== 'all') fetchState(selectedCycleId, 'all');
   }, [tab, loading]);
 
   // อยู่หน้าคำนวณ + เปลี่ยนงวด แต่ใบที่โหลดไว้เป็นงวดอื่น -> โหลดใบงวดใหม่
   useEffect(() => {
-    if (!auth || !booted || (tab !== 'calc' && tab !== 'jastran' && tab !== 'fuel') || !selectedCycleId) return;
+    if (!auth || !booted || (tab !== 'calc' && tab !== 'jastran' && tab !== 'jastran-unknown' && tab !== 'fuel') || !selectedCycleId) return;
     const loaded = tripsLoadedRef.current;
     if (loaded && loaded !== 'all' && loaded !== selectedCycleId) fetchState(selectedCycleId, 'cycle');
   }, [selectedCycleId]);
@@ -239,6 +239,7 @@ export default function App() {
   const tabs: [Tab, string, any][] = [
     ['calc', 'คำนวณค่าเที่ยว', Calculator],
     ['jastran', 'ดึงจากจัสทราน', Database],
+    ['jastran-unknown', 'ทะเบียนไม่รู้จัก ⚠️', Truck],
     ['fuel', 'ค่าน้ำมัน & รายการหัก', Fuel],
     ['dashboard', 'Dashboard', Database],
     ['reports', 'รายงานต่อทะเบียน', FileSpreadsheet],
@@ -331,7 +332,10 @@ export default function App() {
             <>
             {tab === 'calc' && <CalcTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} aiEnabled={aiEnabled} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
-            {tab === 'jastran' && <JastranTab db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} branchId={effBranchId}
+            {tab === 'jastran' && <JastranTab key="jas-normal" db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} branchId={effBranchId}
+              reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
+            {/* key ต่างกัน = React remount ใหม่ ไม่เอา state ของอีกโหมดมาปน (ไม่พึ่งตำแหน่งใน JSX) */}
+            {tab === 'jastran-unknown' && <JastranTab key="jas-unknown" db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} branchId={effBranchId} unknownPlate
               reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
               reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -868,7 +872,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
 // แทนที่จะลากไฟล์ Excel/PDF -> เลือกใบที่ agent ดึงมาจากจัสทรานให้อัตโนมัติ
 // หลังจากเลือกใบแล้ว ใช้ของเดิมทั้งหมด: preview -> ReviewBoard -> บันทึก -> TripCard
 // ===========================================================================
-function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, showToast }: any) {
+function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, showToast, unknownPlate = false }: any) {
   // srcDocNo = เลขใบ "ตอนดึงมาจากจัสทราน" (ก่อนคนแก้) ใช้ชี้แถวในตารางให้ถูกใบ
   // delivery  = สถานะส่งของใบนั้น ส่งต่อให้หน้ายืนยันเห็นด้วย (ตารางอย่างเดียวคนมองข้าม)
   const [pending, setPending] = useState<{
@@ -885,18 +889,24 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   const reqRef = useRef(0);      // กันผลลัพธ์ที่มาช้าทับผลของวันที่เลือกล่าสุด
   const dateRef = useRef('');    // อ่านค่าวันที่ล่าสุดได้ใน callback โดยไม่ต้องผูก dependency
 
+  // query ร่วมของทุก endpoint: งวดที่เลือก + โหมดทะเบียนไม่รู้จัก
+  // cycleId ทำให้เห็นเฉพาะใบของงวดนั้น (ใบ 28/08 ต้องไม่โผล่ตอนเปิดงวด มิ.ย. 1-15)
+  const qs = `${unknownPlate ? '&unknownPlate=1' : ''}${cycle?.id ? `&cycleId=${encodeURIComponent(cycle.id)}` : ''}`;
+
   // ⚠️ hook ทุกตัวต้องอยู่ "ก่อน" early return — ไม่งั้นจำนวน hook ต่างกันระหว่าง render
   //    ทำให้ React พัง "Rendered more hooks than during the previous render" = จอขาว
   useEffect(() => {
     let alive = true;
     const req = ++reqRef.current;
-    setDays([]); setDocs([]); setDate(''); dateRef.current = '';
+    // ล้างใบที่กำลังตรวจค้างอยู่ด้วย — สลับงวด/โหมดแล้วใบเก่ายังโชว์
+    // = เสี่ยงกดบันทึกเข้างวดผิด (ReviewBoard ผูกกับ cycle.id ตอน preview)
+    setDays([]); setDocs([]); setDate(''); dateRef.current = ''; setPending(null);
     (async () => {
       if (!branchId) return;
       setLoading(true);
       try {
         // ส่ง branchId ด้วย — HQ ที่เลือกสาขาทำงานอยู่ ต้องเห็นตัวเลขของสาขานั้น ไม่ใช่ทุกสาขา
-        const r = await api(`/api/jastran/available?branchId=${encodeURIComponent(branchId)}`);
+        const r = await api(`/api/jastran/available?branchId=${encodeURIComponent(branchId)}${qs}`);
         if (!alive || req !== reqRef.current) return;
         const list = r.days || [];
         setDays(list);
@@ -905,7 +915,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
       finally { if (alive && req === reqRef.current) setLoading(false); }
     })();
     return () => { alive = false; };
-  }, [branchId]);   // สลับสาขา -> ต้องโหลดใหม่ ไม่งั้นเห็นใบของสาขาเดิมค้าง
+  }, [branchId, cycle?.id, unknownPlate]);   // สลับสาขา/งวด/โหมด -> โหลดใหม่ ไม่งั้นเห็นของเดิมค้าง
 
   // โหลดใบของวันที่เลือก — req ใช้ทิ้งผลของวันเก่าที่มาช้ากว่า
   // (กดสลับวันเร็วๆ แล้วผลวันเก่ามาทีหลัง จะทับรายการของวันใหม่ = กดใบผิดวันเข้าไปคิดเงิน)
@@ -913,7 +923,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
     setDate(d); dateRef.current = d; setDocs([]);
     try {
       // ส่ง branchId ด้วย — กฎ "เลขใบห้ามซ้ำ" เป็นต่อสาขา ถ้าไม่ส่งจะเช็คข้ามสาขาผิด
-      const r = await api(`/api/jastran/trips?date=${d}&branchId=${encodeURIComponent(branchId)}`);
+      const r = await api(`/api/jastran/trips?date=${d}&branchId=${encodeURIComponent(branchId)}${qs}`);
       if (req !== reqRef.current) return;
       setDocs(r.docs || []);
     } catch (e: any) {
@@ -933,7 +943,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
     const req = ++reqRef.current;
     setLoading(true);
     try {
-      const r = await api(`/api/jastran/available?branchId=${encodeURIComponent(branchId)}`);
+      const r = await api(`/api/jastran/available?branchId=${encodeURIComponent(branchId)}${qs}`);
       if (req !== reqRef.current) return;
       const list = r.days || [];
       setDays(list);
@@ -1069,13 +1079,17 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
       <div className="bg-white rounded-2xl border border-natural-border p-4">
         <div className="flex items-center gap-2 mb-3">
           <Database className="w-4 h-4 text-brand-navy" />
-          <h3 className="font-bold text-sm text-brand-navy">ใบกระจายจากจัสทราน</h3>
-          <span className="text-[11px] text-natural-muted">— เลือกใบแล้วตรวจ/แก้ได้เหมือนนำเข้าไฟล์ปกติ ก่อนกดบันทึก</span>
+          <h3 className="font-bold text-sm text-brand-navy">{unknownPlate ? 'ใบที่ระบบแยกสาขาไม่ได้' : 'ใบกระจายจากจัสทราน'}</h3>
+          <span className="text-[11px] text-natural-muted">
+            {unknownPlate
+              ? '— ทุกสาขาเห็นเหมือนกัน ใครทำก่อนได้ก่อน (บันทึกแล้วสาขาอื่นจะบันทึกซ้ำไม่ได้)'
+              : '— เลือกใบแล้วตรวจ/แก้ได้เหมือนนำเข้าไฟล์ปกติ ก่อนกดบันทึก'}
+          </span>
         </div>
 
         {days.length === 0 ? (
           <p className="text-sm text-natural-muted py-6 text-center">
-            {loading ? 'กำลังโหลด...' : 'ยังไม่มีข้อมูลจากจัสทราน — ตรวจว่า agent บนเครื่องจัสทรานส่งข้อมูลเข้ามาแล้วหรือยัง'}
+            {loading ? 'กำลังโหลด...' : unknownPlate ? 'ไม่มีใบที่ทะเบียนไม่รู้จักในงวดนี้ (ดีแล้ว — ทะเบียนครบใน Master)' : 'ยังไม่มีใบของงวดนี้ — ตรวจว่า agent ส่งข้อมูลเข้ามาแล้วหรือยัง หรือลองเปลี่ยนงวด'}
           </p>
         ) : (
           <>
@@ -1138,6 +1152,15 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
               </div>
             )}
             <p className="text-[11px] text-natural-muted mt-2">⚠️ = ส่งยังไม่ครบทุกจุด</p>
+            {/* หน้านี้รับใบ 2 กรณี ต้องบอกวิธีแก้ให้ตรงกรณี ไม่งั้นแก้ผิดทางแล้วใบไม่ย้าย */}
+            {unknownPlate && (
+              <div className="text-[11px] text-natural-muted mt-1 leading-relaxed border-t border-natural-border pt-2">
+                <b className="text-brand-navy">ทำไมใบมาอยู่ที่นี่ และแก้ยังไงให้ย้ายไปหน้าปกติ:</b>
+                <div>· <b>ทะเบียนไม่มีใน Master รถ</b> (หรือใบไม่มีทะเบียน) → เพิ่มรถที่เมนู "รถ &amp; คนขับ"</div>
+                <div>· <b>ทะเบียนซ้ำหลายสาขา</b> แล้วปลายทางไม่ตรงพื้นที่ของสาขาไหนเลย → ปิดรถของสาขาที่ไม่ได้ใช้แล้ว (เช่น รถย้ายสาขา) หรือเพิ่มราคาปลายทางนั้นให้สาขาที่วิ่งจริง</div>
+                <div className="mt-1">ระหว่างนี้บันทึกจากหน้านี้ได้ตามปกติ ยอดค่าเที่ยวคิดเหมือนกันทุกอย่าง</div>
+              </div>
+            )}
           </>
         )}
       </div>
