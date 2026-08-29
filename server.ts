@@ -269,6 +269,15 @@ async function startServer() {
   fs.mkdirSync(JASTRAN_DIR, { recursive: true });
 
   const jastranFile = (date: string) => path.join(JASTRAN_DIR, `jb-${date}.json`);
+
+  // "ยังไม่ส่งเสร็จสักจุด" = ห้ามคิดค่าเที่ยว (กฎเหล็ก)
+  // ตัดสินจากตัวเลขเป็นหลัก แล้วค่อยดู flag จาก agent — ข้อมูลเก่าที่ไม่มี flag จึงยังถูกกัน
+  const isNotDelivered = (d: any) => {
+    const done = Number(d?._delivered);
+    const total = Number(d?._totalReceipts);
+    if (Number.isFinite(done) && Number.isFinite(total) && total > 0) return done === 0;
+    return d?._notDelivered === true;   // ไม่มีตัวเลข -> เชื่อ flag (ถ้ามี)
+  };
   const isYmd = (d: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
 
   // "สาขานี้วิ่งปลายทางนี้ไหม" — ตัดสินจากราคาที่สาขามีใน Master
@@ -585,7 +594,9 @@ async function startServer() {
       );
       const withFlag = visible.map((d) => {
         const dn = String(d.documentNo || '').trim();
-        return { ...d, _alreadySaved: dn ? savedByBranch.has(dn) : false };
+        // คำนวณ "ยังไม่ส่งเสร็จ" จากตัวเลขเสมอ ไม่พึ่ง flag จาก agent อย่างเดียว
+        // (agent เก่า/ข้อมูลเก่าไม่มี _notDelivered -> ถ้าเชื่อ flag อย่างเดียวจะปล่อยใบ 0/N ผ่าน)
+        return { ...d, _alreadySaved: dn ? savedByBranch.has(dn) : false, _notDelivered: isNotDelivered(d) };
       });
       res.json({ date, receivedAt: j.receivedAt || '', count: withFlag.length, total: docs.length, docs: withFlag });
     } catch (err: any) {
@@ -1475,6 +1486,33 @@ async function startServer() {
       const cycle = resolved.cycle;
 
       const trip = recomputeTrip(db, cycle, extracted, fileName || 'manual.pdf', branchId);
+
+      // 🔒 กฎเหล็ก: ใบกระจายต้องส่งเสร็จอย่างน้อย 1 จุด ถึงคิดค่าเที่ยวได้
+      //    UI ซ่อนปุ่มไว้แล้ว แต่ flag _notDelivered ถูกตัดทิ้งก่อนส่งมา (เป็น field แสดงผล)
+      //    -> ตรวจย้อนกับไฟล์ต้นทางจากจัสทรานแทน ด่านนี้บายพาสจากฝั่ง client ไม่ได้
+      //    ใบที่คีย์เอง/นำเข้าไฟล์ ไม่มีในไฟล์จัสทราน -> ไม่โดนด่านนี้ (ทำงานเหมือนเดิม)
+      const srcDate = /^จัสทราน\s+(\d{4}-\d{2}-\d{2})$/.exec(String(fileName || ''))?.[1];
+      if (srcDate) {
+        try {
+          const raw = JSON.parse(await fs.promises.readFile(jastranFile(srcDate), 'utf8'));
+          const no = (trip.documentNo || '').trim();
+          // ⚠️ ห้ามหาด้วยเลขใบอย่างเดียว — คนแก้เลขใบตอนตรวจได้ แก้แล้วจะหาไม่เจอ = หลุดด่าน
+          //    จึงหาเผื่อด้วย "เลขใบรับ" ซึ่งไม่ได้อยู่ในช่องที่แก้กันตามปกติ
+          const rcpKeys = new Set(
+            (extracted?.receipts || []).map((r: any) => String(r?.receiptNo || '').trim()).filter(Boolean)
+          );
+          const src = (raw.docs || []).find((x: any) => {
+            if (String(x?.documentNo || '').trim() === no) return true;
+            if (!rcpKeys.size) return false;
+            return (x?.receipts || []).some((r: any) => rcpKeys.has(String(r?.receiptNo || '').trim()));
+          });
+          if (src && isNotDelivered(src)) {
+            return res.status(400).json({
+              error: `ใบ ${no} ยังไม่ส่งเสร็จสักจุด (0/${src._totalReceipts ?? '?'}) — ยังคิดค่าเที่ยวไม่ได้ ต้องรอส่งของเสร็จก่อน`,
+            });
+          }
+        } catch { /* ไม่มีไฟล์/อ่านไม่ได้ -> ปล่อยผ่าน (ไม่บล็อกงานเพราะไฟล์หาย) */ }
+      }
 
       // 🔒 กฎเหล็ก: เลขใบกระจายห้ามซ้ำภายในสาขา (ทุกรอบ) — ซ้ำ = การเงินผิดเพี้ยน
       // overwrite:true = ผู้ใช้ยืนยันทับใบเดิม (ไฟล์แก้/พิมพ์ใหม่) -> ลบใบเดิมแล้วบันทึกใหม่แทน 409

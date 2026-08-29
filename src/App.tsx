@@ -889,6 +889,14 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   const reqRef = useRef(0);      // กันผลลัพธ์ที่มาช้าทับผลของวันที่เลือกล่าสุด
   const dateRef = useRef('');    // อ่านค่าวันที่ล่าสุดได้ใน callback โดยไม่ต้องผูก dependency
 
+  // "ยังไม่ส่งเสร็จสักจุด" — คิดจากตัวเลขเป็นหลัก ไม่พึ่ง flag อย่างเดียว
+  // (ข้อมูลเก่า/agent เก่าไม่มี _notDelivered -> ถ้าเชื่อ flag อย่างเดียวจะปล่อยใบ 0/N ผ่าน)
+  const notDelivered = (d: any) => {
+    const done = Number(d?._delivered), total = Number(d?._totalReceipts);
+    if (Number.isFinite(done) && Number.isFinite(total) && total > 0) return done === 0;
+    return d?._notDelivered === true;
+  };
+
   // query ร่วมของทุก endpoint: งวดที่เลือก + โหมดทะเบียนไม่รู้จัก
   // cycleId ทำให้เห็นเฉพาะใบของงวดนั้น (ใบ 28/08 ต้องไม่โผล่ตอนเปิดงวด มิ.ย. 1-15)
   const qs = `${unknownPlate ? '&unknownPlate=1' : ''}${cycle?.id ? `&cycleId=${encodeURIComponent(cycle.id)}` : ''}`;
@@ -970,6 +978,12 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
 
   // เลือกใบ -> เข้า flow เดิม (preview -> ตรวจ -> กดบันทึก) ไม่มีอะไรใหม่
   const useDoc = async (d: any) => {
+    // 🔒 กฎเหล็ก: ใบต้องส่งเสร็จอย่างน้อย 1 จุดถึงคิดค่าเที่ยวได้
+    //    ด่านที่ 2 (ปุ่มถูกซ่อนไปแล้ว) กันเผลอเรียกจากทางอื่น = จ่ายก่อนงานเสร็จ
+    if (notDelivered(d)) {
+      showToast('warning', `ใบ ${d.documentNo || ''} ยังไม่ส่งเสร็จสักจุด — ยังคิดค่าเที่ยวไม่ได้ รอส่งของเสร็จก่อน`);
+      return;
+    }
     // ตัด field ที่ระบบใส่มาเพื่อแสดงผล (_alreadySaved/_delivered/...) ออกก่อน
     // ไม่งั้นจะถูกบันทึกติดไปในใบจริงตอนกดบันทึก
     const clean: any = { ...d };
@@ -1125,7 +1139,8 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                       const partial = d._delivered != null && d._totalReceipts != null && d._delivered < d._totalReceipts;
                       return (
                         // key ต้องไม่พึ่งค่าจากภายนอกอย่างเดียว (อาจซ้ำ/ว่าง -> React ใช้ node ผิดแถว)
-                        <tr key={`${d.documentNo || 'no-doc'}-${i}`} className="border-t border-natural-border">
+                        <tr key={`${d.documentNo || 'no-doc'}-${i}`}
+                          className={`border-t border-natural-border ${notDelivered(d) ? 'bg-natural-bg/60 text-natural-muted' : ''}`}>
                           <td className="py-1.5 px-2 font-semibold text-brand-navy">{d.documentNo}</td>
                           <td className="py-1.5 px-2">{d.plateNo || <span className="text-amber-600">ไม่มี</span>}</td>
                           <td className="py-1.5 px-2">{d.districtRaw} {d.provinceRaw}</td>
@@ -1137,6 +1152,10 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                           <td className="py-1.5 px-2 text-right">
                             {d._alreadySaved
                               ? <span className="text-[10px] text-natural-muted">บันทึกแล้ว</span>
+                              : notDelivered(d)
+                              // 🔒 ยังไม่ส่งเสร็จสักจุด = ดูได้อย่างเดียว ห้ามคิดเงิน
+                              //    (แสดงให้เห็นว่ามีใบนี้อยู่ ผู้ใช้จะได้ไม่นึกว่าข้อมูลหาย)
+                              ? <span className="text-[10px] text-amber-700 font-semibold whitespace-nowrap">🚚 ยังไม่ส่งเสร็จ</span>
                               : <button onClick={() => useDoc(d)} className="bg-brand-navy text-white rounded-lg px-3 py-1 text-[11px] font-semibold">ตรวจใบนี้</button>}
                           </td>
                         </tr>
@@ -1151,7 +1170,17 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                 </table>
               </div>
             )}
-            <p className="text-[11px] text-natural-muted mt-2">⚠️ = ส่งยังไม่ครบทุกจุด</p>
+            <p className="text-[11px] text-natural-muted mt-2">
+              ⚠️ = ส่งยังไม่ครบทุกจุด (บันทึกได้ ให้ตรวจก่อน) · 🚚 = ยังไม่ส่งเสร็จสักจุด (ดูได้อย่างเดียว)
+            </p>
+            {/* บอกให้ชัดว่าใบครบแล้ว แค่บางใบยังคิดเงินไม่ได้ — กันผู้ใช้เข้าใจผิดว่าข้อมูลหาย */}
+            {docs.some(notDelivered) && (
+              <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mt-2">
+                🚚 วันนี้มี <b>{docs.filter(notDelivered).length} ใบ</b> ที่รถยังส่งของไม่เสร็จสักจุด
+                จึงยังคิดค่าเที่ยวไม่ได้ (แสดงไว้ให้เห็นว่าข้อมูลครบ ไม่ได้หาย)
+                <div className="mt-0.5">เมื่อส่งของเสร็จแล้ว รันดึงข้อมูลจากจัสทรานอีกครั้ง ใบจะกดตรวจได้เอง</div>
+              </div>
+            )}
             {/* หน้านี้รับใบ 2 กรณี ต้องบอกวิธีแก้ให้ตรงกรณี ไม่งั้นแก้ผิดทางแล้วใบไม่ย้าย */}
             {unknownPlate && (
               <div className="text-[11px] text-natural-muted mt-1 leading-relaxed border-t border-natural-border pt-2">
