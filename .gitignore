@@ -31,3 +31,11 @@ Excel/
 ~$*
 .cache-snapshot.json
 dist-*.zip
+
+# Agent Skills (ติดตั้งจาก npx skills — ไม่ใช่โค้ดของโปรเจ็ค)
+.agents/
+.claude/skills/
+skills-lock.json
+
+# ไฟล์ token ของ agent จัสทราน (ความลับ ห้ามขึ้น git)
+agent-token.txt

@@ -169,7 +169,23 @@ async function startServer() {
   const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
   fs.mkdirSync(UPLOADS_DIR, { recursive: true }); // สร้างโฟลเดอร์ถ้ายังไม่มี (mount เป็น volume บน NAS)
   // เสิร์ฟรูป: ดูได้ที่ /api/uploads/<ชื่อไฟล์>
-  app.use('/api/uploads', express.static(UPLOADS_DIR, { maxAge: '7d' }));
+  // 🔒 กันไฟล์ลับหลุด: uploads/ เป็น volume เดียวที่เขียนได้บน NAS จึงมีไฟล์ตั้งค่า
+  //    (เช่น jastran-data/agent-token.txt) มาอยู่ด้วย — ต้องไม่ให้ดึงผ่าน URL ได้
+  //    เสิร์ฟเฉพาะไฟล์รูปที่แบนราบในโฟลเดอร์นี้เท่านั้น
+  app.use('/api/uploads', (req, res, next) => {
+    // decodeURIComponent โยน URIError ถ้า % ไม่ครบคู่ (เช่น /api/uploads/%)
+    // ไม่ดักไว้ = ตอบ 500 + รก log (เคยเห็น URIError: Failed to decode param ในล็อก prod)
+    let p: string;
+    try { p = decodeURIComponent(req.path || ''); }
+    catch { return res.status(404).end(); }   // URL เพี้ยน = ไม่มีไฟล์นี้อยู่แล้ว
+    // เช็คทั้งก่อนและหลัง decode — กัน %2f ที่ decode แล้วกลายเป็น / (หลบด่านชั้นเดียวได้)
+    const raw = req.path || '';
+    const nested = (s: string) => s.includes('/', 1) || s.includes('\\');
+    if (nested(p) || nested(raw) || !/\.(png|jpe?g|gif|webp|avif)$/i.test(p)) {
+      return res.status(404).end();   // ไม่ใช่รูปในระดับบนสุด -> ไม่มีให้ดู
+    }
+    next();
+  }, express.static(UPLOADS_DIR, { maxAge: '7d' }));
   // อัปโหลด: รับ base64 ที่ "ย่อขนาดจากเบราว์เซอร์แล้ว" -> เขียนไฟล์ -> คืนชื่อไฟล์
   app.post('/api/upload-image', async (req, res) => {
     try {
@@ -264,15 +280,32 @@ async function startServer() {
   //
   // ปลอดภัย: jastran-data/ ไม่ได้ถูกเสิร์ฟด้วย express.static (ต่างจาก uploads/)
   // อ่านสดทุกครั้ง ไม่ cache -> เปลี่ยน token แล้วมีผลทันทีโดยไม่ต้อง restart ด้วยซ้ำ
-  const TOKEN_FILE = path.join(JASTRAN_DIR, 'agent-token.txt');
+  // หา token ได้หลายที่ เพราะบน NAS มี volume ที่เขียนได้จริงแค่ uploads/
+  // (jastran-data/ ต้องเพิ่ม volume ใน compose + recreate container ซึ่งเสี่ยงกับ prod)
+  // -> รองรับ uploads/jastran-data/ ด้วย จะได้วางไฟล์ได้เลยโดยไม่ต้องแตะ container
+  // ⚠️ uploads/ ถูกเสิร์ฟผ่าน /api/uploads แต่มี guard กรองเฉพาะไฟล์รูประดับบนสุดแล้ว
+  //    ไฟล์ในโฟลเดอร์ย่อยจึงดึงผ่าน URL ไม่ได้ (ดูด้านบน + เทสต์ test-token-leak)
+  const TOKEN_FILES = [
+    path.join(JASTRAN_DIR, 'agent-token.txt'),
+    path.join(UPLOADS_DIR, 'jastran-data', 'agent-token.txt'),
+  ];
   const readAgentToken = () => {
     // trim ทั้งสองทาง: ก๊อปวาง token แล้วติดช่องว่าง/ขึ้นบรรทัดใหม่มาด้วยเป็นเรื่องปกติ
     // ถ้าไม่ trim จะได้ 403 โดยหาสาเหตุไม่เจอ (ตาเปล่ามองไม่เห็นช่องว่าง)
     // ผลข้างเคียง: token ที่ "ตั้งใจ" ให้มีช่องว่างหัวท้ายจะใช้ไม่ได้ — ซึ่งไม่ควรมีใครทำ
     const fromEnv = (process.env.AGENT_TOKEN || '').trim();
     if (fromEnv) return fromEnv;
-    try { return fs.readFileSync(TOKEN_FILE, 'utf8').trim(); }
-    catch { return ''; }   // ไม่มีไฟล์ = ยังไม่ตั้ง token (ปิดช่องทางไว้)
+    for (const f of TOKEN_FILES) {
+      try {
+        const t = fs.readFileSync(f, 'utf8').trim();
+        if (t) return t;      // ไฟล์ว่าง/มีแต่ช่องว่าง -> ข้ามไปหาที่อื่นต่อ
+      } catch (e: any) {
+        // ไม่มีไฟล์ = ปกติ (ยังไม่ได้วาง) แต่ permission ผิด/เป็นโฟลเดอร์ = ต้องรู้
+        // ไม่งั้นเจอ 503 แล้วหาสาเหตุไม่เจอ (ไฟล์อยู่ตรงนั้นแต่อ่านไม่ได้)
+        if (e?.code && e.code !== 'ENOENT') console.warn(`[jastran] อ่าน ${f} ไม่ได้: ${e.code}`);
+      }
+    }
+    return '';                // ไม่เจอที่ไหนเลย = ยังไม่ตั้ง token (ปิดช่องทางไว้)
   };
 
   // agent ส่งใบกระจายเข้ามา (แทนที่ไฟล์ของวันนั้น — ส่งซ้ำได้ ข้อมูลล่าสุดชนะ)
@@ -281,7 +314,7 @@ async function startServer() {
       const token = String(req.headers['x-agent-token'] || '');
       const expect = readAgentToken();
       // ต้องตั้ง token ก่อนใช้ — ไม่ตั้ง = ปิดช่องทางนี้ (กันคนอื่นยิงเข้ามา)
-      if (!expect) return res.status(503).json({ error: 'ยังไม่ได้ตั้ง AGENT_TOKEN บนเซิร์ฟเวอร์ (ตั้งใน .env หรือไฟล์ jastran-data/agent-token.txt)' });
+      if (!expect) return res.status(503).json({ error: 'ยังไม่ได้ตั้ง AGENT_TOKEN บนเซิร์ฟเวอร์ (วางไฟล์ agent-token.txt ที่ jastran-data/ หรือ uploads/jastran-data/)' });
       // เทียบแบบ timing-safe — `!==` หยุดทันทีที่ตัวอักษรต่างกัน
       // ทำให้เดา token ทีละตัวได้จากเวลาตอบกลับ (timing attack)
       const a = Buffer.from(token), b = Buffer.from(expect);
