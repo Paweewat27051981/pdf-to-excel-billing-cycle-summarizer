@@ -268,7 +268,49 @@ async function startServer() {
   const JASTRAN_DIR = path.join(process.cwd(), 'jastran-data');
   fs.mkdirSync(JASTRAN_DIR, { recursive: true });
 
-  const jastranFile = (date: string) => path.join(JASTRAN_DIR, `jb-${date}.json`);
+  // ไฟล์แยกตามแหล่ง: jb-<date>.json (แหล่งหลัก) · jb-<date>__<source>.json (แหล่งอื่น)
+  // ชื่อ pattern เดิมไม่เปลี่ยน -> ข้อมูลเก่าอ่านได้เหมือนเดิม
+  const jastranFile = (date: string, source = '') =>
+    path.join(JASTRAN_DIR, source ? `jb-${date}__${source}.json` : `jb-${date}.json`);
+
+  // รวมใบของวันหนึ่งจาก "ทุกแหล่ง" (จัสทรานมีหลายเครื่อง แยกตามภูมิภาค)
+  // ไฟล์: jb-<date>.json (แหล่งหลัก) + jb-<date>__<source>.json (แหล่งอื่น)
+  // เลขใบซ้ำข้ามแหล่ง -> เอาอันที่รับเข้ามาทีหลัง (ข้อมูลใหม่กว่า)
+  const readDay = async (date: string) => {
+    const out: any[] = [];
+    let receivedAt = '';
+    const seen = new Map<string, number>();   // เลขใบ -> ตำแหน่งใน out
+    let files: string[] = [];
+    try { files = await fs.promises.readdir(JASTRAN_DIR); } catch { return { docs: out, receivedAt }; }
+    // ⚠️ ต้อง match ให้ตรงรูปแบบเป๊ะ — ห้ามใช้ startsWith
+    //    ไฟล์ระหว่างเขียนชื่อ jb-<date>__<src>.json.<pid>-<time>.tmp ก็ startsWith ผ่าน
+    //    = อ่านข้อมูลที่ยังเขียนไม่เสร็จเข้ามาปน (Codex ชี้)
+    const re = new RegExp(`^jb-${date}(?:__[a-z0-9_-]{1,20})?\\.json$`);
+    const mine = files.filter((f) => re.test(f));
+
+    // อ่านทุกไฟล์ก่อน แล้วค่อยเรียงตาม receivedAt — ลำดับ readdir ขึ้นกับ OS เชื่อไม่ได้
+    // ถ้าไม่เรียง "อันหลังชนะ" จะไม่แน่นอน: ใบเลขซ้ำข้ามแหล่งอาจได้ตัวเก่าหรือใหม่สลับกันแต่ละครั้ง
+    const loaded: { at: string; j: any }[] = [];
+    for (const f of mine) {
+      try {
+        const j = JSON.parse(await fs.promises.readFile(path.join(JASTRAN_DIR, f), 'utf8'));
+        loaded.push({ at: String(j.receivedAt || ''), j });
+      } catch { /* ไฟล์เสีย -> ข้าม ไม่ให้ล้มทั้ง endpoint */ }
+    }
+    loaded.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));   // เก่า -> ใหม่
+
+    for (const { j } of loaded) {
+      if ((j.receivedAt || '') > receivedAt) receivedAt = j.receivedAt || '';
+      for (const d of (Array.isArray(j.docs) ? j.docs : [])) {
+        const key = String(d?.documentNo || '').trim();
+        const tagged = { ...d, _source: j.source || '' };
+        const at = key ? seen.get(key) : undefined;
+        if (at !== undefined) out[at] = tagged;      // เลขซ้ำข้ามแหล่ง -> เอาข้อมูลที่รับเข้ามาใหม่กว่า
+        else { if (key) seen.set(key, out.length); out.push(tagged); }
+      }
+    }
+    return { docs: out, receivedAt };
+  };
 
   // "ยังไม่ส่งเสร็จสักจุด" = ห้ามคิดค่าเที่ยว (กฎเหล็ก)
   // ตัดสินจากตัวเลขเป็นหลัก แล้วค่อยดู flag จาก agent — ข้อมูลเก่าที่ไม่มี flag จึงยังถูกกัน
@@ -371,17 +413,28 @@ async function startServer() {
         return res.status(403).json({ error: 'token ไม่ถูกต้อง' });
       }
 
+      // source = ชื่อแหล่งข้อมูล (จัสทรานมีหลายเครื่อง แยกตามภูมิภาค)
+      // ถ้าไม่ระบุ = แหล่งหลัก (ของเดิม ทำงานเหมือนเดิมทุกอย่าง)
+      // ต้องแยกไฟล์ ไม่งั้นแหล่งที่ส่งทีหลังจะเขียนทับของแหล่งแรก = ใบหายทั้งชุด
+      const source = String(req.body?.source || '').trim().toLowerCase();
+      // กัน path traversal (/, \, ..) และชื่อสงวนของ Windows (CON/PRN/AUX/NUL/COM1/LPT1...)
+      // ชื่อสงวนไม่พังเพราะไฟล์เรามีนามสกุลต่อท้าย แต่กันไว้ดีกว่า ไม่มีข้อเสีย
+      const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
+      if (source && (!/^[a-z0-9_-]{1,20}$/.test(source) || RESERVED.test(source))) {
+        return res.status(400).json({ error: 'source ต้องเป็น a-z 0-9 _ - ยาวไม่เกิน 20 (และห้ามใช้ชื่อสงวนของ Windows)' });
+      }
+
       const { date, docs } = req.body as { date: string; docs: any[] };
       if (!isYmd(date)) return res.status(400).json({ error: 'ต้องระบุ date รูปแบบ YYYY-MM-DD' });
       if (!Array.isArray(docs)) return res.status(400).json({ error: 'ต้องส่ง docs เป็น array' });
       // กันไฟล์ใหญ่ผิดปกติ (ใบกระจายจริง ~130 ใบ/วัน)
       if (docs.length > 2000) return res.status(413).json({ error: `ส่งมา ${docs.length} ใบ มากผิดปกติ` });
 
-      const payload = { date, receivedAt: new Date().toISOString(), count: docs.length, docs };
+      const payload = { date, source, receivedAt: new Date().toISOString(), count: docs.length, docs };
       // เขียนแบบ atomic (tmp + rename) — agent ส่งซ้ำวันเดิมได้ ถ้าเขียนทับตรงๆ
       // คนที่อ่านอยู่พร้อมกันจะได้ JSON ครึ่งไฟล์ (พัง) หรือไฟล์เสียถาวรถ้า crash กลางคัน
       // แพทเทิร์นเดียวกับ snapshot ใน server-db.ts
-      const target = jastranFile(date);
+      const target = jastranFile(date, source);
       // tmp ต้องไม่ซ้ำต่อ request — ถ้าสองคำขอของวันเดียวกันมาพร้อมกัน จะ rename ทับ tmp ของกันและกัน
       // (ตัวหนึ่ง rename ไปแล้ว อีกตัว rename ต่อ -> ENOENT หรือได้ข้อมูลของคำขอผิดตัว)
       const tmp = `${target}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
@@ -472,11 +525,15 @@ async function startServer() {
 
       const files = await fs.promises.readdir(JASTRAN_DIR).catch(() => [] as string[]);
       const days: { date: string; count: number; receivedAt: string }[] = [];
+      const seenDates = new Set<string>();
       for (const f of files) {
-        const m = /^jb-(\d{4}-\d{2}-\d{2})\.json$/.exec(f);
+        // รับทั้ง jb-<date>.json และ jb-<date>__<source>.json
+        const m = /^jb-(\d{4}-\d{2}-\d{2})(?:__[a-z0-9_-]{1,20})?\.json$/.exec(f);
         if (!m) continue;
+        if (seenDates.has(m[1])) continue;   // วันนี้รวมไปแล้ว (อีกแหล่งของวันเดียวกัน)
+        seenDates.add(m[1]);
         try {
-          const j = JSON.parse(await fs.promises.readFile(path.join(JASTRAN_DIR, f), 'utf8'));
+          const j = await readDay(m[1]);   // รวมทุกแหล่งของวันนั้น
           // กรองงวดที่ "ระดับใบ" ด้วย documentDate — ตัวเดียวกับที่ตอนบันทึกใช้เลือกงวด
           // ไม่ใช้วันที่ของไฟล์ เพราะไฟล์ jb-16 อาจมีใบลงวันที่ 15 (คนละงวด) ปนมาได้
           const inCyc = (d: any) => !cyc || isDateInCycle(String(d?.documentDate || ''), cyc);
@@ -498,10 +555,10 @@ async function startServer() {
       if (!getSession(req)) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบก่อน' });
       const date = String(req.query.date || '');
       if (!isYmd(date)) return res.status(400).json({ error: 'ต้องระบุ date=YYYY-MM-DD' });
-      const f = jastranFile(date);
-      if (!fs.existsSync(f)) return res.json({ date, count: 0, docs: [] });
-      const j = JSON.parse(await fs.promises.readFile(f, 'utf8'));
-      const docs: any[] = Array.isArray(j.docs) ? j.docs : [];
+      const day = await readDay(date);
+      if (!day.docs.length) return res.json({ date, count: 0, docs: [] });
+      const j = { receivedAt: day.receivedAt };
+      const docs: any[] = day.docs;
 
       // ใบที่บันทึกแล้ว — ต้องเทียบด้วย "กติกาเดียวกับกฎเหล็ก" ที่ใช้ตอนบันทึกจริง:
       //   ต่อสาขา + เทียบด้วย .trim() (ไม่ใช่ normDoc ที่ตัดอักขระพิเศษ) + เลขว่างไม่นับซ้ำ
@@ -1494,7 +1551,8 @@ async function startServer() {
       const srcDate = /^จัสทราน\s+(\d{4}-\d{2}-\d{2})$/.exec(String(fileName || ''))?.[1];
       if (srcDate) {
         try {
-          const raw = JSON.parse(await fs.promises.readFile(jastranFile(srcDate), 'utf8'));
+          // ต้องอ่านรวมทุกแหล่ง — ใบจากจัสทรานเครื่องอื่นอยู่คนละไฟล์ ถ้าอ่านแค่แหล่งหลักจะหาไม่เจอ = ด่านหลุด
+          const raw = await readDay(srcDate);
           const no = (trip.documentNo || '').trim();
           // ⚠️ ห้ามหาด้วยเลขใบอย่างเดียว — คนแก้เลขใบตอนตรวจได้ แก้แล้วจะหาไม่เจอ = หลุดด่าน
           //    จึงหาเผื่อด้วย "เลขใบรับ" ซึ่งไม่ได้อยู่ในช่องที่แก้กันตามปกติ
