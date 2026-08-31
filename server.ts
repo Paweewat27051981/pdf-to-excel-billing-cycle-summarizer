@@ -26,6 +26,7 @@ import {
   ExtractedTripDocument,
 } from './src/types.js';
 import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle } from './src/calc.js';
+import { suspectDupReceipts } from './src/serviceArea.js'; // จับบิลซ้ำจากจัสทราน (ใช้ตัวเดียวกับ frontend)
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
 import { startOilPriceScheduler } from './src/experimental/oilPriceScheduler.js'; // [ทดลอง] auto 05:30 ไทย
@@ -1570,6 +1571,41 @@ async function startServer() {
             });
           }
         } catch { /* ไม่มีไฟล์/อ่านไม่ได้ -> ปล่อยผ่าน (ไม่บล็อกงานเพราะไฟล์หาย) */ }
+      }
+
+      // 🔁 กันบิลซ้ำจากจัสทราน — จุดที่สาขาไม่มีราคาจังหวัดนั้นเลยใน Master
+      //    เหตุ: บิลสหพัฒน์เลข E ต้องคีย์พร้อมปี (E048130/69) ถ้าลืม "/69"
+      //    จัสทรานไปดึงบิลเก่าปีก่อนที่เลขตรงกันมาผูก -> จุดสาขาอื่นหลุดเข้าใบ = คิดเงินผิด
+      //    UI บล็อกไว้แล้ว แต่ด่านนี้กันการยิง API ตรง (client บายพาสไม่ได้)
+      //    ตรวจกับข้อมูลจริง 1,012 ใบ / 7,830 จุด -> โดนแค่ 4 ใบ (0.4%) จึงบล็อกได้ปลอดภัย
+      {
+        const myRates = db.rateMasters.filter((r) => r.status === 'active' && r.branchId === branchId);
+        const branchProvinces = new Set(
+          myRates.filter((r) => r.provinceName).map((r) => String(r.provinceName).trim())
+        );
+        // ตัวย่อจังหวัด (matchRate รับตัวย่อด้วย) -> ถ้าไม่ส่งมา ใบที่เขียนย่อจะโดนบล็อกผิด
+        const branchShorts = new Set(
+          myRates.filter((r) => r.provinceShort).map((r) => String(r.provinceShort).trim())
+        );
+        const bad = suspectDupReceipts(
+          // r.provinceRaw จาก recomputeTrip ผ่าน fallback + กฎแก้ปลายทางมาแล้ว (calc.ts ~401)
+          // ใช้ค่านี้ให้ตรงกับที่ UI เตือน (UI อ่านจาก prev.receipts ตัวเดียวกัน)
+          (trip.receipts || []).map((r: any) => ({
+            receiptNo: r.receiptNo,
+            provinceRaw: r.provinceRaw || trip.provinceRaw,
+          })),
+          branchProvinces,
+          branchShorts
+        );
+        if (bad.length) {
+          const where = [...new Set(bad.map((r: any) => `จ.${String(r.provinceRaw || '?').trim()}`))].join(', ');
+          const list = bad.map((r: any) => r.receiptNo || '(ไม่มีเลข)').slice(0, 5).join(', ');
+          return res.status(422).json({
+            error: `สงสัยบิลซ้ำจากจัสทราน ${bad.length} จุด (${where}) — ใบรับ: ${list} · ` +
+              `สาขานี้ไม่มีราคาจังหวัดดังกล่าวใน Master จึงวิ่งไม่ได้จริง (มักเกิดจากบิลสหพัฒน์เลข E ที่ไม่ได้ใส่ /ปี เช่น E048130/69) ` +
+              `— ให้ลบจุดนั้นออกก่อนบันทึก`,
+          });
+        }
       }
 
       // 🔒 กฎเหล็ก: เลขใบกระจายห้ามซ้ำภายในสาขา (ทุกรอบ) — ซ้ำ = การเงินผิดเพี้ยน

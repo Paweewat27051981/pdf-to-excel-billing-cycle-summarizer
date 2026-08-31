@@ -5,7 +5,7 @@ import {
   Building2, LogOut, Search, Calendar, Menu, X, ChevronsLeft, ChevronsRight, TrendingUp, MapPin, History, Beaker,
 } from 'lucide-react';
 import FuelTripTab from './experimental/FuelTripTab'; // [ทดลอง] แยก 100%
-import { parseServiceAreas, inServiceArea } from './serviceArea'; // พื้นที่ให้บริการสาขา (แชร์ backend)
+import { parseServiceAreas, inServiceArea, suspectDupReceipts } from './serviceArea'; // พื้นที่ให้บริการสาขา (แชร์ backend)
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
   ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
@@ -840,7 +840,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
       </div>
 
       {/* review */}
-      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
+      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
 
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
@@ -1195,7 +1195,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
       </div>
 
       {/* review — ตัวเดียวกับหน้าคำนวณค่าเที่ยว */}
-      {pending && <ReviewBoard pending={pending} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} delivery={pending.delivery} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
+      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} delivery={pending.delivery} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
 
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
@@ -1222,7 +1222,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
 }
 
 // Review board — แก้ไข extracted + แสดงผล preview พร้อม badge
-function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery, rateMasters = [] }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
@@ -1264,7 +1264,36 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   const offArea = [...new Set(prev.receipts
     .filter((r) => (r.totalQty || 0) > 0 && !hasRate(r) && !inServiceArea(areas, r.provinceRaw, r.districtRaw))
     .map((r) => `${r.districtRaw ? 'อ.' + r.districtRaw + ' ' : ''}จ.${r.provinceRaw || '?'}`))];
+  // 🔁 บิลซ้ำจากจัสทราน — จุดที่สาขาไม่มีราคาจังหวัดนั้นเลย = วิ่งจริงไม่ได้
+  // (สาเหตุ: บิลสหพัฒน์ E ไม่ใส่ /69 -> จัสทรานไปดึงบิลเก่าคนละสาขามาผูก)
+  // ต้องแก้ก่อนถึงบันทึกได้ เพราะถ้าปล่อยผ่าน = คิดเงินจากจุดที่ไม่ได้วิ่ง
+  const myRates = (rateMasters as RateMaster[]).filter((r) => r.status === 'active' && r.branchId === branchId);
+  const branchProvinces = new Set<string>(
+    myRates.filter((r) => r.provinceName).map((r) => String(r.provinceName).trim())
+  );
+  // ตัวย่อจังหวัด (matchRate รับตัวย่อด้วย) -> ต้องส่งให้ตรงกับด่าน server ไม่งั้นเตือนผิด
+  const branchShorts = new Set<string>(
+    myRates.filter((r) => r.provinceShort).map((r) => String(r.provinceShort).trim())
+  );
+  const dupRcpIdx = new Set<number>();
+  // ⚠️ ต้องใช้ปลายทาง "หลังแก้ปลายทาง" (prev.receipts) ไม่ใช่ค่าดิบใน ext.receipts
+  //    prev.receipts[i].provinceRaw ผ่าน fallback + กฎแก้ปลายทางมาแล้ว (calc.ts ~401)
+  //    ถ้าใช้ค่าดิบ จุดที่กฎแก้ปลายทางดึงกลับเข้าพื้นที่จะโดนเตือนผิด และไม่ตรงกับด่าน server
+  const dupSuspects = suspectDupReceipts(
+    ext.receipts.map((r, i) => ({
+      ...r, _i: i,
+      provinceRaw: prev.receipts[i]?.provinceRaw || r.provinceRaw || ext.provinceRaw,
+    })),
+    branchProvinces,
+    branchShorts
+  );
+  dupSuspects.forEach((r: any) => dupRcpIdx.add(r._i));
+
   const blockReasons: string[] = [];
+  if (dupSuspects.length) {
+    const where = [...new Set(dupSuspects.map((r: any) => `จ.${(r.provinceRaw || '?').trim()}`))].join(', ');
+    blockReasons.push(`สงสัยบิลซ้ำจากจัสทราน ${dupSuspects.length} จุด (${where}) — สาขา${branchLabel ? ' ' + branchLabel : ''} ไม่มีราคาจังหวัดนี้ใน Master = วิ่งไม่ได้จริง ให้ลบจุดนั้นออกก่อน`);
+  }
   if (offArea.length) blockReasons.push(`ปลายทางไม่อยู่ในพื้นที่ของสาขา${branchLabel ? ' ' + branchLabel : ''}: ${offArea.join(', ')} — ตรวจปลายทาง/แก้ปลายทาง หรือเพิ่มพื้นที่ในเมนูจัดการสาขา`);
   if (cycleClosed) blockReasons.push('รอบถูกปิด — ให้ HQ เปิดรอบก่อน');
   if (isDup) blockReasons.push(`เลขใบกระจายซ้ำ (มีอยู่แล้วใน ${dupCycleName})`);
@@ -1309,6 +1338,33 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
         <div className="rounded-xl bg-rose-50 border border-rose-300 px-3 py-2 text-xs text-rose-800">
           <div className="font-bold mb-0.5">🔒 บันทึกไม่ได้ — ต้องแก้ให้ครบก่อน:</div>
           <ul className="list-disc ml-5">{blockReasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
+        </div>
+      )}
+
+      {/* 🔁 สงสัยบิลซ้ำจากจัสทราน — บล็อก ต้องลบจุดออกก่อน
+          เหตุ: บิลสหพัฒน์เลข E ต้องคีย์พร้อมปี (เช่น E048130/69) ถ้าลืมใส่ "/69"
+          จัสทรานจะไปจับบิลเก่าปีก่อนที่เลขตรงกันมาผูกให้ -> จุดของสาขาอื่นหลุดเข้ามา */}
+      {dupSuspects.length > 0 && (
+        <div className="rounded-xl bg-rose-50 border-2 border-rose-500 px-3 py-2.5 text-xs text-rose-900 space-y-1.5">
+          <div className="flex gap-1.5 font-bold text-sm">
+            <AlertTriangle className="w-5 h-5 shrink-0" />
+            <span>🔁 สงสัยบิลซ้ำจากจัสทราน — พบ {dupSuspects.length} จุดที่สาขา{branchLabel ? ' ' + branchLabel : ''} วิ่งไม่ได้จริง</span>
+          </div>
+          <ul className="list-disc ml-6 font-semibold">
+            {dupSuspects.map((r: any, i: number) => (
+              <li key={i}>
+                จุดที่ {r._i + 1} · <b>{r.receiptNo || '(ไม่มีเลขใบรับ)'}</b> → จ.{(r.provinceRaw || '?').trim()}
+                {r.districtRaw ? ` อ.${r.districtRaw}` : ''} · {String(r.receiverName || '').slice(0, 30)}
+              </li>
+            ))}
+          </ul>
+          <div className="bg-white/70 rounded-lg px-2 py-1.5 leading-relaxed">
+            <b>สาเหตุ:</b> บิลสหพัฒน์เลขขึ้นต้น <b>E</b> ต้องคีย์พร้อมปี เช่น <b>E048130/69</b> —
+            ถ้าลืมใส่ <b>/69</b> จัสทรานจะไปดึง<b>บิลเก่าปีก่อน</b>ที่เลขตรงกันมาผูกแทน
+            จุดส่งของสาขาอื่นจึงหลุดเข้ามาในใบนี้<br />
+            <b>ต้องทำ:</b> กด 🗑 <b>ลบจุดนี้</b> ที่การ์ดจุดสีแดงด้านล่าง แล้วจึงบันทึกได้ ·
+            ถ้ามั่นใจว่าสาขาวิ่งจริง ให้ผู้ดูแลเพิ่มราคาจังหวัดนี้ใน Master ก่อน
+          </div>
         </div>
       )}
 
@@ -1429,8 +1485,25 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
       {/* receipts */}
       {ext.receipts.map((r, ri) => {
         const pr = prev.receipts[ri];
+        const isDupRcp = dupRcpIdx.has(ri);
         return (
-          <div key={ri} className={`rounded-xl border p-3 ${pr?.destCorrected ? 'bg-violet-50 border-l-4 border-l-violet-500 border-natural-border' : pr?.requiresManualBox ? 'bg-sky-50 border-l-4 border-l-sky-500 border-natural-border' : pr?.hasAdjustment ? 'bg-[#FFF2CC] border-l-4 border-l-[#C65911] border-natural-border' : 'border-natural-border'}`}>
+          <div key={ri} className={`rounded-xl border p-3 ${isDupRcp ? 'bg-rose-50 border-2 border-rose-500' : pr?.destCorrected ? 'bg-violet-50 border-l-4 border-l-violet-500 border-natural-border' : pr?.requiresManualBox ? 'bg-sky-50 border-l-4 border-l-sky-500 border-natural-border' : pr?.hasAdjustment ? 'bg-[#FFF2CC] border-l-4 border-l-[#C65911] border-natural-border' : 'border-natural-border'}`}>
+            {isDupRcp && (
+              <div className="mb-2 bg-rose-100 border border-rose-400 text-rose-900 rounded-lg px-2 py-1.5 text-[11px] font-bold flex flex-wrap items-center gap-2">
+                <span className="flex items-center gap-1">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  🔁 สงสัยบิลซ้ำจากจัสทราน — สาขานี้ไม่มีราคา จ.{(r.provinceRaw || ext.provinceRaw || '?').trim()} จึงวิ่งไม่ได้จริง
+                </span>
+                <button type="button"
+                  onClick={() => {
+                    if (!window.confirm(`ลบจุดที่ ${ri + 1} (${r.receiptNo || 'ไม่มีเลขใบรับ'} → จ.${(r.provinceRaw || ext.provinceRaw || '?').trim()}) ออกจากใบนี้?\n\nจุดนี้เป็นบิลซ้ำจากจัสทราน ไม่ใช่งานที่สาขาวิ่งจริง — ลบแล้วยอดค่าเที่ยวจะคำนวณใหม่`)) return;
+                    update({ receipts: ext.receipts.filter((_, j) => j !== ri) });
+                  }}
+                  className="ml-auto bg-rose-600 hover:bg-rose-700 text-white rounded-lg px-3 py-1 flex items-center gap-1">
+                  <Trash2 className="w-3.5 h-3.5" />ลบจุดนี้
+                </button>
+              </div>
+            )}
             {pr?.destCorrected && (
               <div className="mb-2 text-[11px] bg-violet-100 border border-violet-300 text-violet-800 rounded-lg px-2 py-1 font-semibold">
                 📍 แก้ปลายทาง: {pr.origDistrict} จ.{pr.origProvince} → <b>อ.{pr.districtRaw} จ.{pr.provinceRaw}</b> (คิดราคาตามปลายทางจริง · คีย์ "{pr.destFixKeyword}")
