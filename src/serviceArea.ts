@@ -5,6 +5,11 @@
 // ============================================================================
 const _normP = (s: string) => (s || '').replace(/\s/g, '');
 
+// ตัดคำนำหน้า "จ./จังหวัด" ออกก่อนเทียบ — ใช้เฉพาะตอนเทียบ "ตัวย่อจังหวัด" แบบเป๊ะ
+// (เทียบเป๊ะจึงต้องตัดคำนำหน้าเอง ต่างจากการเทียบชื่อเต็มที่ใช้ substring อยู่แล้ว)
+// เคสจริงยังไม่พบ (0/7,830 จุด) แต่คนแก้ในหน้าตรวจสอบพิมพ์ "จ.นว" ได้ -> กันไว้ก่อน
+const _stripProvPrefix = (s: string) => _normP(s).replace(/^(จังหวัด|จ\.)/, '');
+
 export function parseServiceAreas(text?: string): { prov: string; dists: string[] | null }[] {
   return (text || '').split('\n').map((l) => l.trim()).filter(Boolean).map((line) => {
     const idx = line.search(/[:：]/);
@@ -73,7 +78,7 @@ export function suspectDupReceipts<T extends { provinceRaw?: string; receiptNo?:
   //    ถ้าเทียบแบบ substring จุดกำแพงเพชรจะ "ผ่าน" เพราะมี "พช"/"ชร" = บั๊กที่ต้องจับหลุด
   const shorts = new Set(
     (branchProvinceShorts instanceof Set ? Array.from(branchProvinceShorts) : branchProvinceShorts)
-      .map((p) => _normP(p)).filter(Boolean)
+      .map((p) => _stripProvPrefix(p)).filter(Boolean)
   );
   return (receipts || []).filter((r) => {
     const p = _normP(r?.provinceRaw || '');
@@ -81,7 +86,8 @@ export function suspectDupReceipts<T extends { provinceRaw?: string; receiptNo?:
     // จังหวัดยกเว้น (กรุงเทพฯ = จุดคืนของต้นทาง ทุกสาขาแวะได้ ไม่ใช่บิลซ้ำ)
     for (const e of exempt) if (p.includes(e) || e.includes(p)) return false;
     // ใบเขียนจังหวัดเป็นตัวย่อ (เช่น "นว" = นครสวรรค์) — ตรงเป๊ะเท่านั้น
-    if (shorts.has(p)) return false;
+    // ตัด "จ./จังหวัด" นำหน้าก่อนเทียบ ("จ.นว" ต้องตรงกับตัวย่อ "นว")
+    if (shorts.has(_stripProvPrefix(p))) return false;
     // เทียบแบบ "ตรงกันจริง" ทั้งสองทาง เหมือน inServiceArea
     // ตรวจข้อมูลจริง 40 จังหวัดที่ใช้งานอยู่แล้ว ไม่มีคู่ไหน substring ชนกันเลย
     for (const k of normed) if (p.includes(k) || k.includes(p)) return false;
