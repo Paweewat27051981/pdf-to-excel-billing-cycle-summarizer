@@ -1283,6 +1283,7 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
     ext.receipts.map((r, i) => ({
       ...r, _i: i,
       provinceRaw: prev.receipts[i]?.provinceRaw || r.provinceRaw || ext.provinceRaw,
+      totalQty: prev.receipts[i]?.totalQty,
     })),
     branchProvinces,
     branchShorts

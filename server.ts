@@ -1593,6 +1593,7 @@ async function startServer() {
           (trip.receipts || []).map((r: any) => ({
             receiptNo: r.receiptNo,
             provinceRaw: r.provinceRaw || trip.provinceRaw,
+            totalQty: r.totalQty,
           })),
           branchProvinces,
           branchShorts

@@ -59,7 +59,7 @@ export function inServiceArea(areas: { prov: string; dists: string[] | null }[],
 // จังหวัดที่ทุกสาขาแวะได้โดยไม่ต้องมีราคา — ไม่นับเป็นบิลซ้ำ
 // กรุงเทพฯ = จุด "คืนของต้นทาง" (ข้อมูลจริง: 4 จุดในใบพิษณุโลก/กำแพงเพชร ยอด ฿0 ทั้งหมด)
 const DEFAULT_EXEMPT_PROVINCES = ['กรุงเทพมหานคร', 'กรุงเทพ'];
-export function suspectDupReceipts<T extends { provinceRaw?: string; receiptNo?: string }>(
+export function suspectDupReceipts<T extends { provinceRaw?: string; receiptNo?: string; totalQty?: number }>(
   receipts: T[],
   branchProvinces: Set<string> | string[],
   branchProvinceShorts: Set<string> | string[] = [],
@@ -81,6 +81,10 @@ export function suspectDupReceipts<T extends { provinceRaw?: string; receiptNo?:
       .map((p) => _stripProvPrefix(p)).filter(Boolean)
   );
   return (receipts || []).filter((r) => {
+    // แถวที่ไม่มีของ (qty 0) -> ข้าม ให้ตรงกับด่าน offArea ที่กรอง totalQty>0 อยู่แล้ว
+    // ตรวจแล้ว 4 บิลจริงที่ต้องจับมีของทุกใบ (qty 8/15/17/5) -> กรองนี้ไม่ทำให้พลาดเคสจริง
+    // ถ้าไม่ส่ง totalQty มา (undefined) จะยังตรวจตามปกติ ไม่หลุดเงียบ
+    if (r?.totalQty != null && !(Number(r.totalQty) > 0)) return false;
     const p = _normP(r?.provinceRaw || '');
     if (!p) return false;                 // ไม่มีจังหวัด -> ไม่ตัดสิน
     // จังหวัดยกเว้น (กรุงเทพฯ = จุดคืนของต้นทาง ทุกสาขาแวะได้ ไม่ใช่บิลซ้ำ)
