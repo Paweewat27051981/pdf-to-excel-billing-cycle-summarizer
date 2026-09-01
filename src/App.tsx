@@ -1070,7 +1070,10 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
 
   const totalTrip = cycleTrips.reduce((s: number, t: TripDocument) => s + t.tripAmount, 0);
   const savedCount = docs.filter((d: any) => d._alreadySaved).length;
-  const shownDocs = onlyPending ? docs.filter((d: any) => !d._alreadySaved) : docs;
+  // ใบที่จัสทรานแก้ทีหลัง ต้องเห็นเสมอ แม้ติ๊ก "ซ่อนใบที่บันทึกแล้ว"
+  // (ไม่งั้นคนไม่มีทางรู้ว่ามีใบต้องอัปเดต = ยอดเงินผิดเงียบๆ)
+  const shownDocs = onlyPending ? docs.filter((d: any) => !d._alreadySaved || d._drift) : docs;
+  const driftDocs = docs.filter((d: any) => d._drift);
 
   return (
     <div className="flex flex-col gap-5">
@@ -1150,7 +1153,11 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                               : (d.receipts?.length ?? 0)}
                           </td>
                           <td className="py-1.5 px-2 text-right">
-                            {d._alreadySaved
+                            {d._alreadySaved && d._drift
+                              // 🔄 จัสทรานแก้ใบนี้ทีหลัง -> ให้กดตรวจเพื่ออัปเดต (แล้วกด "ทับใบเดิม")
+                              ? <button onClick={() => useDoc(d)} title={`จัสทรานแก้ใบนี้: ${d._drift.added ? '+' + d._drift.added + ' จุด ' : ''}${d._drift.removed ? '-' + d._drift.removed + ' จุด' : ''}`}
+                                  className="bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-3 py-1 text-[11px] font-semibold whitespace-nowrap">🔄 อัปเดตใบนี้</button>
+                              : d._alreadySaved
                               ? <span className="text-[10px] text-natural-muted">บันทึกแล้ว</span>
                               : notDelivered(d)
                               // 🔒 ยังไม่ส่งเสร็จสักจุด = ดูได้อย่างเดียว ห้ามคิดเงิน
@@ -1171,8 +1178,31 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
               </div>
             )}
             <p className="text-[11px] text-natural-muted mt-2">
-              ⚠️ = ส่งยังไม่ครบทุกจุด (บันทึกได้ ให้ตรวจก่อน) · 🚚 = ยังไม่ส่งเสร็จสักจุด (ดูได้อย่างเดียว)
+              ⚠️ = ส่งยังไม่ครบทุกจุด (บันทึกได้ ให้ตรวจก่อน) · 🚚 = ยังไม่ส่งเสร็จสักจุด (ดูได้อย่างเดียว) · 🔄 = บันทึกแล้วแต่จัสทรานแก้ทีหลัง (กดอัปเดต)
             </p>
+            {/* 🔄 ใบที่บันทึกแล้ว แต่จัสทรานแก้ทีหลัง — ต้องกดอัปเดตเอง
+                ระบบดึงใหม่ทุกชั่วโมงก็จริง แต่ไม่แก้ใบที่บันทึกแล้วให้อัตโนมัติ
+                (ถ้าแก้เอง = ยอดเงินที่ตรวจแล้วเปลี่ยนเงียบๆ อันตรายกว่า) */}
+            {driftDocs.length > 0 && (
+              <div className="text-[11px] text-amber-900 bg-amber-50 border-2 border-amber-400 rounded-lg px-3 py-2 mt-2">
+                <div className="font-bold text-xs mb-1">
+                  🔄 มี {driftDocs.length} ใบที่บันทึกไปแล้ว แต่จัสทรานแก้ทีหลัง — ยอดค่าเที่ยวอาจไม่ตรง
+                </div>
+                <ul className="list-disc ml-5 space-y-0.5">
+                  {driftDocs.slice(0, 8).map((d: any) => (
+                    <li key={d.documentNo}>
+                      <b>{d.documentNo}</b> — บันทึกไว้ {d._drift.savedCount} จุด · จัสทรานตอนนี้ {d._drift.nowCount} จุด
+                      {d._drift.added ? <span className="text-emerald-700 font-semibold"> (เพิ่ม {d._drift.added})</span> : null}
+                      {d._drift.removed ? <span className="text-rose-700 font-semibold"> (นำออก {d._drift.removed})</span> : null}
+                    </li>
+                  ))}
+                  {driftDocs.length > 8 && <li>… อีก {driftDocs.length - 8} ใบ</li>}
+                </ul>
+                <div className="mt-1">
+                  กด <b>🔄 อัปเดตใบนี้</b> ในตาราง → ตรวจข้อมูลใหม่ → กด <b>ทับใบเดิม</b> (ใบเก่าถูกลบ ยอดคิดใหม่ตามจัสทราน)
+                </div>
+              </div>
+            )}
             {/* บอกให้ชัดว่าใบครบแล้ว แค่บางใบยังคิดเงินไม่ได้ — กันผู้ใช้เข้าใจผิดว่าข้อมูลหาย */}
             {docs.some(notDelivered) && (
               <div className="text-[11px] text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mt-2">

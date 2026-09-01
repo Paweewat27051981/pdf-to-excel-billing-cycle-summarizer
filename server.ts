@@ -644,17 +644,55 @@ async function startServer() {
       // แต่หน้าทะเบียนไม่รู้จักทุกสาขาเห็นใบเดียวกัน -> ถ้าเช็คแค่สาขาตัวเอง
       // สาขา B จะเห็นใบที่สาขา A บันทึกไปแล้วเป็น "ตรวจใบนี้" กดเข้าไปตรวจเสียเวลา
       // แล้วโดน 409 ตอนกดบันทึก -> โหมดนี้จึงเช็คข้ามสาขา
-      const savedByBranch = new Set(
-        db.tripDocuments
-          .filter((t) => unknownOnly || !branchId || t.branchId === branchId)
-          .map((t) => (t.documentNo || '').trim())
-          .filter(Boolean)
+      const mineTrips = db.tripDocuments.filter(
+        (t) => unknownOnly || !branchId || t.branchId === branchId
       );
+      const savedByBranch = new Set(
+        mineTrips.map((t) => (t.documentNo || '').trim()).filter(Boolean)
+      );
+      // ใบที่บันทึกแล้ว -> เก็บไว้เทียบกับจัสทราน (ตรวจว่าถูกแก้ทีหลังไหม)
+      const savedByNo = new Map(
+        mineTrips.filter((t) => (t.documentNo || '').trim()).map((t) => [(t.documentNo || '').trim(), t])
+      );
+
+      // 🔄 ตรวจ "ใบที่บันทึกแล้ว แต่จัสทรานแก้ทีหลัง"
+      //    ระบบดึงใหม่ทุกชั่วโมง แต่ "ใบที่บันทึกแล้ว" จะไม่อัปเดตตามโดยอัตโนมัติ
+      //    (ถ้าอัปเดตเอง = ยอดเงินที่ตรวจแล้วเปลี่ยนเงียบๆ อันตรายกว่า)
+      //    -> จึงแค่เตือนให้คนเห็น แล้วให้กด "ทับใบเดิม" เอง
+      //    เทียบด้วย "ชุดเลขใบรับ" เพราะจับได้ทั้งเพิ่มจุด/ลบจุด/สลับจุด
+      const norm = (s: any) => String(s || '').trim();
+      // ⚠️ เทียบ "ชุดเลขใบรับ" ตรงๆ ไม่ได้ — ตรวจข้อมูลจริง 1,012 ใบแล้วพบว่า
+      //    ใบเดียวกันเก็บเลขคนละแบบได้ (บางจุดเก็บเลขบิล E บางจุดเก็บเลข B)
+      //    เคสจริง JB0226013390: ระบบเราเก็บ E749561, E749563, B0226065904
+      //                          จัสทรานมี B0226065904, *B0226065907/1, *B0226065909/1
+      //    -> จำนวนจุดเท่ากัน (3=3) ไม่มีใครแก้อะไร แต่ชุดเลขไม่ตรง = เตือนผิด 42 ใบ
+      //    จึงเทียบด้วย "จำนวนจุด" แทน ซึ่งเป็นสิ่งที่กระทบยอดเงินจริงและเชื่อถือได้
+      const countOf = (rs: any[]) => (rs || []).filter((r: any) => norm(r?.receiptNo)).length;
+      const driftOf = (d: any) => {
+        const t: any = savedByNo.get(norm(d.documentNo));
+        if (!t) return null;
+        const nowCount = countOf(d.receipts);
+        const savedCount = countOf(t.receipts);
+        if (!nowCount || !savedCount) return null;   // นับไม่ได้ -> ไม่เตือนมั่ว
+        if (nowCount === savedCount) return null;
+        return {
+          added: Math.max(0, nowCount - savedCount),
+          removed: Math.max(0, savedCount - nowCount),
+          savedCount, nowCount,
+        };
+      };
+
       const withFlag = visible.map((d) => {
         const dn = String(d.documentNo || '').trim();
         // คำนวณ "ยังไม่ส่งเสร็จ" จากตัวเลขเสมอ ไม่พึ่ง flag จาก agent อย่างเดียว
         // (agent เก่า/ข้อมูลเก่าไม่มี _notDelivered -> ถ้าเชื่อ flag อย่างเดียวจะปล่อยใบ 0/N ผ่าน)
-        return { ...d, _alreadySaved: dn ? savedByBranch.has(dn) : false, _notDelivered: isNotDelivered(d) };
+        const saved = dn ? savedByBranch.has(dn) : false;
+        return {
+          ...d,
+          _alreadySaved: saved,
+          _notDelivered: isNotDelivered(d),
+          _drift: saved ? driftOf(d) : null,
+        };
       });
       res.json({ date, receivedAt: j.receivedAt || '', count: withFlag.length, total: docs.length, docs: withFlag });
     } catch (err: any) {
