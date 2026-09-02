@@ -892,6 +892,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   const [cancelled, setCancelled] = useState<{ documentNo: string; amount: number; receipts: number }[]>([]);
   const [date, setDate] = useState('');
   const [loading, setLoading] = useState(false);
+  const [pulling, setPulling] = useState(false);          // กำลังรอ agent ดึงข้อมูลใหม่จากจัสทราน
   const [onlyPending, setOnlyPending] = useState(true);   // ซ่อนใบที่บันทึกไปแล้ว
   const reqRef = useRef(0);      // กันผลลัพธ์ที่มาช้าทับผลของวันที่เลือกล่าสุด
   const dateRef = useRef('');    // อ่านค่าวันที่ล่าสุดได้ใน callback โดยไม่ต้องผูก dependency
@@ -955,6 +956,46 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
     setLoading(true);
     try { await loadDate(d, req); }
     finally { if (req === reqRef.current) setLoading(false); }
+  };
+
+  // ⭐ "ดึงจากจัสทรานใหม่" — ฝากคำขอไว้ให้ agent มารับ แล้วรอจนข้อมูลใหม่มาถึง
+  //
+  // ทำไมต้องรอแบบเช็คเป็นระยะ: NAS สั่ง agent ในออฟฟิศตรง ๆ ไม่ได้ (agent ส่งออกทางเดียว)
+  // จึงฝากธงไว้ แล้ว agent มาถามทุก 1 นาที -> กดปุ่มแล้วรอ ~1-2 นาที ไม่ใช่รอครบชั่วโมง
+  //
+  // เช็คว่า "ข้อมูลใหม่มาจริง" ด้วย receivedAt ที่เปลี่ยนไป ไม่ใช่แค่ตอบว่าสำเร็จ
+  // (ถ้า agent ปิดอยู่ ธงจะค้าง -> ต้องบอกผู้ใช้ตามจริงว่าไม่มีอะไรเข้ามา)
+  const pullTimer = useRef<any>(null);
+  useEffect(() => () => { if (pullTimer.current) clearInterval(pullTimer.current); }, []);
+  const requestPull = async () => {
+    if (pulling) return;
+    const before = days.map((d: any) => `${d.date}:${d.receivedAt || ''}`).join('|');
+    setPulling(true);
+    try {
+      await api('/api/jastran/request-pull', 'POST', {});
+      showToast('success', 'ส่งคำขอแล้ว — กำลังรอข้อมูลใหม่จากจัสทราน (ประมาณ 1-2 นาที)');
+      const started = Date.now();
+      pullTimer.current = setInterval(async () => {
+        // หมดเวลา 4 นาที = agent น่าจะไม่ได้ทำงานอยู่ -> บอกตามจริง ไม่หลอกว่าสำเร็จ
+        if (Date.now() - started > 240_000) {
+          clearInterval(pullTimer.current); pullTimer.current = null; setPulling(false);
+          showToast('error', 'ยังไม่มีข้อมูลใหม่เข้ามาใน 4 นาที — ตัวดึงข้อมูลในออฟฟิศอาจไม่ได้เปิดอยู่ ให้แจ้งผู้ดูแล');
+          return;
+        }
+        try {
+          const r = await api(`/api/jastran/available?branchId=${encodeURIComponent(branchId)}${qs}`);
+          const after = (r.days || []).map((d: any) => `${d.date}:${d.receivedAt || ''}`).join('|');
+          if (after && after !== before) {
+            clearInterval(pullTimer.current); pullTimer.current = null; setPulling(false);
+            showToast('success', 'ข้อมูลใหม่มาแล้ว');
+            await refresh();
+          }
+        } catch { /* เน็ตสะดุดชั่วคราว -> รอบหน้าค่อยลองใหม่ */ }
+      }, 10_000);
+    } catch (e: any) {
+      setPulling(false);
+      showToast('error', e.message);
+    }
   };
 
   const refresh = async () => {
@@ -1096,6 +1137,8 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   // (ไม่งั้นคนไม่มีทางรู้ว่ามีใบต้องอัปเดต = ยอดเงินผิดเงียบๆ)
   const shownDocs = onlyPending ? docs.filter((d: any) => !d._alreadySaved || d._drift) : docs;
   const driftDocs = docs.filter((d: any) => d._drift);
+  // เวลาที่ข้อมูลของ "วันที่เลือกอยู่" ถูกดึงมาจากจัสทราน (ไม่เลือกวัน -> เอาวันล่าสุด)
+  const dataAt = (days.find((d: any) => d.date === date) || days[0] || {}).receivedAt || '';
 
   // 🟠 ไฮไลท์ใบที่ปลายทาง "ไม่ใช่พื้นที่ของสาขานี้" — เห็นตั้งแต่ในรายการ ไม่ต้องกดเข้าไปตรวจ
   //
@@ -1130,6 +1173,11 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
           <span className="text-natural-muted ml-2">{cycleTrips.length} ใบกระจาย · ค่าเที่ยวรวม ฿{money(totalTrip)}</span>
         </div>
         <div className="flex gap-2">
+          <button onClick={requestPull} disabled={pulling} title="สั่งให้ระบบไปดึงข้อมูลใหม่จากจัสทราน (ใช้เวลาประมาณ 1-2 นาที) — ใช้เมื่อเพิ่งกดปิดงานในจัสทราน"
+            className="border border-brand-navy text-brand-navy rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1 disabled:opacity-50">
+            <Database className={`w-3.5 h-3.5 ${pulling ? 'animate-pulse' : ''}`} />
+            {pulling ? 'กำลังดึงจากจัสทราน…' : 'ดึงจากจัสทรานใหม่'}
+          </button>
           <button onClick={refresh} disabled={loading} className="border border-natural-border rounded-full px-3 py-2 text-xs font-semibold flex items-center gap-1 disabled:opacity-50">
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />โหลดใหม่
           </button>
@@ -1148,6 +1196,14 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
               ? '— ทุกสาขาเห็นเหมือนกัน ใครทำก่อนได้ก่อน (บันทึกแล้วสาขาอื่นจะบันทึกซ้ำไม่ได้)'
               : '— เลือกใบแล้วตรวจ/แก้ได้เหมือนนำเข้าไฟล์ปกติ ก่อนกดบันทึก'}
           </span>
+          {/* เวลาข้อมูล — ให้คนรู้ว่าที่เห็นอยู่เก่าแค่ไหน
+              เคสจริง 2 ก.ย.69: จัสทรานปิดงาน 15:49 แต่ไฟล์เป็นของ 15:05
+              คนกด "โหลดใหม่" แล้วงงว่าทำไมไม่อัปเดต (ปุ่มนั้นอ่านไฟล์เดิมซ้ำ ไม่ได้ไปถามจัสทราน) */}
+          {!!dataAt && (
+            <span className="ml-auto text-[11px] text-natural-muted whitespace-nowrap" title={`ข้อมูลชุดนี้ดึงจากจัสทรานเมื่อ ${new Date(dataAt).toLocaleString('th-TH')}`}>
+              ข้อมูล ณ {new Date(dataAt).toLocaleString('th-TH', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })} น.
+            </span>
+          )}
         </div>
 
         {days.length === 0 ? (

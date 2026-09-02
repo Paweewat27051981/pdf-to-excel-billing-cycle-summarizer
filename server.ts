@@ -400,6 +400,61 @@ async function startServer() {
     return '';                // ไม่เจอที่ไหนเลย = ยังไม่ตั้ง token (ปิดช่องทางไว้)
   };
 
+  // ============================================================
+  // "ขอให้ agent ดึงใหม่" — กล่องฝากคำขอ
+  //
+  // ทำไมต้องฝากคำขอ ไม่สั่งตรง:
+  //   จัสทรานอยู่ในออฟฟิศ (192.168.1.5) ส่วนเว็บอยู่บน NAS
+  //   agent เป็นฝ่าย "ส่งออก" อย่างเดียว — NAS สั่งเข้าไปในออฟฟิศไม่ได้
+  //   ถ้าจะสั่งตรงต้องเปิดพอร์ต/VPN เข้าเครื่องในออฟฟิศ = เพิ่มความเสี่ยงโดยไม่จำเป็น
+  //
+  // กลไก: เว็บเขียน "ธง" ไว้ -> agent ถามทุก 1 นาทีว่ามีคนขอไหม -> ถ้ามีก็ดึงทันที
+  //   ผลคือกดปุ่มแล้วรอไม่เกิน ~1-2 นาที แทนที่จะรอครบชั่วโมง
+  const PULL_REQ_FILE = path.join(JASTRAN_DIR, '.pull-request.json');
+
+  // ผู้ใช้กดปุ่ม "ดึงจากจัสทรานใหม่" (ต้องล็อกอิน — ใช้ session เดียวกับหน้าอื่น)
+  app.post('/api/jastran/request-pull', async (req, res) => {
+    try {
+      const sess = getSession(req);
+      if (!sess) return res.status(401).json({ error: 'ยังไม่ได้เข้าสู่ระบบ' });
+      // กันกดรัว: ถ้ามีคำขอที่ยังไม่ถูกรับไปภายใน 60 วิ ให้ใช้คำขอเดิม
+      // (ไม่งั้น 5 สาขากดพร้อมกัน = agent ดึง 5 รอบซ้อน ทั้งที่รอบเดียวได้ข้อมูลเดียวกัน)
+      let prev: any = null;
+      try { prev = JSON.parse(await fs.promises.readFile(PULL_REQ_FILE, 'utf8')); } catch { /* ไม่มีไฟล์ = ยังไม่เคยขอ */ }
+      const now = Date.now();
+      if (prev && !prev.takenAt && now - new Date(prev.at).getTime() < 60_000) {
+        return res.json({ ok: true, queued: true, at: prev.at, note: 'มีคำขออยู่แล้ว กำลังรอ agent มารับ' });
+      }
+      const at = new Date().toISOString();
+      await fs.promises.mkdir(JASTRAN_DIR, { recursive: true });
+      await fs.promises.writeFile(PULL_REQ_FILE, JSON.stringify({ at, by: sess.branchId, takenAt: '' }), 'utf8');
+      res.json({ ok: true, queued: true, at });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'ฝากคำขอไม่สำเร็จ' });
+    }
+  });
+
+  // agent มาถามว่ามีคนขอให้ดึงไหม (ใช้ token เดียวกับตอนส่งข้อมูล)
+  // ตอบ {pending:true} ครั้งเดียวต่อคำขอ — ปั๊ม takenAt กันดึงซ้ำถ้า agent ถามถี่
+  app.get('/api/jastran/pull-request', async (req, res) => {
+    try {
+      const token = String(req.headers['x-agent-token'] || '');
+      const expect = readAgentToken();
+      if (!expect) return res.status(503).json({ error: 'ยังไม่ได้ตั้ง AGENT_TOKEN บนเซิร์ฟเวอร์' });
+      const a = Buffer.from(token), b = Buffer.from(expect);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(403).json({ error: 'token ไม่ถูกต้อง' });
+
+      let cur: any = null;
+      try { cur = JSON.parse(await fs.promises.readFile(PULL_REQ_FILE, 'utf8')); } catch { /* ยังไม่มีคำขอ */ }
+      if (!cur || cur.takenAt) return res.json({ pending: false });
+      cur.takenAt = new Date().toISOString();
+      await fs.promises.writeFile(PULL_REQ_FILE, JSON.stringify(cur), 'utf8');
+      res.json({ pending: true, at: cur.at });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'อ่านคำขอไม่สำเร็จ' });
+    }
+  });
+
   // agent ส่งใบกระจายเข้ามา (แทนที่ไฟล์ของวันนั้น — ส่งซ้ำได้ ข้อมูลล่าสุดชนะ)
   app.post('/api/jastran/trips', async (req, res) => {
     try {
