@@ -877,7 +877,12 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   // delivery  = สถานะส่งของใบนั้น ส่งต่อให้หน้ายืนยันเห็นด้วย (ตารางอย่างเดียวคนมองข้าม)
   const [pending, setPending] = useState<{
     extracted: ExtractedTripDocument; fileName: string; preview: TripDocument;
-    srcDocNo?: string; delivery?: { done: number; total: number };
+    srcDocNo?: string;
+    delivery?: {
+      done: number; total: number;
+      // เลขใบรับที่ยังไม่ส่งเสร็จ — แสดงให้คนตรวจเห็นว่าค้างจุดไหน
+      pending?: { no: string; name: string; prov: string; st: number }[];
+    };
   } | null>(null);
   const [filter, setFilter] = useState<'all' | 'divider' | 'warning'>('all');
   const [search, setSearch] = useState('');
@@ -999,8 +1004,20 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
     //    srcDocNo: คนแก้เลขใบตอนตรวจได้ ถ้าใช้เลขที่แก้แล้วจะติ๊ก "บันทึกแล้ว" ผิดแถว
     //    delivery: ถ้าไม่ส่งต่อ หน้ายืนยัน (จุดที่ตัดสินใจเรื่องเงิน) จะไม่รู้เลยว่าส่งไม่ครบ
     const srcDocNo = (d.documentNo || '').trim();
+    // ⚠️ ต้องอ่านจาก d ก่อน clean เพราะ _statusCode ถูกตัดทิ้งไปแล้วใน clean
+    //    เก็บ "เลขใบรับที่ยังไม่ส่งเสร็จ" มาด้วย — เดิมบอกแค่ "4 จาก 5 จุด"
+    //    คนต้องไปไล่หาเองว่าจุดไหน (ผู้ใช้ขอให้แสดงเลข B)
+    const pendingRcp = (d.receipts || [])
+      .filter((r: any) => Number(r?._statusCode) !== 9)
+      .map((r: any) => ({
+        no: String(r?.receiptNo || '').trim(),
+        name: String(r?.receiverName || '').trim(),
+        prov: String(r?.provinceRaw || '').trim(),
+        st: Number(r?._statusCode),
+      }))
+      .filter((r: any) => r.no);
     const delivery = (typeof d._delivered === 'number' && typeof d._totalReceipts === 'number')
-      ? { done: d._delivered, total: d._totalReceipts } : undefined;
+      ? { done: d._delivered, total: d._totalReceipts, pending: pendingRcp } : undefined;
     const fileName = `จัสทราน ${date}`;
     try {
       const p: TripDocument = await api('/api/trips/preview', 'POST', { cycleId: cycle.id, extracted: clean, fileName, branchId });
@@ -1252,6 +1269,15 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
 }
 
 // Review board — แก้ไข extracted + แสดงผล preview พร้อม badge
+// ชื่อสถานะของจัสทราน (อ่านจากตาราง tb_status จริง 1 ก.ย.69)
+// ใช้บอกคนตรวจว่า "จุดที่ยังไม่ส่งเสร็จ" ค้างอยู่ขั้นไหน จะได้ตัดสินใจถูก
+// 9 = ส่งเสร็จ (จุดที่เป็น 9 ไม่ขึ้นในรายการนี้)
+const JAS_STATUS: Record<number, string> = {
+  [-1]: 'จอง', 0: 'เลือกสถานะ', 1: 'รอจัด', 2: 'บนรถ', 3: 'ยกเลิก', 4: 'ขนส่ง',
+  5: 'รอกระจาย', 6: 'บนรถกระจายสินค้า', 7: 'กระจายสินค้า', 9: 'ส่งเสร็จ',
+  10: 'ตีกลับ', 11: 'คืนต้นทาง',
+};
+
 function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery, rateMasters = [] }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
@@ -1403,12 +1429,31 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
           ใบส่งไม่ครบทุกจุดยังคิดค่าเที่ยวได้จริง (JB0226014505 ส่ง 6/7 แต่คีย์เงินไปแล้ว)
           ถ้าบล็อก = จ่ายขาด -> จึงแค่ทำให้คนเห็นชัดตอนกดยืนยัน แล้วให้คนตัดสิน */}
       {delivery && delivery.done < delivery.total && (
-        <div className="rounded-xl bg-amber-50 border-2 border-amber-400 px-3 py-2 text-xs text-amber-900 flex gap-1.5 font-semibold">
-          <AlertTriangle className="w-4 h-4 shrink-0" />
-          <span>
-            จัสทรานแจ้งว่าใบนี้ <b>ส่งเสร็จ {delivery.done} จาก {delivery.total} จุด</b> (ยังไม่ครบ) —
-            ตรวจว่าจุดที่ยังไม่ส่งควรคิดค่าเที่ยวรอบนี้ไหม ถ้ายังไม่ควร ให้กดยกเลิกแล้วรอส่งครบก่อน
-          </span>
+        <div className="rounded-xl bg-amber-50 border-2 border-amber-400 px-3 py-2 text-xs text-amber-900 space-y-1.5">
+          <div className="flex gap-1.5 font-semibold">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span>
+              จัสทรานแจ้งว่าใบนี้ <b>ส่งเสร็จ {delivery.done} จาก {delivery.total} จุด</b> (ยังไม่ครบ) —
+              ตรวจว่าจุดที่ยังไม่ส่งควรคิดค่าเที่ยวรอบนี้ไหม ถ้ายังไม่ควร ให้กดยกเลิกแล้วรอส่งครบก่อน
+            </span>
+          </div>
+          {/* บอกไปเลยว่า "จุดไหน" — เดิมบอกแค่จำนวน คนต้องไปไล่หาเองในตารางข้างล่าง */}
+          {delivery.pending?.length > 0 && (
+            <div className="bg-white/70 rounded-lg px-2 py-1.5">
+              <div className="font-bold mb-0.5">จุดที่ยังไม่ส่งเสร็จ:</div>
+              <ul className="list-disc ml-5 space-y-0.5">
+                {delivery.pending.slice(0, 12).map((r: any, i: number) => (
+                  <li key={i}>
+                    <b>{r.no}</b>
+                    {r.name ? ` · ${r.name.slice(0, 32)}` : ''}
+                    {r.prov ? ` · จ.${r.prov}` : ''}
+                    <span className="text-amber-700"> ({JAS_STATUS[r.st] || `สถานะ ${r.st}`})</span>
+                  </li>
+                ))}
+                {delivery.pending.length > 12 && <li>… อีก {delivery.pending.length - 12} จุด</li>}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
