@@ -731,6 +731,11 @@ async function startServer() {
           if (!dn || inFileNos.has(dn)) return false;
           // เทียบเฉพาะใบที่ "มาจากจัสทรานวันเดียวกัน" — ใบคีย์มือ/นำเข้า Excel ไม่เกี่ยว
           if (String(t.fileName || '') !== `จัสทราน ${date}`) return false;
+          // ต้องอยู่งวดที่กำลังเปิดดูด้วย (Codex P2)
+          //   docs ถูกกรองด้วย cycQ อยู่แล้ว (บรรทัด ~623) แต่ mineTrips เอาทุกงวด
+          //   ไฟล์ 1 วันมีใบข้ามงวดได้ (agent ดึงย้อนหลัง 20 วัน คร่อมรอยต่อ 15/16)
+          //   ถ้าไม่กรอง จะเตือนให้ลบใบของงวดอื่นที่ไม่ได้เปิดดูอยู่
+          if (cycQ && t.cycleId !== cycQ.id) return false;
           // ใบรับยังอยู่ในไฟล์ไหม -> อยู่ = ใบยังมีจริง (คนแค่แก้เลขใบ) ไม่ใช่ถูกยกเลิก
           const rcps = (t.receipts || [])
             .map((r: any) => String(r?.receiptNo || '').trim())
