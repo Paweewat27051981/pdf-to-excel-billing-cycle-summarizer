@@ -915,7 +915,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
     const req = ++reqRef.current;
     // ล้างใบที่กำลังตรวจค้างอยู่ด้วย — สลับงวด/โหมดแล้วใบเก่ายังโชว์
     // = เสี่ยงกดบันทึกเข้างวดผิด (ReviewBoard ผูกกับ cycle.id ตอน preview)
-    setDays([]); setDocs([]); setDate(''); dateRef.current = ''; setPending(null);
+    setDays([]); setDocs([]); setCancelled([]); setDate(''); dateRef.current = ''; setPending(null);
     (async () => {
       if (!branchId) return;
       setLoading(true);
@@ -935,7 +935,9 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   // โหลดใบของวันที่เลือก — req ใช้ทิ้งผลของวันเก่าที่มาช้ากว่า
   // (กดสลับวันเร็วๆ แล้วผลวันเก่ามาทีหลัง จะทับรายการของวันใหม่ = กดใบผิดวันเข้าไปคิดเงิน)
   async function loadDate(d: string, req: number) {
-    setDate(d); dateRef.current = d; setDocs([]);
+    // ล้าง cancelled พร้อม docs (Codex P3) — ไม่งั้นระหว่างโหลดวันใหม่
+    // แถบเตือน "ใบยกเลิก" ของวันเก่ายังค้างอยู่ = บอกให้ลบใบผิดวัน
+    setDate(d); dateRef.current = d; setDocs([]); setCancelled([]);
     try {
       // ส่ง branchId ด้วย — กฎ "เลขใบห้ามซ้ำ" เป็นต่อสาขา ถ้าไม่ส่งจะเช็คข้ามสาขาผิด
       const r = await api(`/api/jastran/trips?date=${d}&branchId=${encodeURIComponent(branchId)}${qs}`);
@@ -966,7 +968,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
       // คงวันที่เลือกไว้ถ้ายังมีอยู่ ไม่งั้นเด้งไปวันล่าสุด
       const keep = list.some((x: any) => x.date === dateRef.current) ? dateRef.current : (list[0]?.date || '');
       if (keep) await loadDate(keep, req);
-      else { setDocs([]); setDate(''); dateRef.current = ''; }
+      else { setDocs([]); setCancelled([]); setDate(''); dateRef.current = ''; }
     } catch (e: any) { if (req === reqRef.current) showToast('error', e.message); }
     finally { if (req === reqRef.current) setLoading(false); }
   };

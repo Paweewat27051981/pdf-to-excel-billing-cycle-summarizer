@@ -713,12 +713,30 @@ async function startServer() {
       const inFileNos = new Set(
         (docs || []).map((d: any) => String(d?.documentNo || '').trim()).filter(Boolean)
       );
+      // ⚠️ เทียบด้วย "เลขใบ" อย่างเดียวไม่พอ (Codex P2) — คนแก้เลขใบตอนตรวจได้
+      //    ใบที่ถูกแก้เลขจะหาไม่เจอในไฟล์ แล้วโดนเตือนผิดว่า "ยกเลิก" ทั้งที่ยังอยู่
+      //    (แบนเนอร์บอกให้ "ลบใบ" -> เตือนผิด = เสี่ยงลบใบที่ยังต้องคิดเงิน)
+      //    จึงยืนยันซ้ำด้วย "เลขใบรับ" ซึ่งไม่ใช่ช่องที่คนแก้กันตามปกติ
+      //    ถ้าใบรับสักใบยังอยู่ในไฟล์ = ใบนั้นยังมีอยู่จริง แค่เลขไม่ตรง -> ไม่เตือน
+      const inFileRcp = new Set<string>();
+      (docs || []).forEach((d: any) =>
+        (d?.receipts || []).forEach((r: any) => {
+          const rn = String(r?.receiptNo || '').trim();
+          if (rn) inFileRcp.add(rn);
+        })
+      );
       const cancelled = mineTrips
         .filter((t) => {
           const dn = (t.documentNo || '').trim();
           if (!dn || inFileNos.has(dn)) return false;
           // เทียบเฉพาะใบที่ "มาจากจัสทรานวันเดียวกัน" — ใบคีย์มือ/นำเข้า Excel ไม่เกี่ยว
-          return String(t.fileName || '') === `จัสทราน ${date}`;
+          if (String(t.fileName || '') !== `จัสทราน ${date}`) return false;
+          // ใบรับยังอยู่ในไฟล์ไหม -> อยู่ = ใบยังมีจริง (คนแค่แก้เลขใบ) ไม่ใช่ถูกยกเลิก
+          const rcps = (t.receipts || [])
+            .map((r: any) => String(r?.receiptNo || '').trim())
+            .filter(Boolean);
+          if (rcps.some((rn: string) => inFileRcp.has(rn))) return false;
+          return true;
         })
         .map((t) => ({
           documentNo: (t.documentNo || '').trim(),
