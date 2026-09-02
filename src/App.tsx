@@ -1097,6 +1097,30 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   const shownDocs = onlyPending ? docs.filter((d: any) => !d._alreadySaved || d._drift) : docs;
   const driftDocs = docs.filter((d: any) => d._drift);
 
+  // 🟠 ไฮไลท์ใบที่ปลายทาง "ไม่ใช่พื้นที่ของสาขานี้" — เห็นตั้งแต่ในรายการ ไม่ต้องกดเข้าไปตรวจ
+  //
+  // ทำไมใบพวกนี้หลุดเข้ามาได้: ตัวกรองฝั่ง server เช็คพื้นที่เฉพาะตอนทะเบียนอยู่ "หลายสาขา"
+  // ถ้าทะเบียนเป็นของสาขาเดียว (owners.size === 1) จะปล่อยผ่านด้วยทะเบียนอย่างเดียว
+  // -> รถของสาย3 ที่ถูกคีย์ปลายทางกำแพงเพชร (สาย3 ไม่วิ่ง) จึงโผล่มาในรายการ
+  //
+  // ใช้ suspectDupReceipts ตัวเดียวกับด่านบันทึก -> ไฮไลท์ตรงกับที่จะโดนบล็อกจริง
+  // ไม่สร้างกฎที่ 2 ขึ้นมาใหม่ (ไม่งั้นไฮไลท์กับด่านบล็อกจะไม่ตรงกัน = คนสับสน)
+  const listRates = (db.rateMasters as RateMaster[]).filter((r) => r.status === 'active' && r.branchId === branchId);
+  const listProvinces = new Set<string>(listRates.filter((r) => r.provinceName).map((r) => String(r.provinceName).trim()));
+  const listShorts = new Set<string>(listRates.filter((r) => r.provinceShort).map((r) => String(r.provinceShort).trim()));
+  // เตือนเฉพาะตอนเลือกสาขาแล้ว — HQ ที่ไม่เลือกสาขาไม่มีพื้นที่ให้เทียบ (เตือนไปก็มั่ว)
+  const offAreaDoc = (d: any): string[] => {
+    if (!branchId || !listProvinces.size) return [];
+    // ตรวจ "ทุกจุดในใบ" ไม่ใช่แค่ปลายทางหัวใบ — บิลซ้ำมักแทรกมาเป็นจุดกลางใบ
+    // ใบที่ไม่มี receipts (ข้อมูลย่อ) -> ใช้ปลายทางหัวใบแทน ไม่ให้ตกหล่น
+    const rcps = (d?.receipts?.length ? d.receipts : [{ provinceRaw: d?.provinceRaw }]) as any[];
+    const bad = suspectDupReceipts(
+      rcps.map((r: any) => ({ provinceRaw: r?.provinceRaw || d?.provinceRaw, totalQty: r?.totalQty })),
+      listProvinces, listShorts
+    );
+    return [...new Set(bad.map((r: any) => String(r.provinceRaw || '').trim()).filter(Boolean))];
+  };
+
   return (
     <div className="flex flex-col gap-5">
       {/* action bar — เหมือนหน้าคำนวณค่าเที่ยว */}
@@ -1162,13 +1186,26 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                   <tbody>
                     {shownDocs.map((d: any, i: number) => {
                       const partial = d._delivered != null && d._totalReceipts != null && d._delivered < d._totalReceipts;
+                      const offProv = offAreaDoc(d);
                       return (
                         // key ต้องไม่พึ่งค่าจากภายนอกอย่างเดียว (อาจซ้ำ/ว่าง -> React ใช้ node ผิดแถว)
                         <tr key={`${d.documentNo || 'no-doc'}-${i}`}
-                          className={`border-t border-natural-border ${notDelivered(d) ? 'bg-natural-bg/60 text-natural-muted' : ''}`}>
+                          // ปลายทางนอกพื้นที่ = ส้มจาง (เตือนให้ตรวจ ไม่ใช่ห้ามดู)
+                          // ใบที่ยังไม่ส่งเสร็จเป็นสีเทาอยู่แล้ว -> ให้ส้มชนะ เพราะเป็นเรื่องเงิน
+                          className={`border-t border-natural-border ${
+                            offProv.length ? 'bg-amber-50' : notDelivered(d) ? 'bg-natural-bg/60 text-natural-muted' : ''
+                          }`}>
                           <td className="py-1.5 px-2 font-semibold text-brand-navy">{d.documentNo}</td>
                           <td className="py-1.5 px-2">{d.plateNo || <span className="text-amber-600">ไม่มี</span>}</td>
-                          <td className="py-1.5 px-2">{d.districtRaw} {d.provinceRaw}</td>
+                          <td className="py-1.5 px-2">
+                            {d.districtRaw} {d.provinceRaw}
+                            {!!offProv.length && (
+                              <span title={`สาขานี้ไม่มีราคา จ.${offProv.join(', จ.')} ใน Master = ไม่ได้วิ่งพื้นที่นี้ — ตรวจก่อนบันทึก (มักเกิดจากบิลซ้ำ)`}
+                                className="ml-1.5 text-[10px] text-amber-700 font-semibold whitespace-nowrap">
+                                🟠 นอกพื้นที่
+                              </span>
+                            )}
+                          </td>
                           <td className="py-1.5 px-2 text-right whitespace-nowrap">
                             {d._delivered != null
                               ? <span className={partial ? 'text-amber-700 font-semibold' : ''}>{d._delivered}/{d._totalReceipts}{partial ? ' ⚠️' : ''}</span>
@@ -1200,7 +1237,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
               </div>
             )}
             <p className="text-[11px] text-natural-muted mt-2">
-              ⚠️ = ส่งยังไม่ครบทุกจุด (บันทึกได้ ให้ตรวจก่อน) · 🚚 = ยังไม่ส่งเสร็จสักจุด (ดูได้อย่างเดียว) · 🔄 = บันทึกแล้วแต่จัสทรานแก้ทีหลัง (กดอัปเดต)
+              ⚠️ = ส่งยังไม่ครบทุกจุด (บันทึกได้ ให้ตรวจก่อน) · 🚚 = ยังไม่ส่งเสร็จสักจุด (ดูได้อย่างเดียว) · 🔄 = บันทึกแล้วแต่จัสทรานแก้ทีหลัง (กดอัปเดต) · 🟠 พื้นหลังส้ม = ปลายทางนอกพื้นที่สาขา (มักเป็นบิลซ้ำ — บันทึกไม่ได้จนกว่าจะแก้)
             </p>
             {/* 🔄 ใบที่บันทึกแล้ว แต่จัสทรานแก้ทีหลัง — ต้องกดอัปเดตเอง
                 ระบบดึงใหม่ทุกชั่วโมงก็จริง แต่ไม่แก้ใบที่บันทึกแล้วให้อัตโนมัติ
