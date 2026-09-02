@@ -888,6 +888,8 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   const [search, setSearch] = useState('');
   const [days, setDays] = useState<{ date: string; count: number; receivedAt: string }[]>([]);
   const [docs, setDocs] = useState<any[]>([]);
+  // ใบที่บันทึกแล้วแต่หายจากไฟล์จัสทราน = จัสทรานยกเลิก/ย้ายงานออกหมด -> เสี่ยงจ่ายซ้ำ
+  const [cancelled, setCancelled] = useState<{ documentNo: string; amount: number; receipts: number }[]>([]);
   const [date, setDate] = useState('');
   const [loading, setLoading] = useState(false);
   const [onlyPending, setOnlyPending] = useState(true);   // ซ่อนใบที่บันทึกไปแล้ว
@@ -939,9 +941,10 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
       const r = await api(`/api/jastran/trips?date=${d}&branchId=${encodeURIComponent(branchId)}${qs}`);
       if (req !== reqRef.current) return;
       setDocs(r.docs || []);
+      setCancelled(r.cancelled || []);
     } catch (e: any) {
       if (req !== reqRef.current) return;
-      showToast('error', e.message); setDocs([]);
+      showToast('error', e.message); setDocs([]); setCancelled([]);
     }
   }
 
@@ -1200,6 +1203,30 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
             {/* 🔄 ใบที่บันทึกแล้ว แต่จัสทรานแก้ทีหลัง — ต้องกดอัปเดตเอง
                 ระบบดึงใหม่ทุกชั่วโมงก็จริง แต่ไม่แก้ใบที่บันทึกแล้วให้อัตโนมัติ
                 (ถ้าแก้เอง = ยอดเงินที่ตรวจแล้วเปลี่ยนเงียบๆ อันตรายกว่า) */}
+            {/* 🚫 ใบที่จัสทรานยกเลิก/ย้ายงานออกหมด แต่ยังอยู่ในระบบ = เสี่ยงจ่ายซ้ำ
+                ไม่ลบให้อัตโนมัติ เพราะบางใบย้ายไม่หมด ลบทั้งใบแล้วจุดที่เหลือจะหายไปด้วย */}
+            {cancelled.length > 0 && (
+              <div className="text-[11px] text-rose-900 bg-rose-50 border-2 border-rose-500 rounded-lg px-3 py-2 mt-2">
+                <div className="font-bold text-xs mb-1">
+                  🚫 มี {cancelled.length} ใบที่บันทึกไว้แล้ว แต่หายจากจัสทรานของวันนี้ — เสี่ยงจ่ายซ้ำ
+                </div>
+                <ul className="list-disc ml-5 space-y-0.5">
+                  {cancelled.slice(0, 8).map((x) => (
+                    <li key={x.documentNo}>
+                      <b>{x.documentNo}</b> — {x.receipts} จุด · ฿{money(x.amount)}
+                    </li>
+                  ))}
+                  {cancelled.length > 8 && <li>… อีก {cancelled.length - 8} ใบ</li>}
+                </ul>
+                <div className="mt-1 bg-white/70 rounded px-2 py-1.5 leading-relaxed">
+                  <b>สาเหตุ:</b> จัสทรานยกเลิกใบนี้ หรือย้ายงานไปใบอื่นหมดแล้ว<br />
+                  <b>ต้องทำ:</b> เปิดจัสทรานดูว่างานย้ายไปใบไหน · ถ้าใบใหม่คิดเงินแล้ว ให้ลบใบนี้ทิ้ง
+                  ที่หน้า "คำนวณค่าเที่ยว"<br />
+                  <span className="text-rose-700">⚠️ ตรวจให้ครบทุกจุดก่อนลบ — บางใบย้ายไม่หมด
+                  ถ้าลบทั้งใบ จุดที่ยังไม่ย้ายจะไม่มีใครคิดเงินให้</span>
+                </div>
+              </div>
+            )}
             {driftDocs.length > 0 && (
               <div className="text-[11px] text-amber-900 bg-amber-50 border-2 border-amber-400 rounded-lg px-3 py-2 mt-2">
                 <div className="font-bold text-xs mb-1">

@@ -703,7 +703,33 @@ async function startServer() {
           _drift: saved ? driftOf(d) : null,
         };
       });
-      res.json({ date, receivedAt: j.receivedAt || '', count: withFlag.length, total: docs.length, docs: withFlag });
+      // 🚫 ใบที่ "บันทึกแล้ว" แต่หายจากไฟล์จัสทรานของวันเดียวกัน
+      //    = จัสทรานยกเลิกใบนั้น (tb_joborder.status=3) หรือย้ายงานออกหมดแล้ว
+      //    เสี่ยง "จ่ายซ้ำ" ถ้างานถูกย้ายไปใบใหม่ที่บันทึกไว้แล้วเหมือนกัน
+      //    เคสจริง 2 ก.ย.69: JB0226014704 ยกเลิกแล้ว งานย้ายไป JB0226014703
+      //      ทั้งคู่อยู่ในระบบ -> ใบรับ B0226098775 ถูกคิดเงิน 2 ครั้ง (฿2,300 x2)
+      //    ⚠️ เตือนอย่างเดียว ไม่ลบให้ — บางใบย้ายไม่หมด ถ้าลบทั้งใบจุดที่เหลือจะหายไปด้วย
+      //      (JB0226014470: 6/9 จุดย้ายแล้ว อีก 3 จุดยังไม่มีใครคิดเงิน)
+      const inFileNos = new Set(
+        (docs || []).map((d: any) => String(d?.documentNo || '').trim()).filter(Boolean)
+      );
+      const cancelled = mineTrips
+        .filter((t) => {
+          const dn = (t.documentNo || '').trim();
+          if (!dn || inFileNos.has(dn)) return false;
+          // เทียบเฉพาะใบที่ "มาจากจัสทรานวันเดียวกัน" — ใบคีย์มือ/นำเข้า Excel ไม่เกี่ยว
+          return String(t.fileName || '') === `จัสทราน ${date}`;
+        })
+        .map((t) => ({
+          documentNo: (t.documentNo || '').trim(),
+          amount: t.tripAmount,
+          receipts: (t.receipts || []).length,
+        }));
+
+      res.json({
+        date, receivedAt: j.receivedAt || '', count: withFlag.length, total: docs.length,
+        docs: withFlag, cancelled,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
