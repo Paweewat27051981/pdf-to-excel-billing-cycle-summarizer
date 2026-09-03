@@ -25,7 +25,7 @@ import {
   DeductionEntry,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle } from './src/calc.js';
+import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck } from './src/calc.js';
 import { suspectDupReceipts } from './src/serviceArea.js'; // จับบิลซ้ำจากจัสทราน (ใช้ตัวเดียวกับ frontend)
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
@@ -1731,6 +1731,13 @@ async function startServer() {
       //    ตรวจกับข้อมูลจริง 1,012 ใบ / 7,830 จุด -> โดนแค่ 4 ใบ (0.4%) จึงบล็อกได้ปลอดภัย
       {
         const myRates = db.rateMasters.filter((r) => r.status === 'active' && r.branchId === branchId);
+        // ราคาที่ "รถคันนี้ใช้ได้จริง" — ต้องกรองกลุ่มเหมือน recomputeTrip (ดูบรรทัด ~86)
+        //   ถ้าไม่กรอง: ราคา collect_back ของกลุ่มอื่นจะทำให้จุดนอกพื้นที่ถูกยกเว้น
+        //   ทั้งที่ตอนคิดเงินจริงรถกลุ่มนี้ใช้ราคานั้นไม่ได้ = ปล่อยของที่ควรจับให้หลุด (Codex P2)
+        //   ตอนนี้ยังไม่มีราคา collect_back ที่ผูกกลุ่ม (0/5) แต่ admin เพิ่มได้ทุกเมื่อ
+        const myGroup = db.vehicles.find((v) => v.branchId === branchId && v.status === 'active' &&
+          normPlate(v.plateNo) === normPlate(extracted.plateNo))?.rateGroup || '';
+        const myGroupRates = myRates.filter((r) => !r.rateGroup || r.rateGroup === myGroup);
         const branchProvinces = new Set(
           myRates.filter((r) => r.provinceName).map((r) => String(r.provinceName).trim())
         );
@@ -1745,9 +1752,21 @@ async function startServer() {
             receiptNo: r.receiptNo,
             provinceRaw: r.provinceRaw || trip.provinceRaw,
             totalQty: r.totalQty,
+            // ต้องส่ง items/ชื่อผู้ส่ง-ผู้รับ ไปด้วย ไม่งั้นงาน "เก็บคืน" จะถูกบล็อก
+            // (ปลายทางนอกพื้นที่ได้เป็นปกติ เพราะเป็นขากลับ ไม่ใช่จุดกระจาย)
+            items: r.items,
+            districtRaw: r.districtRaw,
+            senderName: r.senderName,
+            receiverName: r.receiverName,
           })),
           branchProvinces,
-          branchShorts
+          branchShorts,
+          undefined,
+          // ยกเว้นเฉพาะจุดที่ "คิดเป็นเก็บคืนได้จริง" (มีราคารองรับ) — เกณฑ์เดียวกับ calc.ts
+          makeCollectBackCheck(myGroupRates, {
+            refDate: trip.documentDate || extracted.documentDate || '',
+            collectBackHalfPiece: db.branches.find((b) => b.id === branchId)?.collectBackHalfPiece,
+          })
         );
         if (bad.length) {
           const where = [...new Set(bad.map((r: any) => `จ.${String(r.provinceRaw || '?').trim()}`))].join(', ');

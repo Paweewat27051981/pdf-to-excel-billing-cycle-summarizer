@@ -11,7 +11,7 @@ import {
   ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas, exportRatesToExcel } from './excel-export';
-import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc } from './calc';
+import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc, makeCollectBackCheck } from './calc';
 import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
 
 // base path เมื่อรันใต้ subpath (เช่น /neosiam บน NAS) — vite ตั้ง import.meta.env.BASE_URL ให้ตอน build
@@ -840,7 +840,7 @@ function CalcTab({ db, cycle, cycleTrips, api, aiEnabled, branchId, reload, goto
       </div>
 
       {/* review */}
-      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
+      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} collectBackHalfPiece={!!(db.branches as Branch[]).find((b) => b.id === branchId)?.collectBackHalfPiece} rateGroup={(db.vehicles as Vehicle[]).find((v) => v.branchId === branchId && v.status === 'active' && normPlate(v.plateNo) === normPlate(pending?.extracted?.plateNo || ''))?.rateGroup || ''} />}
 
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
@@ -1158,8 +1158,25 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
     // ใบที่ไม่มี receipts (ข้อมูลย่อ) -> ใช้ปลายทางหัวใบแทน ไม่ให้ตกหล่น
     const rcps = (d?.receipts?.length ? d.receipts : [{ provinceRaw: d?.provinceRaw }]) as any[];
     const bad = suspectDupReceipts(
-      rcps.map((r: any) => ({ provinceRaw: r?.provinceRaw || d?.provinceRaw, totalQty: r?.totalQty })),
-      listProvinces, listShorts
+      // ส่ง items/ชื่อผู้ส่ง-ผู้รับ ไปด้วย — งาน "เก็บคืน" ปลายทางนอกพื้นที่ได้ ไม่ต้องไฮไลท์
+      rcps.map((r: any) => ({
+        provinceRaw: r?.provinceRaw || d?.provinceRaw, districtRaw: r?.districtRaw,
+        totalQty: r?.totalQty, items: r?.items,
+        senderName: r?.senderName, receiverName: r?.receiverName,
+      })),
+      listProvinces, listShorts,
+      undefined,
+      // เกณฑ์เดียวกับด่านบันทึก -> ไฮไลท์กับการบล็อกตรงกัน
+      // ต้องกรองราคาตามกลุ่มของรถคันนี้ด้วย (เหมือน recomputeTrip) ไม่งั้นยกเว้นเกินจริง
+      makeCollectBackCheck(
+        listRates.filter((r) => !r.rateGroup || r.rateGroup === (
+          (db.vehicles as Vehicle[]).find((v) => v.branchId === branchId && v.status === 'active' &&
+            normPlate(v.plateNo) === normPlate(d?.plateNo || ''))?.rateGroup || ''
+        )),
+        {
+          refDate: d?.documentDate || '',
+          collectBackHalfPiece: !!(db.branches as Branch[]).find((b) => b.id === branchId)?.collectBackHalfPiece,
+        })
     );
     return [...new Set(bad.map((r: any) => String(r.provinceRaw || '').trim()).filter(Boolean))];
   };
@@ -1364,7 +1381,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
       </div>
 
       {/* review — ตัวเดียวกับหน้าคำนวณค่าเที่ยว */}
-      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} delivery={pending.delivery} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} />}
+      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} delivery={pending.delivery} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} collectBackHalfPiece={!!(db.branches as Branch[]).find((b) => b.id === branchId)?.collectBackHalfPiece} rateGroup={(db.vehicles as Vehicle[]).find((v) => v.branchId === branchId && v.status === 'active' && normPlate(v.plateNo) === normPlate(pending?.extracted?.plateNo || ''))?.rateGroup || ''} />}
 
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
@@ -1400,7 +1417,7 @@ const JAS_STATUS: Record<number, string> = {
   10: 'ตีกลับ', 11: 'คืนต้นทาง',
 };
 
-function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery, rateMasters = [] }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery, rateMasters = [], collectBackHalfPiece = false, rateGroup = '' }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
@@ -1461,10 +1478,17 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
     ext.receipts.map((r, i) => ({
       ...r, _i: i,
       provinceRaw: prev.receipts[i]?.provinceRaw || r.provinceRaw || ext.provinceRaw,
+      districtRaw: prev.receipts[i]?.districtRaw || (r as any).districtRaw,
       totalQty: prev.receipts[i]?.totalQty,
     })),
     branchProvinces,
-    branchShorts
+    branchShorts,
+    undefined,
+    // ยกเว้นงานเก็บคืนที่ "มีราคารองรับจริง" — เกณฑ์เดียวกับ calc.ts และด่าน server
+    // กรองตามกลุ่มราคาของรถคันนี้ด้วย (เหมือน recomputeTrip) ไม่งั้นยกเว้นเกินจริง
+    makeCollectBackCheck(
+      myRates.filter((r) => !r.rateGroup || r.rateGroup === rateGroup),
+      { refDate: ext.documentDate || '', collectBackHalfPiece })
   );
   dupSuspects.forEach((r: any) => dupRcpIdx.add(r._i));
 

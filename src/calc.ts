@@ -216,6 +216,51 @@ export interface RateMatch {
   threshold?: number | null;
 }
 
+// ตัวตัดสิน "จุดนี้คิดเป็นงานเก็บคืนได้จริงไหม" — ใช้ร่วมกับด่านตรวจปลายทางนอกพื้นที่
+//
+// ทำไมต้องอยู่ที่นี่: เกณฑ์ต้องตรงกับ isCollect ใน recompute เป๊ะ ๆ
+//   isCollect = ชื่อมี "เก็บคืน" && (สาขา half || มีราคา collect_back)
+// ถ้าด่านตรวจใช้เกณฑ์หลวมกว่า (ชื่ออย่างเดียว) -> บิลซ้ำจากจังหวัดที่สาขาวิ่งไม่ได้
+// ที่บังเอิญมีคำว่า "เก็บคืน" จะหลุดด่าน ทั้งที่ระบบคิดเงินมันเป็นงานปกติ (Codex P2)
+//
+// วางไว้ติดกับ matchRate เพื่อให้คนแก้ราคาเห็นพร้อมกัน — แก้ที่เดียวไม่หลุดคู่
+export function makeCollectBackCheck(
+  rates: RateMaster[],
+  opts: { refDate: string; collectBackHalfPiece?: boolean },
+): (r: { provinceRaw?: string; districtRaw?: string; senderName?: string; receiverName?: string;
+        productName?: string; items?: { productName?: string }[] }) => boolean {
+  const RE = /เก็บ(สินค้า)?คืน/;
+  // ⚠️ ต้องเป็น "เก็บคืนล้วนทั้งใบรับ" เท่านั้น ห้ามใช้ some() (Codex P2 รอบ 3)
+  //   computeTripDocument แยกเฉพาะ "รายการ" ที่เป็นเก็บคืน ส่วนที่เหลือยังคิดเป็นสินค้าปกติ
+  //   ถ้ายกเว้นทั้งใบรับเพราะเจอเก็บคืนแค่รายการเดียว -> บิลซ้ำที่มีสินค้าปกติปนอยู่จะหลุดด่าน
+  //   ข้อมูลจริง 3 ก.ย.69: ใบรับที่ "เก็บคืนปนสินค้าปกติ" มี 33 จุดในงวดปัจจุบัน = เกิดได้จริงบ่อย
+  //   (เช่น B0926183715 จ.พิจิตร: เก็บสินค้าคืน + แคบหมู + M&M + จูปาจุ๊ปส์)
+  const isAllCollectBack = (r: any): boolean => {
+    const items = Array.isArray(r?.items) ? r.items : [];
+    if (items.length) return items.every((it: any) => RE.test(String(it?.productName || '')));
+    // ไม่มีรายการย่อย -> ใช้ชื่อระดับใบรับแทน (ข้อมูลบางแหล่งไม่มี items)
+    return RE.test(String(r?.productName || ''));
+  };
+
+  return (r) => {
+    if (!isAllCollectBack(r)) return false;
+    // สาขาแบบครึ่งราคา (นครสวรรค์): จับด้วยชื่อเสมอ ตรงกับ isCollect
+    if (opts.collectBackHalfPiece) return true;
+    // สาขาอื่น: ต้องมีราคา collect_back รองรับ ไม่งั้นถือเป็นงานปกติ -> ไม่ยกเว้น
+    const byKw = rates.some((x) => {
+      if (x.status !== 'active' || x.productCategory !== 'collect_back' || x.priceType !== 'piece') return false;
+      if (!isEffective(opts.refDate, x.effectiveFrom, x.effectiveTo)) return false;
+      if (!x.senderKeyword && !x.receiverKeyword) return false;
+      if (x.senderKeyword && !textContains(String(r.senderName || ''), x.senderKeyword)) return false;
+      if (x.receiverKeyword && !textContains(String(r.receiverName || ''), x.receiverKeyword)) return false;
+      return true;
+    });
+    if (byKw) return true;
+    const params = { provinceRaw: String(r.provinceRaw || ''), districtRaw: String(r.districtRaw || ''), refDate: opts.refDate };
+    return matchRate(params, rates, undefined, 'collect_back').piece?.rateValue != null;
+  };
+}
+
 export function matchRate(
   params: { provinceRaw: string; districtRaw: string; refDate: string },
   rates: RateMaster[],

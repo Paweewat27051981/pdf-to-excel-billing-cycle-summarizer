@@ -31,6 +31,8 @@ Excel/
 ~$*
 .cache-snapshot.json
 dist-*.zip
+# zip สำหรับ deploy ขึ้น NAS — สร้างใหม่ได้เสมอด้วย npm run build ไม่ต้องเก็บใน repo
+deploy-*.zip
 
 # Agent Skills (ติดตั้งจาก npx skills — ไม่ใช่โค้ดของโปรเจ็ค)
 .agents/

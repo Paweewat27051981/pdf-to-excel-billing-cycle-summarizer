@@ -59,11 +59,25 @@ export function inServiceArea(areas: { prov: string; dists: string[] | null }[],
 // จังหวัดที่ทุกสาขาแวะได้โดยไม่ต้องมีราคา — ไม่นับเป็นบิลซ้ำ
 // กรุงเทพฯ = จุด "คืนของต้นทาง" (ข้อมูลจริง: 4 จุดในใบพิษณุโลก/กำแพงเพชร ยอด ฿0 ทั้งหมด)
 const DEFAULT_EXEMPT_PROVINCES = ['กรุงเทพมหานคร', 'กรุงเทพ'];
+// งาน "เก็บสินค้าคืน" = ขากลับ ไม่ใช่จุดกระจาย -> ปลายทางอยู่นอกพื้นที่ได้เป็นปกติ
+//   รถวิ่งไปส่งของแล้วเก็บของกลับมาเข้าคลัง คลังอาจอยู่คนละจังหวัดกับพื้นที่สาขา
+//   เคสจริง (ตรวจ 3 ก.ย.69): JB0426035497 สาขากำแพงเพชร มีจุด "สินค้าเก็บคืน"
+//     ปลายทาง ลำลูกกา ปทุมธานี (กำแพงเพชรไม่มีราคาปทุมธานี) แต่ "ถูกต้อง" —
+//     มีราคา collect_back ตั้งไว้เฉพาะผู้ส่ง "ทู ทวิน" ฿9.60/ชิ้น = 16 ชิ้น ฿153.60
+//   ถ้าไม่ยกเว้น -> ไฮไลท์ส้มเตือนผิด + ด่านบันทึกบล็อก = งานที่ควรได้เงินบันทึกไม่ได้
+// ⚠️ ห้ามตัดสิน "เป็นเก็บคืนไหม" ที่ไฟล์นี้ — ต้องรับ isCollectBack จากผู้เรียกเท่านั้น
+//   เกณฑ์จริงอยู่ที่ calc.ts:makeCollectBackCheck (ต้องผ่าน 3 ชั้น):
+//     1) ทุกรายการในใบรับต้องเป็นเก็บคืน (ปนสินค้าปกติ = ไม่ยกเว้น)
+//     2) มีราคา collect_back รองรับ (หรือสาขาแบบครึ่งราคา)
+//     3) ราคานั้นต้องอยู่ในกลุ่มราคา (rateGroup) ของรถคันนั้น
+//   เคยพลาดมาแล้วทั้ง 3 ชั้น — ถ้าลอกเกณฑ์มาไว้ที่นี่ วันหนึ่งจะเพี้ยนจาก calc.ts อีก
+//   **ไม่ส่ง isCollectBack มา = ไม่ยกเว้นเลย** (ปลอดภัยไว้ก่อน ดีกว่าปล่อยของที่ควรจับให้หลุด)
 export function suspectDupReceipts<T extends { provinceRaw?: string; receiptNo?: string; totalQty?: number }>(
   receipts: T[],
   branchProvinces: Set<string> | string[],
   branchProvinceShorts: Set<string> | string[] = [],
   exemptProvinces: string[] = DEFAULT_EXEMPT_PROVINCES,
+  isCollectBack?: (r: T) => boolean,
 ): T[] {
   const known = branchProvinces instanceof Set ? branchProvinces : new Set(branchProvinces);
   // สาขายังไม่ได้ตั้งราคาเลย -> ไม่มีข้อมูลพอจะตัดสิน ไม่เตือน (กันเตือนมั่วตอนตั้งสาขาใหม่)
@@ -85,6 +99,9 @@ export function suspectDupReceipts<T extends { provinceRaw?: string; receiptNo?:
     // ตรวจแล้ว 4 บิลจริงที่ต้องจับมีของทุกใบ (qty 8/15/17/5) -> กรองนี้ไม่ทำให้พลาดเคสจริง
     // ถ้าไม่ส่ง totalQty มา (undefined) จะยังตรวจตามปกติ ไม่หลุดเงียบ
     if (r?.totalQty != null && !(Number(r.totalQty) > 0)) return false;
+    // งานเก็บคืนที่ "คิดเงินเป็นเก็บคืนได้จริง" = ขากลับ ปลายทางนอกพื้นที่ได้
+    // (ต้องผ่านตัวตัดสินของผู้เรียก ไม่ใช่แค่ชื่อสินค้า — ดูเหตุผลด้านบน)
+    if (isCollectBack && isCollectBack(r)) return false;
     const p = _normP(r?.provinceRaw || '');
     if (!p) return false;                 // ไม่มีจังหวัด -> ไม่ตัดสิน
     // จังหวัดยกเว้น (กรุงเทพฯ = จุดคืนของต้นทาง ทุกสาขาแวะได้ ไม่ใช่บิลซ้ำ)
