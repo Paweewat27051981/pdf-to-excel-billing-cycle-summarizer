@@ -384,6 +384,21 @@ export async function exportPerVehicleReport(
     ws.getCell(1, 1).value = 'ยังไม่มีข้อมูลในรอบนี้';
   }
 
+  // จำนวนชิ้นรวมต่อทะเบียน — ใช้ totalQty (จำนวนจริงทุกใบรับ รวมงานเก็บคืน/งานพิเศษ)
+  //   ไม่ใช้ billingQty เพราะนั่นคือจำนวน "หลังปรับตัวหาร" ไว้คิดเงิน
+  //   ผู้ใช้ยืนยัน (4 ก.ย.69) ว่าต้องการจำนวนจริงทั้งหมด = สะท้อนภาระงานจริงของรถ
+  const qtyByPlate = new Map<string, number>();
+  for (const t of cycleTrips) {
+    const k = normPlate(t.plateNo);
+    if (!k) continue;
+    qtyByPlate.set(k, (qtyByPlate.get(k) || 0) + Number(t.totalQty || 0));
+  }
+  const qtyOf = (plate: string) => qtyByPlate.get(normPlate(plate)) || 0;
+  // ประสิทธิภาพในการบรรทุก = จำนวนชิ้น ÷ ค่าเที่ยว (ชิ้นต่อบาท — ยิ่งสูงยิ่งคุ้ม)
+  //   สูตรนี้ถอดจากไฟล์ Excel ที่ผู้ใช้ทำเองแล้วเทียบตรง 17/17 แถว
+  //   ค่าเที่ยว 0 -> คืน 0 กัน Infinity/NaN โผล่ในไฟล์
+  const effOf = (qty: number, tripAmount: number) => (tripAmount > 0 ? round2(qty / tripAmount) : 0);
+
   const cycleFuel = fuel.filter((f) => f.cycleId === cycle.id);
   const driverOf = (plate: string) =>
     summaries.find((s) => normPlate(s.plateNo) === normPlate(plate))?.driverName ||
@@ -392,20 +407,28 @@ export async function exportPerVehicleReport(
   // ===== Sheet สรุปรวมต่อทะเบียน (แบบ Dashboard) =====
   if (summaries.length) {
     const ws = wb.addWorksheet('สรุปรวม');
-    styleTitle(ws, `สรุปรวมต่อทะเบียน — สาขา${branchName}`, 8, `รอบ ${cycle.name}`);
+    // คอลัมน์ C = จำนวนชิ้น, D = ประสิทธิภาพในการบรรทุก (แทรกก่อน "รายได้")
+    styleTitle(ws, `สรุปรวมต่อทะเบียน — สาขา${branchName}`, 10, `รอบ ${cycle.name}`);
     ws.addRow([]);
-    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ']));
-    let z = false; const g = { trip: 0, d1: 0, fuel: 0, inc: 0, ded: 0, net: 0 };
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'จำนวนชิ้น', 'ประสิทธิภาพในการบรรทุก', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ']));
+    let z = false; const g = { qty: 0, trip: 0, d1: 0, fuel: 0, inc: 0, ded: 0, net: 0 };
     for (const s of summaries) {
-      const r = ws.addRow([s.plateNo, s.driverName, s.totalTripAmount, s.deduction1Percent, s.fuelTotal, s.incomeAdd, s.deductionTotal, s.netReceive]);
-      r.eachCell((cell, col) => bodyCell(cell, { align: col <= 2 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: col === 8, color: col === 8 ? C.billingText : undefined }));
-      [3, 4, 5, 6, 7, 8].forEach((c) => (r.getCell(c).numFmt = NUM));
-      z = !z; g.trip += s.totalTripAmount; g.d1 += s.deduction1Percent; g.fuel += s.fuelTotal; g.inc += s.incomeAdd; g.ded += s.deductionTotal; g.net += s.netReceive;
+      const qty = qtyOf(s.plateNo);
+      const r = ws.addRow([s.plateNo, s.driverName, qty, effOf(qty, s.totalTripAmount), s.totalTripAmount, s.deduction1Percent, s.fuelTotal, s.incomeAdd, s.deductionTotal, s.netReceive]);
+      r.eachCell((cell, col) => bodyCell(cell, { align: col <= 2 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: col === 10, color: col === 10 ? C.billingText : undefined }));
+      r.getCell(3).numFmt = '#,##0';        // ชิ้น = จำนวนเต็ม
+      r.getCell(4).numFmt = '0.00';         // ประสิทธิภาพ = ทศนิยม 2 ตำแหน่ง
+      [5, 6, 7, 8, 9, 10].forEach((c) => (r.getCell(c).numFmt = NUM));
+      z = !z; g.qty += qty; g.trip += s.totalTripAmount; g.d1 += s.deduction1Percent; g.fuel += s.fuelTotal; g.inc += s.incomeAdd; g.ded += s.deductionTotal; g.net += s.netReceive;
     }
-    const tr = ws.addRow(['รวมทุกคัน', '', round2(g.trip), round2(g.d1), round2(g.fuel), round2(g.inc), round2(g.ded), round2(g.net)]);
+    // แถวรวม: ประสิทธิภาพคิดจากยอดรวม (ชิ้นรวม ÷ รายได้รวม) ไม่ใช่เฉลี่ยของแต่ละคัน
+    // — ค่าเฉลี่ยของอัตราส่วนจะบิดเบือนถ้ารถแต่ละคันงานไม่เท่ากัน
+    const tr = ws.addRow(['รวมทุกคัน', '', g.qty, effOf(g.qty, g.trip), round2(g.trip), round2(g.d1), round2(g.fuel), round2(g.inc), round2(g.ded), round2(g.net)]);
     tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col <= 2 ? 'left' : 'right', bg: C.totalBg, color: C.title }));
-    [3, 4, 5, 6, 7, 8].forEach((c) => (tr.getCell(c).numFmt = NUM));
-    [13, 20, 13, 11, 13, 14, 14, 13].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    tr.getCell(3).numFmt = '#,##0';
+    tr.getCell(4).numFmt = '0.00';
+    [5, 6, 7, 8, 9, 10].forEach((c) => (tr.getCell(c).numFmt = NUM));
+    [13, 20, 12, 22, 13, 11, 13, 14, 14, 13].forEach((w, i) => (ws.getColumn(i + 1).width = w));
   }
 
   // ===== Sheet ค่าน้ำมันรวมทุกคัน — สรุปยอดรวมต่อทะเบียน (ไม่ลงรายละเอียดทุกใบ) =====

@@ -2041,6 +2041,17 @@ const ALL_BRANCH_HINT = 'อยู่โหมดภาพรวมทุกส�
 function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) {
   const cats: MoneyCategory[] = db.moneyCategories || [];
   const incomeCats = cats.filter((c) => c.kind === 'income' && c.status === 'active');
+  // รถของ "สาขานี้" เท่านั้น — ใช้เป็นตัวเลือกในช่องทะเบียน (ไม่ให้พิมพ์เอง)
+  //
+  // ทำไมต้องเป็น dropdown ไม่ใช่ช่องพิมพ์ + datalist:
+  //   datalist แค่ "แนะนำ" แต่พิมพ์อะไรก็ได้ -> คนพิมพ์เลขท้ายอย่างเดียว ("1349" แทน "ผต-1349")
+  //   ผลคือ summarizeByVehicle มองเป็นรถคนละคัน -> แตกเป็นแถวแยกในรายงานต่อทะเบียน
+  //   เคสจริง 4 ก.ย.69 (สาย3 งวด ส.ค.16-31): 3 รายการ "1349"/"4375"/"6698"
+  //   กลายเป็น 3 แถวผี รายได้ 0 ไม่มีคนขับ และหัก 1% ถูกคิดแยกจากรถคันจริง
+  //   เลือกจากรายการ = พิมพ์ผิดไม่ได้เลย = แก้ที่ต้นเหตุ ไม่ใช่ตามแก้ทีหลัง
+  const branchVehicles = (db.vehicles as Vehicle[])
+    .filter((v) => v.branchId === branchId && v.status === 'active')
+    .sort((a, b) => a.plateNo.localeCompare(b.plateNo, 'th'));
   const dedCats = cats.filter((c) => c.kind === 'deduction' && c.status === 'active');
 
   const fuel = db.fuelEntries.filter((f: FuelEntry) => cycle && f.cycleId === cycle.id);
@@ -2051,6 +2062,21 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const [fForm, setFForm] = useState({ plateNo: '', refNo: '', date: cycle?.startDate || '', amount: 0 });
   const [dForm, setDForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '' });
   const [bForm, setBForm] = useState({ plateNo: '', categoryId: '', amount: 0, docNo: '', imageFile: '' });
+
+  // 🔄 สลับสาขา -> ล้างช่องทะเบียนทั้ง 3 ฟอร์ม (Codex P2)
+  //
+  // component นี้ไม่ remount ตอนเปลี่ยนสาขา (ไม่มี key) ค่าใน state จึงค้างอยู่
+  // พอ <select> กรองเหลือแต่รถของสาขาใหม่ ค่าเก่าจะ "มองไม่เห็นบนหน้าจอ แต่ยังส่งได้"
+  //   -> กดเพิ่ม = บันทึกทะเบียนของสาขาเก่า + branchId ของสาขาใหม่ = เงินไปผิดสาขา
+  // (ก่อนเปลี่ยนเป็น select ไม่มีปัญหานี้ เพราะ datalist แสดงรถทุกสาขา)
+  //
+  // ล้างเฉพาะ "ทะเบียน" ไม่ล้างจำนวนเงิน/วันที่/เลขใบ — ไม่งั้นพิมพ์ค้างไว้แล้วหายหมด
+  // กระทบเฉพาะ HQ/admin ที่สลับสาขาได้ (สาขาปกติ branchId ล็อกตามบัญชี)
+  useEffect(() => {
+    setFForm((f) => (f.plateNo ? { ...f, plateNo: '' } : f));
+    setDForm((f) => (f.plateNo ? { ...f, plateNo: '' } : f));
+    setBForm((f) => (f.plateNo ? { ...f, plateNo: '' } : f));
+  }, [branchId]);
   const [imgBusy, setImgBusy] = useState(false);
   // แนบรูป: ย่อในเบราว์เซอร์ -> อัปโหลดขึ้น NAS -> เก็บชื่อไฟล์ใน bForm
   const onPickIncomeImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2072,8 +2098,14 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
   const branchName = (db.branches as Branch[]).find((b) => b.id === branchId)?.name || '';
+  // ด่านที่ 2: ทะเบียนต้องเป็นรถของสาขานี้จริง — กันค่าค้างจากสาขาเก่าหลุดไปบันทึก
+  // (useEffect ล้างให้แล้ว แต่ด่านนี้กันกรณีที่ state ถูกตั้งจากทางอื่น)
+  const plateOk = (p: string) => !!p && branchVehicles.some((v) => v.plateNo === p);
+  const WRONG_BRANCH = 'ทะเบียนนี้ไม่ใช่รถของสาขาที่เลือกอยู่ — กรุณาเลือกทะเบียนใหม่';
+
   const addFuel = async () => {
     if (!fForm.plateNo || !fForm.amount) return showToast('warning', 'กรอกทะเบียนและจำนวนเงิน');
+    if (!plateOk(fForm.plateNo)) return showToast('warning', WRONG_BRANCH);
     // เตือนถ้าวันที่ไม่อยู่ในรอบที่เลือก — ค่าน้ำมันจะถูกใส่ "รอบที่เลือก" ไม่ใช่รอบตามวันที่ (กันเผลอบันทึกผิดรอบ)
     if (fForm.date && cycle.startDate && cycle.endDate && (fForm.date < cycle.startDate || fForm.date > cycle.endDate)) {
       const correct = (db.cycles as BillingCycle[]).find((c) => c.startDate && c.endDate && fForm.date >= c.startDate && fForm.date <= c.endDate);
@@ -2109,6 +2141,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
   const addEntry = async (plateNo: string, categoryId: string, amount: number, kind: 'income' | 'deduction', docNo: string, reset: () => void, imageFile?: string) => {
     const cat = cats.find((c) => c.id === categoryId) || (kind === 'income' ? incomeCats[0] : dedCats[0]);
     if (!plateNo || !amount || !cat) return showToast('warning', 'กรอกทะเบียน/จำนวนเงิน และเลือกประเภท');
+    if (!plateOk(plateNo)) return showToast('warning', WRONG_BRANCH);
     // ล้าง docNo: ตัดอักขระแปลกปลอม (ไทยหลง/เว้นวรรค) + ตัวใหญ่ ให้ตรงกับใบกระจาย
     const cleanDoc = docNo.replace(/[^A-Za-z0-9/-]/g, '').toUpperCase().trim();
     await api('/api/deductions', 'POST', { plateNo, categoryId: cat.id, kind, label: cat.name, amount, docNo: cleanDoc, cycleId: cycle.id, branchId, imageFile: imageFile || undefined });
@@ -2148,7 +2181,10 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           <button type="button" disabled={impFuel} onClick={() => fuelFileRef.current?.click()} className="bg-emerald-600 disabled:bg-natural-muted text-white rounded-lg px-2.5 py-1 text-xs font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />{impFuel ? 'กำลังนำเข้า...' : 'นำเข้าค่าน้ำมัน'}</button>
         </div>
         <div className="flex flex-wrap gap-2 mb-3">
-          <input list="plates" aria-label="ทะเบียนรถ" placeholder="ทะเบียน" value={fForm.plateNo} onChange={(e) => setFForm({ ...fForm, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
+          <select aria-label="ทะเบียนรถ" value={fForm.plateNo} onChange={(e) => setFForm({ ...fForm, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-40">
+            <option value="">— เลือกทะเบียน —</option>
+            {branchVehicles.map((v) => <option key={v.id} value={v.plateNo}>{v.plateNo}{v.driverName ? ` · ${v.driverName}` : ''}</option>)}
+          </select>
           <input aria-label="เลขใบสั่งเติม" placeholder="เลขใบสั่งเติม" value={fForm.refNo} onChange={(e) => setFForm({ ...fForm, refNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-32" />
           <input type="date" aria-label="วันที่เติมน้ำมัน" value={fForm.date} onChange={(e) => setFForm({ ...fForm, date: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
           <input type="number" aria-label="จำนวนเงินค่าน้ำมัน" placeholder="จำนวนเงิน" value={fForm.amount || ''} onChange={(e) => setFForm({ ...fForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
@@ -2163,7 +2199,10 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
       <Section title="รายได้เพิ่ม (+)" icon={Plus}>
         <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1 mb-3">เงินที่บวกรวมกับค่าเที่ยววิ่ง เช่น ค่าอัพเดทบิล</p>
         <div className="flex flex-wrap gap-2 mb-3">
-          <input list="plates" aria-label="ทะเบียนรถ" placeholder="ทะเบียน" value={bForm.plateNo} onChange={(e) => setBForm({ ...bForm, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
+          <select aria-label="ทะเบียนรถ" value={bForm.plateNo} onChange={(e) => setBForm({ ...bForm, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-40">
+            <option value="">— เลือกทะเบียน —</option>
+            {branchVehicles.map((v) => <option key={v.id} value={v.plateNo}>{v.plateNo}{v.driverName ? ` · ${v.driverName}` : ''}</option>)}
+          </select>
           <select aria-label="ประเภทรายได้เพิ่ม" value={bForm.categoryId} onChange={(e) => setBForm({ ...bForm, categoryId: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm">
             {incomeCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
@@ -2183,7 +2222,10 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
       {/* รายการหัก (deduction) */}
       <Section title="รายการหัก (−)" icon={Receipt}>
         <div className="flex flex-wrap gap-2 mb-3">
-          <input list="plates" aria-label="ทะเบียนรถ" placeholder="ทะเบียน" value={dForm.plateNo} onChange={(e) => setDForm({ ...dForm, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
+          <select aria-label="ทะเบียนรถ" value={dForm.plateNo} onChange={(e) => setDForm({ ...dForm, plateNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-40">
+            <option value="">— เลือกทะเบียน —</option>
+            {branchVehicles.map((v) => <option key={v.id} value={v.plateNo}>{v.plateNo}{v.driverName ? ` · ${v.driverName}` : ''}</option>)}
+          </select>
           <select aria-label="ประเภทรายการหัก" value={dForm.categoryId} onChange={(e) => setDForm({ ...dForm, categoryId: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm">
             {dedCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
@@ -2198,7 +2240,8 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
       {/* จัดการประเภท — เพิ่มชื่อใน dropdown ได้เองโดยไม่ต้องแก้โค้ด */}
       <CategoryManager cats={cats} api={api} branchId={branchId} reload={reload} showToast={showToast} />
 
-      <datalist id="plates">{db.vehicles.map((v: Vehicle) => <option key={v.id} value={v.plateNo} />)}</datalist>
+      {/* datalist "plates" ถูกเลิกใช้แล้ว — ทั้ง 3 ฟอร์ม (น้ำมัน/รายได้เพิ่ม/รายการหัก)
+          เปลี่ยนเป็น <select> ที่มีแต่รถของสาขานี้ เพื่อกันพิมพ์ทะเบียนผิด (ดู branchVehicles) */}
     </div>
     </div>
   );
