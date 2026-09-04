@@ -1029,15 +1029,15 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
 
   // เลือกใบ -> เข้า flow เดิม (preview -> ตรวจ -> กดบันทึก) ไม่มีอะไรใหม่
   const useDoc = async (d: any) => {
-    // 🔒 หน้า "ทะเบียนไม่รู้จัก" = ดูอย่างเดียว (รถไม่เกี่ยวกับการคิดค่าเที่ยว)
-    //    ด่านที่ 2 คู่กับปุ่มที่ซ่อนไว้ — กันเรียกจากทางอื่น
-    if (unknownPlate) {
-      showToast('warning', 'หน้านี้ดูอย่างเดียว — รถที่ไม่มีใน Master ไม่คิดค่าเที่ยว ถ้าเป็นรถของเราให้เพิ่มที่เมนู "รถ & คนขับ" ก่อน แล้วใบจะย้ายไปหน้า "ดึงจากจัสทราน" เอง');
-      return;
-    }
     // 🔒 กฎเหล็ก: ใบต้องส่งเสร็จอย่างน้อย 1 จุดถึงคิดค่าเที่ยวได้
     //    ด่านที่ 2 (ปุ่มถูกซ่อนไปแล้ว) กันเผลอเรียกจากทางอื่น = จ่ายก่อนงานเสร็จ
-    if (notDelivered(d)) {
+    //
+    // ยกเว้นหน้า "ทะเบียนไม่รู้จัก" — หน้านั้นเปิดดูได้อย่างเดียว ไม่คิดเงินอยู่แล้ว
+    //   กฎเหล็กคุมเรื่อง "คิดค่าเที่ยว" ไม่ใช่ "เปิดดู" -> ไม่ควรขวางการดูรายละเอียด
+    //   ถ้าไม่ยกเว้น: ปุ่ม "👁 ดูอย่างเดียว" ขึ้นทุกแถวแต่กดแล้วไม่เปิด = ปุ่มโกหก
+    //   (วัดจริง 3 ก.ย.69: 151 จาก 790 ใบในหน้านั้นยังไม่ส่งเสร็จสักจุด = 19% กดไม่ได้)
+    //   ความปลอดภัยยังอยู่: ReviewBoard บล็อกบันทึกด้วย readOnly ทุกเส้นทาง
+    if (!unknownPlate && notDelivered(d)) {
       showToast('warning', `ใบ ${d.documentNo || ''} ยังไม่ส่งเสร็จสักจุด — ยังคิดค่าเที่ยวไม่ได้ รอส่งของเสร็จก่อน`);
       return;
     }
@@ -1223,7 +1223,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
           <h3 className="font-bold text-sm text-brand-navy">{unknownPlate ? 'ใบที่ระบบแยกสาขาไม่ได้' : 'ใบกระจายจากจัสทราน'}</h3>
           <span className="text-[11px] text-natural-muted">
             {unknownPlate
-              ? '— 👁 ดูอย่างเดียว ไม่คิดค่าเที่ยว (รถไม่มีใน Master) · ทุกสาขาเห็นเหมือนกัน'
+              ? '— 👁 เปิดดูได้ แต่บันทึกไม่ได้ ไม่คิดค่าเที่ยว (รถไม่มีใน Master) · ทุกสาขาเห็นเหมือนกัน'
               : '— เลือกใบแล้วตรวจ/แก้ได้เหมือนนำเข้าไฟล์ปกติ ก่อนกดบันทึก'}
           </span>
           {/* เวลาข้อมูล — ให้คนรู้ว่าที่เห็นอยู่เก่าแค่ไหน
@@ -1303,7 +1303,10 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                                 ถ้าปล่อยให้บันทึกได้ = คิดเงินให้รถที่ไม่ใช่ของเรา
                                 และระบบยังชี้ขาดไม่ได้ว่าใบเป็นของสาขาไหน -> บันทึกเข้าสาขาที่เลือกอยู่ = ผิดสาขา */}
                             {unknownPlate
-                              ? <span className="text-[10px] text-natural-muted whitespace-nowrap">👁 ดูอย่างเดียว</span>
+                              // กดเปิดดูรายละเอียดในใบได้ (จุดส่ง/สินค้า/ยอด) แต่บันทึกไม่ได้
+                              // — ปุ่มบันทึกถูกปิดที่ ReviewBoard (readOnly) ไม่ใช่ที่นี่
+                              ? <button onClick={() => useDoc(d)} title="เปิดดูรายละเอียดในใบ (บันทึกไม่ได้ — รถไม่มีใน Master)"
+                                  className="border border-natural-border text-natural-muted hover:text-brand-navy hover:border-brand-navy rounded-lg px-3 py-1 text-[11px] font-semibold whitespace-nowrap">👁 ดูอย่างเดียว</button>
                               : d._alreadySaved && d._drift
                               // 🔄 จัสทรานแก้ใบนี้ทีหลัง -> ให้กดตรวจเพื่ออัปเดต (แล้วกด "ทับใบเดิม")
                               ? <button onClick={() => useDoc(d)} title={`จัสทรานแก้ใบนี้: ${d._drift.added ? '+' + d._drift.added + ' จุด ' : ''}${d._drift.removed ? '-' + d._drift.removed + ' จุด' : ''}`}
@@ -1394,15 +1397,15 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                 <b className="text-brand-navy">ทำไมใบมาอยู่ที่นี่ และแก้ยังไงให้ย้ายไปหน้าปกติ:</b>
                 <div>· <b>ทะเบียนไม่มีใน Master รถ</b> (หรือใบไม่มีทะเบียน) → เพิ่มรถที่เมนู "รถ &amp; คนขับ"</div>
                 <div>· <b>ทะเบียนซ้ำหลายสาขา</b> แล้วปลายทางไม่ตรงพื้นที่ของสาขาไหนเลย → ปิดรถของสาขาที่ไม่ได้ใช้แล้ว (เช่น รถย้ายสาขา) หรือเพิ่มราคาปลายทางนั้นให้สาขาที่วิ่งจริง</div>
-                <div className="mt-1 text-amber-800"><b>หน้านี้ดูอย่างเดียว บันทึกไม่ได้</b> — รถที่ไม่มีใน Master ถือว่าไม่เกี่ยวกับการคิดค่าเที่ยว ถ้าเป็นรถของเราให้เพิ่มก่อน แล้วใบจะย้ายไปหน้า "ดึงจากจัสทราน" ให้บันทึกได้ตามปกติ</div>
+                <div className="mt-1 text-amber-800"><b>หน้านี้เปิดดูรายละเอียดในใบได้ แต่บันทึกไม่ได้</b> — รถที่ไม่มีใน Master ถือว่าไม่เกี่ยวกับการคิดค่าเที่ยว ถ้าเป็นรถของเราให้เพิ่มก่อน แล้วใบจะย้ายไปหน้า "ดึงจากจัสทราน" ให้บันทึกได้ตามปกติ</div>
               </div>
             )}
           </>
         )}
       </div>
 
-      {/* review — ตัวเดียวกับหน้าคำนวณค่าเที่ยว */}
-      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} delivery={pending.delivery} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} collectBackHalfPiece={!!(db.branches as Branch[]).find((b) => b.id === branchId)?.collectBackHalfPiece} rateGroup={(db.vehicles as Vehicle[]).find((v) => v.branchId === branchId && v.status === 'active' && normPlate(v.plateNo) === normPlate(pending?.extracted?.plateNo || ''))?.rateGroup || ''} />}
+      {/* review — ตัวเดียวกับหน้าคำนวณค่าเที่ยว (หน้าทะเบียนไม่รู้จักส่ง readOnly = ดูได้ บันทึกไม่ได้) */}
+      {pending && <ReviewBoard pending={pending} rateMasters={db.rateMasters} setPending={setPending} onPreview={preview} onSave={save} locked={cycle.status === 'closed'} existingTrips={db.tripDocuments} cycles={db.cycles} cycleId={cycle.id} branchId={branchId} delivery={pending.delivery} readOnly={unknownPlate} serviceAreaText={(db.branches as Branch[]).find((b) => b.id === branchId)?.serviceAreaText || ''} branchLabel={(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''} collectBackHalfPiece={!!(db.branches as Branch[]).find((b) => b.id === branchId)?.collectBackHalfPiece} rateGroup={(db.vehicles as Vehicle[]).find((v) => v.branchId === branchId && v.status === 'active' && normPlate(v.plateNo) === normPlate(pending?.extracted?.plateNo || ''))?.rateGroup || ''} />}
 
       {/* filter + search */}
       <div className="flex flex-wrap items-center gap-2">
@@ -1438,7 +1441,7 @@ const JAS_STATUS: Record<number, string> = {
   10: 'ตีกลับ', 11: 'คืนต้นทาง',
 };
 
-function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery, rateMasters = [], collectBackHalfPiece = false, rateGroup = '' }: any) {
+function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [], cycles = [], cycleId, serviceAreaText = '', branchLabel = '', branchId = '', delivery, rateMasters = [], collectBackHalfPiece = false, rateGroup = '', readOnly = false }: any) {
   const ext: ExtractedTripDocument = pending.extracted;
   const prev: TripDocument = pending.preview;
   const needsBox = prev.receipts.some((r) => r.requiresManualBox && (r.manualBoxQty == null || r.manualBoxQty <= 0));
@@ -1524,6 +1527,17 @@ function ReviewBoard({ pending, setPending, onPreview, onSave, existingTrips = [
   if (needsBox) blockReasons.push('ยังไม่กรอกจำนวนกล่อง (ผู้ส่งส่งเป็นชิ้น)');
   if (noVehicle) blockReasons.push('ไม่มีทะเบียนรถนี้ใน Master — เพิ่มรถที่เมนู "รถ & คนขับ" ก่อน');
   if (noPrice) blockReasons.push('ไม่เจอราคาขนส่งของปลายทาง — เพิ่มราคาใน Master / แก้ปลายทางให้ตรง');
+  // 👁 เปิดจากหน้า "ทะเบียนไม่รู้จัก" = ดูได้ แต่บันทึกไม่ได้ (รถไม่เกี่ยวกับการคิดค่าเที่ยว)
+  //
+  // ⚠️ ต้องบล็อกที่นี่ ไม่ใช่พึ่ง noVehicle (Codex P2 — ผมเกือบพลาด):
+  //    หน้านั้นรับใบ 2 กรณี แต่ noVehicle จับได้แค่กรณีเดียว
+  //      1) ทะเบียนไม่มีใน Master        -> noVehicle จับได้
+  //      2) ทะเบียนอยู่หลายสาขา แต่พื้นที่ไม่ตรงสาขาไหนเลย -> ทะเบียน "มี" ใน Master
+  //         จึงไม่มี warning = ไม่ถูกบล็อก (ตอนนี้ยังไม่มีทะเบียนซ้ำสาขา 0 รายการ แต่เกิดได้)
+  //    และถ้าผู้ใช้ "แก้ทะเบียน" ในหน้าตรวจให้เป็นรถที่รู้จัก noVehicle จะหายไปทันที
+  //    -> บันทึกได้ ทั้งที่หน้าเขียนว่าบันทึกไม่ได้ = หน้าจอโกหก
+  //    บล็อกด้วย readOnly จึงครอบคลุมทุกเส้นทาง ไม่ขึ้นกับข้อมูลในใบ
+  if (readOnly) blockReasons.push('ใบนี้เปิดจากหน้า "ทะเบียนไม่รู้จัก" — ดูได้อย่างเดียว บันทึกไม่ได้ (รถไม่มีใน Master = ไม่คิดค่าเที่ยว) ถ้าเป็นรถของเราให้เพิ่มที่เมนู "รถ & คนขับ" ก่อน แล้วใบจะย้ายไปหน้า "ดึงจากจัสทราน"');
   // isDup แก้ได้ด้วย "ทับใบเดิม" (แยกจาก block อื่นที่ต้องแก้ข้อมูล) — block อื่นยังต้องแก้ก่อน
   const hardBlockReasons = blockReasons.filter((r) => !r.startsWith('เลขใบกระจายซ้ำ'));
   const blocked = hardBlockReasons.length > 0;
