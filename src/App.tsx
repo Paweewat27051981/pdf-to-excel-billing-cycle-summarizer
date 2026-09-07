@@ -2996,6 +2996,9 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
   // นำเข้าราคาแบบผสาน: ตรวจก่อน (dryRun) -> โชว์ว่าอะไร ใหม่/อัปเดต/เท่าเดิม -> ให้ยืนยันแล้วค่อยเขียนจริง
   const onImportRates = async (files: FileList) => {
     if (!canEdit) return showToast('warning', 'แก้ราคาได้เฉพาะบัญชีผู้ดูแลราคา (admin)');
+    // อยู่แท็บไหน = นำเข้าที่นั่น: "ราคาเฉพาะรอบ" -> ลงรอบที่เลือก · "ราคาหลัก" -> ลง Master
+    const importCycleId = mode === 'cycle' ? cycle?.id : undefined;
+    if (mode === 'cycle' && !importCycleId) return showToast('warning', 'ยังไม่ได้เลือกรอบ');
     const file = files[0];
     if (!file) return;
     if (!/\.xlsx?$/i.test(file.name)) return showToast('error', 'รองรับเฉพาะไฟล์ Excel (.xls/.xlsx)');
@@ -3004,12 +3007,16 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
     setImporting(true);
     let prev: any;
     try {
-      prev = await api('/api/import-rates?dryRun=1', 'POST', { branchId, fileBase64: b64 });
+      // แท็บ "ราคาเฉพาะรอบ" -> ส่ง cycleId ไปด้วย = นำเข้าลงราคาเฉพาะรอบนั้น ไม่แตะ Master
+      // (ราคาจากส่วนกลางเปลี่ยนทุกครึ่งเดือนตามน้ำมัน — ถ้าเขียน Master จะกระทบทุกงวดย้อนหลัง)
+      prev = await api('/api/import-rates?dryRun=1', 'POST', { branchId, fileBase64: b64, cycleId: importCycleId });
     } catch (e: any) { setImporting(false); clearFile(); return showToast('error', e.message); }
     setImporting(false);
 
     const money = (n: any) => Number(n).toLocaleString('th-TH', { maximumFractionDigits: 2 });
-    if (!prev.createdCount && !prev.updatedCount) {
+    // โหมดรอบ: ถึงราคาจะ "เท่าเดิม" ก็ยังต้องนำเข้า เพื่อ "ล็อก" ราคาไว้กับรอบนั้น
+    //   (ไม่งั้นรอบนี้ยังลอยตาม Master — วันหลังแก้ Master แล้ว Recalculate ยอดจะเปลี่ยนย้อนหลัง)
+    if (!prev.createdCount && !prev.updatedCount && !importCycleId) {
       clearFile();
       return alertBox('ไม่มีอะไรต้องเปลี่ยน', [
         `ราคาในไฟล์ตรงกับระบบทั้งหมด (${prev.sameCount} รายการ)`,
@@ -3022,7 +3029,11 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
       [...items.slice(0, cap).map(fmt), ...(total > cap ? [`<div style="color:#64748b">...และอีก ${total - cap} รายการ</div>`] : [])].join('');
     const html = [
       `<div style="text-align:left;font-size:13px;line-height:1.7">`,
-      `<div><b>🆕 เพิ่มใหม่ ${prev.createdCount}</b> · <b>🔄 อัปเดตราคา ${prev.updatedCount}</b> · ⏸️ เท่าเดิม ${prev.sameCount}</div>`,
+      // บอกให้ชัดว่าเขียนลงที่ไหน — คนละผลลัพธ์กันมาก (รอบเดียว vs ทุกรอบ)
+      importCycleId
+        ? `<div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:6px 10px;margin-bottom:8px">🔑 ลง <b>ราคาเฉพาะรอบ "${esc(cycle?.name || '')}"</b> — ราคาเดิมของรอบก่อนหน้าไม่เปลี่ยน<div style="color:#047857;font-size:12px">รอบถัดไปที่เปิดใหม่จะสืบทอดราคานี้ไปเอง จนกว่าจะนำเข้าไฟล์ใหม่${prev.createdCount ? ` · ปลายทางใหม่ ${prev.createdCount} รายการจะถูกเพิ่มเข้าราคาหลักด้วย โดยเริ่มมีผล ${esc(cycle?.startDate || '')}` : ''}</div></div>`
+        : `<div style="background:#FEF3C7;border:1px solid #FCD34D;border-radius:8px;padding:6px 10px;margin-bottom:8px">⚠️ ลง <b>ราคาหลัก (ทุกรอบ)</b> — มีผลกับทุกงวดที่ไม่มีราคาเฉพาะรอบ<div style="color:#92400E;font-size:12px">ถ้าต้องการให้มีผลเฉพาะงวดเดียว ให้กดแท็บ "ราคาเฉพาะรอบ" ก่อนนำเข้า</div></div>`,
+      `<div><b>🆕 เพิ่มใหม่ ${prev.createdCount}</b> · <b>🔄 อัปเดตราคา ${prev.updatedCount}</b> · ${importCycleId ? `<b>🔒 ล็อกราคาเดิมไว้กับรอบ ${prev.sameCount}</b>` : `⏸️ เท่าเดิม ${prev.sameCount}`}</div>`,
       prev.missingCount ? `<div style="color:#64748b">ℹ️ มีในระบบแต่ไม่มีในไฟล์ ${prev.missingCount} รายการ — คงไว้ตามเดิม (ไม่ลบ)</div>` : '',
       prev.updated?.length ? `<div style="margin-top:10px"><b>🔄 ราคาที่จะเปลี่ยน</b></div>` +
         rows(prev.updated, prev.updatedCount, 15, (u: any) => {
@@ -3037,16 +3048,18 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
       `</div>`,
     ].join('');
     const ok = await confirmAction({
-      title: 'ยืนยันนำเข้าราคา (ผสานกับของเดิม)',
+      title: importCycleId ? `ยืนยันนำเข้าราคาเฉพาะรอบ "${cycle?.name || ''}"` : 'ยืนยันนำเข้าราคาหลัก (ทุกรอบ)',
       html,
-      confirmText: `นำเข้า (${prev.createdCount + prev.updatedCount} รายการ)`,
+      // โหมดรอบล็อกราคาทั้งไฟล์ (รวมที่เท่าเดิม) จึงนับ sameCount ด้วย
+      confirmText: `นำเข้า (${prev.createdCount + prev.updatedCount + (importCycleId ? prev.sameCount : 0)} รายการ)`,
     });
     if (!ok) { clearFile(); return; }
 
     setImporting(true);
     try {
-      const res = await api('/api/import-rates', 'POST', { branchId, fileBase64: b64 });
-      showToast('success', `นำเข้าสำเร็จ — เพิ่มใหม่ ${res.createdCount} · อัปเดต ${res.updatedCount} · เท่าเดิม ${res.sameCount}`);
+      const res = await api('/api/import-rates', 'POST', { branchId, fileBase64: b64, cycleId: importCycleId });
+      showToast('success', (res.cycleMode ? `นำเข้าราคารอบ "${res.cycleName}" สำเร็จ — ` : 'นำเข้าสำเร็จ — ') +
+        `เพิ่มใหม่ ${res.createdCount} · อัปเดต ${res.updatedCount} · เท่าเดิม ${res.sameCount}`);
       if (res.summary?.length) alertBox('สรุปการนำเข้าราคา', res.summary.join('\n'));
       reload();
     } catch (e: any) { showToast('error', e.message); }

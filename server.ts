@@ -1337,7 +1337,7 @@ async function startServer() {
   // - อัปเดตราคาเก็บ rateMasterHistory เหมือนแก้ทีละช่อง เพื่อตรวจย้อนหลังได้
   app.post('/api/import-rates', requireRateEditor, async (req, res) => {
     try {
-      const { branchId, fileBase64 } = req.body as { branchId: string; fileBase64: string };
+      const { branchId, fileBase64, cycleId } = req.body as { branchId: string; fileBase64: string; cycleId?: string };
       const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true' || req.body?.dryRun === true;
       if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
       if (!fileBase64) return res.status(400).json({ error: 'ต้องส่งไฟล์ Excel' });
@@ -1372,7 +1372,14 @@ async function startServer() {
       ].join('|');
 
       // เทียบเฉพาะราคาที่ "ใช้งานอยู่ ณ วันนี้" — ราคาเก่าที่หมดอายุแล้วต้องคงไว้เป็นประวัติ ห้ามถูกทับ
-      const today = new Date().toISOString().slice(0, 10);
+      //
+      // โหมดรอบ: ต้องเทียบด้วย "วันแรกของรอบนั้น" ไม่ใช่วันนี้ (Codex P2)
+      //   เพราะราคาที่สร้างจากการนำเข้ารอบก่อนหน้ามี effectiveFrom = วันเริ่มรอบ
+      //   ถ้านำเข้าล่วงหน้า (งวดยังไม่ถึง) แล้วใช้ "วันนี้" จะมองไม่เห็นราคาพวกนั้น
+      //   -> รายงานว่าเป็นของใหม่ แล้วสร้างแถวซ้ำใน Master (พอซ้ำจะกลายเป็น ambiguous
+      //      ทำให้นำเข้าครั้งถัดไปข้ามทั้งหมด = ราคาไม่อัปเดตเงียบ ๆ)
+      const cycForDate = req.body?.cycleId ? db.cycles.find((c) => c.id === req.body.cycleId) : null;
+      const today = (cycForDate?.startDate) || new Date().toISOString().slice(0, 10);
       const inEffect = (r: RateMaster) =>
         (!r.effectiveFrom || r.effectiveFrom <= today) && (!r.effectiveTo || r.effectiveTo >= today);
       const all = db.rateMasters.filter((r) => r.branchId === branchId);
@@ -1390,6 +1397,33 @@ async function startServer() {
         `${(r.productCategory || 'normal') !== 'normal' ? ` [${r.productCategory}]` : ''}` +
         ` (${r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'})`;
 
+      // 🔑 โหมด "ราคาเฉพาะรอบ" — ส่ง cycleId มา = เขียนลง rateOverrides ของรอบนั้น ไม่แตะ Master
+      //
+      // ทำไมต้องมีโหมดนี้ (ผู้ใช้กำหนด 4 ก.ย.69):
+      //   ราคาจากส่วนกลางเปลี่ยนทุกครึ่งเดือนตามราคาน้ำมัน -> ถ้าเขียนลง Master จะกระทบทุกงวด
+      //   ย้อนหลังเมื่อกด Recalculate. เขียนลง override แทน = มีผลเฉพาะรอบนั้น
+      //   และตอนเปิดรอบใหม่ระบบคัดลอก override จากรอบก่อนอยู่แล้ว (ดู /api/cycles ~1062)
+      //   -> รอบถัดไปสืบทอดราคาเดิมเองจนกว่าจะนำเข้าไฟล์ใหม่ ตรงกับที่ผู้ใช้ต้องการ
+      //
+      // ราคาที่ใช้เทียบต้องเป็น "ราคาที่รอบนั้นคิดจริง" = override ถ้ามี ไม่งั้นใช้ Master
+      //   ถ้าเทียบกับ Master เฉย ๆ จะรายงานผิด (บอกว่าเปลี่ยน ทั้งที่ override เดิมตรงกับไฟล์แล้ว)
+      const cyc = cycleId ? db.cycles.find((c) => c.id === cycleId) : null;
+      if (cycleId && !cyc) return res.status(404).json({ error: 'ไม่พบรอบที่ระบุ' });
+      if (cyc && cyc.status === 'closed') {
+        return res.status(400).json({ error: `รอบ "${cyc.name}" ถูกปิดอยู่ — เปิดรอบก่อนจึงนำเข้าราคาได้` });
+      }
+      const ovByRate = new Map<string, RateOverride>();
+      if (cyc) {
+        for (const o of db.rateOverrides) {
+          if (o.branchId === branchId && o.cycleId === cyc.id) ovByRate.set(o.rateMasterId, o);
+        }
+      }
+      // ราคาที่รอบนี้ใช้จริงของแถว Master นั้น
+      const effPrice = (m: RateMaster) => {
+        const o = ovByRate.get(m.id);
+        return o ? { price: Number(o.price), pieceThreshold: o.pieceThreshold ?? null } : { price: Number(m.price), pieceThreshold: m.pieceThreshold ?? null };
+      };
+
       const created: any[] = [], updated: any[] = [], same: any[] = [];
       const seenKeys = new Set<string>();
       const dupInFile: string[] = [];
@@ -1403,11 +1437,14 @@ async function startServer() {
         if (!old) { created.push({ key: k, row: r, label: label(r), price: r.price }); continue; }
         // จุดตัดชิ้นไม่อยู่ในกุญแจ (แก้จุดตัด = แก้ราคาเดิม ไม่ใช่สร้างใหม่) จึงต้องเทียบตรงนี้ด้วย
         const thrOf = (x: any) => (x.pieceThreshold == null || x.pieceThreshold === '' ? null : Number(x.pieceThreshold));
-        const oldThr = thrOf(old), newThr = thrOf(r);
-        if (Number(old.price) !== Number(r.price) || oldThr !== newThr) {
-          updated.push({ key: k, row: r, old, label: label(r), oldPrice: old.price, newPrice: r.price,
+        // โหมดรอบ: เทียบกับ "ราคาที่รอบนี้คิดจริง" (override ถ้ามี) ไม่ใช่ราคา Master
+        const cur = cyc ? effPrice(old) : { price: Number(old.price), pieceThreshold: thrOf(old) };
+        const oldThr = cyc ? (cur.pieceThreshold == null ? null : Number(cur.pieceThreshold)) : thrOf(old);
+        const newThr = thrOf(r);
+        if (Number(cur.price) !== Number(r.price) || oldThr !== newThr) {
+          updated.push({ key: k, row: r, old, label: label(r), oldPrice: cur.price, newPrice: r.price,
             oldThreshold: oldThr, newThreshold: newThr });
-        } else same.push({ key: k, label: label(r) });
+        } else same.push({ key: k, label: label(r), old, row: r, newThreshold: newThr });
       }
       // ราคาที่ระบบมีแต่ไม่มีในไฟล์ — รายงานให้เห็น แต่ "ไม่แตะ" ตามที่เจ้าของกำหนด
       // ไม่นับกลุ่มที่กุญแจซ้ำ (ambiguous) ซ้ำเข้ามาอีก เพราะรายงานแยกไว้แล้ว ไม่งั้นผู้ใช้เห็นตัวเลขซ้ำซ้อน
@@ -1444,6 +1481,53 @@ async function startServer() {
         effectiveFrom: c.row.effectiveFrom || '2020-01-01', effectiveTo: c.row.effectiveTo ?? null,
         createdBy: 'import', createdAt: now,
       } as RateMaster));
+      // ---- โหมดรอบ: เขียนลง rateOverrides ของรอบนั้น ไม่แตะราคา Master ----
+      // ปลายทางใหม่ที่ยังไม่มีใน Master: เพิ่มเข้า Master ก่อน (เพราะ override ต้องอ้าง rateMasterId)
+      //   แล้วค่อยทับด้วย override -> ปลายทางใหม่ใช้งานได้ทันทีในรอบนี้ (ผู้ใช้เลือกทางนี้)
+      if (cyc) {
+        // ปลายทางใหม่: ต้องเพิ่มเข้า Master ก่อน (override อ้าง rateMasterId)
+        // ⚠️ แต่ต้องตั้ง effectiveFrom = วันแรกของงวดนี้ (Codex P2)
+        //    ถ้าปล่อยเป็น 2020-01-01 ตามค่าเริ่มต้น -> งวดเก่า (มิ.ย./ก.ค./ส.ค.) ที่ไม่มี override
+        //    จะเห็นราคานี้ด้วย = ขัดกับที่หน้าจอสัญญาว่า "ไม่กระทบรอบอื่น"
+        //    ตั้งตามวันเริ่มงวด -> งวดก่อนหน้าไม่เห็น · งวดถัดไปเห็น (สืบทอดต่อ ตรงตามที่ผู้ใช้ต้องการ)
+        for (const r of newRows) {
+          r.effectiveFrom = cyc.startDate || r.effectiveFrom;
+          db.rateMasters.push(r);
+        }
+        if (newRows.length) await saveRecords('rateMasters', newRows);
+
+        const ovs: RateOverride[] = [];
+        const put = (rateMasterId: string, price: number, thr: number | null) => {
+          const ex = db.rateOverrides.find((o) => o.branchId === branchId && o.cycleId === cyc.id && o.rateMasterId === rateMasterId);
+          if (ex) { ex.price = price; ex.pieceThreshold = thr; ovs.push(ex); }
+          else {
+            const o: RateOverride = { id: generateId('rov'), branchId, cycleId: cyc.id, rateMasterId, price, pieceThreshold: thr };
+            db.rateOverrides.push(o); ovs.push(o);
+          }
+        };
+        for (const u of updated) put(u.old.id, Number(u.row.price), u.newThreshold);
+        for (let i = 0; i < newRows.length; i++) {
+          const src = created[i];
+          put(newRows[i].id, Number(src.row.price),
+            src.row.pieceThreshold == null || src.row.pieceThreshold === '' ? null : Number(src.row.pieceThreshold));
+        }
+        // ⭐ แถวที่ "ราคาเท่าเดิม" ก็ต้องเขียน override ด้วย (Codex P1)
+        //   ไม่งั้นรอบนี้จะยัง "ลอยตาม Master" — วันหลังมีคนแก้ Master แล้วกด Recalculate
+        //   ราคาของรอบที่ปิดงบไปแล้วจะเปลี่ยนย้อนหลัง = ยอดเพี้ยน
+        //   ผู้ใช้กำหนดว่า "ราคาหลัก = ราคาเฉพาะงวดนั้น ๆ" -> ต้องล็อกราคาทั้งไฟล์ไว้กับรอบ
+        //   (สำคัญมากตอนนำเข้าไฟล์เดิมซ้ำ เพราะทุกแถวจะกลายเป็น "เท่าเดิม" ทั้งหมด)
+        for (const s of same) {
+          if (!s.old) continue;                       // กันข้อมูลเก่าที่ไม่มี old ติดมา
+          put(s.old.id, Number(s.row.price), s.newThreshold ?? null);
+        }
+        if (ovs.length) await saveRecords('rateOverrides', ovs);
+        return res.status(201).json({
+          success: true, ...preview, cycleMode: true, cycleName: cyc.name,
+          overrideCount: ovs.length,
+          changedRateIds: [...updated.map((u) => u.old.id), ...newRows.map((r) => r.id)],
+        });
+      }
+
       const histories: RateMasterHistory[] = [];
       const changedRows: RateMaster[] = [];
       for (const u of updated) {
