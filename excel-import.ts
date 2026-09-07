@@ -311,9 +311,22 @@ export function parseRateExcel(buffer: Buffer): { rates: ParsedRate[]; summary: 
       }
     }
   }
+  // จับคู่ราคาชิ้นให้แถวเหมา: "ชื่อตรงเป๊ะ" ต้องชนะ "ชื่อมีคำนี้อยู่" เสมอ
+  // เคยพลาดจริง (นครสวรรค์ 7 ก.ย. 69): ไฟล์มีทั้ง "เมือง" 9.00 และ "เมืองเพชรบูรณ์" 9.20
+  //   แถวเหมา "เมืองเพชรบูรณ์" ถูกจับกับ "เมือง" เพราะเจอก่อนในไฟล์ (includes) -> ราคาชิ้นลดเองตอนนำเข้ากลับ
+  //   ทั้งที่มีแถวชื่อตรงเป๊ะอยู่ (บั๊กตระกูลเดียวกับ "เมือง" จับเป็น "เมืองปาน" ในตัวคิดเงิน)
+  // ถ้าไม่มีชื่อตรงเป๊ะ ค่อยถอยไปใช้แบบมีคำนี้อยู่ โดยเลือกคำที่ "ยาวที่สุด" (เจาะจงที่สุด) ไม่ใช่ตัวแรกที่เจอ
   const pieceFor = (prov: string, dist: string): number | null => {
     const np = normTxt(prov);
-    for (const o of pieceOverride) if (o.prov === np && dist.includes(o.distKw)) return o.price;
+    const nd = normTxt(dist);
+    const exact = pieceOverride.find((o) => o.prov === np && normTxt(o.distKw) === nd);
+    if (exact) return exact.price;
+    let best: { distKw: string; price: number } | null = null;
+    for (const o of pieceOverride) {
+      if (o.prov !== np || !dist.includes(o.distKw)) continue;
+      if (!best || o.distKw.length > best.distKw.length) best = o;
+    }
+    if (best) return best.price;
     return pieceDefault[np] ?? null;
   };
 
