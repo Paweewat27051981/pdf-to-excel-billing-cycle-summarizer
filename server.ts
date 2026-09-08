@@ -1938,6 +1938,75 @@ async function startServer() {
     }
   });
 
+  // 🛟 กู้คืนใบกระจายจากไฟล์สำรอง — เขียนค่าที่ส่งมา "ตรงๆ" ไม่คำนวณใหม่
+  //
+  // ทำไมต้องมี: ระบบไม่เคยมีทางเขียนใบกลับเป็นค่าเดิมเลย มีแต่ recalculate
+  // ซึ่งคำนวณด้วยราคา "ปัจจุบัน" -> ถ้าแก้ใบงวดเก่าพลาด จะย้อนกลับไม่ได้เลย
+  // (เจอจริง 8 ก.ย.69: recalc 1,961 ใบงวด มิ.ย.-ส.ค. ด้วยราคา ก.ย. แล้วย้อนไม่ได้
+  //  เพราะราคาเดิมของงวดนั้นไม่มีใน rateOverrides และราคาหลักถูกทับไปแล้ว)
+  //
+  // กติกาความปลอดภัย:
+  //   - ต้องเป็น admin (แก้ยอดเงินโดยตรง = สิทธิ์สูงสุด)
+  //   - ใบต้องมีอยู่จริง + id/branchId/cycleId ต้องตรงกับของเดิม (กันเขียนผิดใบ/ผิดสาขา)
+  //   - รอบต้องเปิดอยู่ (รอบปิด = ห้ามแตะ เหมือนทุก endpoint)
+  //   - ?dryRun=1 -> บอกว่าจะเปลี่ยนอะไร โดยไม่เขียน
+  app.post('/api/trips/restore', requireRateEditor, async (req, res) => {
+    try {
+      const dryRun = req.query.dryRun === '1' || req.query.dryRun === 'true';
+      const trips = Array.isArray(req.body?.trips) ? (req.body.trips as TripDocument[]) : null;
+      if (!trips || !trips.length) return res.status(400).json({ error: 'ต้องส่ง trips (array ของใบที่จะกู้คืน)' });
+      if (trips.length > 500) return res.status(400).json({ error: `ส่งมามากเกินไป (${trips.length}) — แบ่งเป็นชุดละไม่เกิน 500 ใบ` });
+
+      const db = await getDb();
+      const byId = new Map(db.tripDocuments.map((t) => [t.id, t]));
+      const restored: TripDocument[] = [];
+      const changes: { docNo: string; old: number; new: number; delta: number }[] = [];
+      const problems: string[] = [];
+
+      for (const t of trips) {
+        const cur = byId.get(t.id);
+        if (!cur) { problems.push(`${t.documentNo || t.id}: ไม่พบใบนี้ในระบบ`); continue; }
+        // กันเขียนผิดใบ: ต้องเป็นใบเดียวกันจริงๆ ทั้งเลขใบ/สาขา/รอบ
+        if ((cur.documentNo || '') !== (t.documentNo || '')) { problems.push(`${t.documentNo}: เลขใบไม่ตรงกับ id นี้ (${cur.documentNo})`); continue; }
+        if (cur.branchId !== t.branchId) { problems.push(`${t.documentNo}: สาขาไม่ตรง`); continue; }
+        if (cur.cycleId !== t.cycleId) { problems.push(`${t.documentNo}: รอบไม่ตรง`); continue; }
+        const cyc = db.cycles.find((c) => c.id === cur.cycleId);
+        if (!cyc) { problems.push(`${t.documentNo}: ไม่พบรอบ`); continue; }
+        if (cyc.status === 'closed') { problems.push(`${t.documentNo}: รอบ "${cyc.name}" ปิดอยู่`); continue; }
+
+        const delta = round2(Number(t.tripAmount || 0) - Number(cur.tripAmount || 0));
+        if (Math.abs(delta) > 0.0001 || cur.rateType !== t.rateType) {
+          changes.push({ docNo: cur.documentNo, old: Number(cur.tripAmount || 0), new: Number(t.tripAmount || 0), delta });
+        }
+        // คง id/branchId/cycleId ของจริงไว้เสมอ (ไม่เชื่อค่าที่ส่งมา 100%)
+        restored.push({ ...t, id: cur.id, branchId: cur.branchId, cycleId: cur.cycleId });
+      }
+
+      const summary = {
+        total: trips.length,
+        willRestore: restored.length,
+        changedCount: changes.length,
+        totalDelta: round2(changes.reduce((s, c) => s + c.delta, 0)),
+        changes: changes.slice(0, 100),
+        problems: problems.slice(0, 50),
+        problemCount: problems.length,
+      };
+      if (dryRun) return res.json({ dryRun: true, ...summary });
+      if (!restored.length) return res.status(422).json({ error: 'ไม่มีใบที่กู้คืนได้', ...summary });
+
+      const idx = new Map(db.tripDocuments.map((t, i) => [t.id, i]));
+      for (const t of restored) {
+        const i = idx.get(t.id);
+        if (i != null) db.tripDocuments[i] = t;
+      }
+      await saveRecords('tripDocuments', restored);
+      res.json({ success: true, ...summary });
+    } catch (err: any) {
+      console.error('trips/restore error:', err);
+      res.status(500).json({ error: `กู้คืนไม่สำเร็จ: ${err.message}` });
+    }
+  });
+
   // Recalculate: คำนวณ trip เดิมทั้งรอบใหม่ด้วย master ปัจจุบัน
   // ?dryRun=1 -> คำนวณเทียบ old vs new แล้วคืน diff โดยไม่บันทึก (ดูก่อนแตะข้อมูลจริง)
   app.post('/api/cycles/:id/recalculate', async (req, res) => {
@@ -2001,6 +2070,62 @@ async function startServer() {
         notFound = docNos.filter((n) => !found.has(n));
         inCycle = inCycle.filter((t) => docNoSet.has((t.documentNo || '').trim()));
         if (!inCycle.length) return res.status(404).json({ error: `ไม่พบใบที่ระบุในรอบนี้: ${docNos.join(', ')}` });
+      }
+
+      // ⚠️ ด่านกัน "ราคาผิดยุค" — recalc งวดเก่าที่ไม่มีราคาเฉพาะรอบ = เอาราคาปัจจุบันไปคิดงานเดือนก่อน
+      //
+      // ราคาส่วนกลางเปลี่ยนทุกครึ่งเดือนตามราคาน้ำมัน ระบบคิดจาก rateOverrides ของงวดนั้นก่อน
+      // ถ้าปลายทางไหนไม่มี override -> ถอยไปใช้ rateMasters ปัจจุบัน
+      // -> งานเดือน มิ.ย. ถูกคิดด้วยราคาที่ import เข้ามาเดือน ก.ย. = ยอดเพี้ยนทั้งงวด
+      //
+      // เจอจริง 8 ก.ย.69: recalc 1,961 ใบข้ามงวด มิ.ย.-ส.ค. โดยงวด มิ.ย. มี override แค่ 2 รายการ
+      //   -> เกือบทั้งงวดถูกคิดด้วยราคา ก.ย. เช่น JB0826049564 (4 มิ.ย.) 4,100 -> 3,800
+      //   -> ย้อนกลับไม่ได้ (ตอนนั้นยังไม่มี /api/trips/restore)
+      //
+      // กติกา: งวดที่ "ไม่ใช่งวดปัจจุบัน" + มีใบที่ราคาไม่ถูกล็อกไว้กับงวด -> บล็อก
+      //   ปลดล็อกด้วย body.allowStaleRates=true (ผู้เรียกยืนยันว่ารู้ตัว)
+      //
+      // ต้องตรวจถึง "ราคาที่ใบนั้นใช้จริง" ไม่ใช่แค่ "สาขานี้มี override ไหม" (Codex P1)
+      //   สาขาที่มี override แค่ 1 รายการ จะปลดล็อกทั้งสาขา แล้วใบที่ปลายทางไม่มี override
+      //   ก็ยังถูกคิดด้วยราคาหลักปัจจุบันอยู่ดี = ช่องโหว่เดิมเป๊ะ
+      // วิธีตรวจ: ใบไหนมีใบรับที่ "จับราคาได้ (flat/piece ไม่ null) แต่ราคานั้นไม่มี override ของงวดนี้"
+      //   -> ใบนั้นเสี่ยงราคาผิดยุค. เทียบด้วยราคาที่บันทึกไว้ในใบ vs override ที่มี
+      //
+      // วันที่ต้องใช้เวลาไทย ไม่ใช่ UTC (Codex P2) — UTC ช้ากว่าไทย 7 ชม.
+      //   ตี 1 ของวันที่ 1 (ไทย) UTC ยังเป็นวันที่ 31 -> งวดปัจจุบันถูกมองเป็นงวดเก่า แล้วบล็อกผิด
+      const today = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10); // Asia/Bangkok
+      const isCurrentCycle = cycle.startDate <= today && today <= cycle.endDate;
+      if (!isCurrentCycle && !req.body?.allowStaleRates) {
+        // ราคาที่ถูกล็อกไว้กับงวดนี้ (ต่อสาขา) — เก็บเป็นราคาจริง เพื่อเทียบกับที่ใบใช้อยู่
+        const lockedPrices = new Map<string, Set<number>>(); // branchId -> ราคาที่ล็อกไว้
+        for (const o of db.rateOverrides) {
+          if (o.cycleId !== cycle.id) continue;
+          if (!lockedPrices.has(o.branchId)) lockedPrices.set(o.branchId, new Set());
+          lockedPrices.get(o.branchId)!.add(Number(o.price));
+        }
+        // ใบที่ "ใช้ราคาซึ่งไม่ได้ถูกล็อกไว้กับงวดนี้" = เสี่ยงถูกคิดด้วยราคาหลักปัจจุบัน
+        const atRisk = inCycle.filter((t) => {
+          const locked = lockedPrices.get(t.branchId);
+          const used = new Set<number>();
+          for (const r of (t.receipts || [])) {
+            if (r.flatPrice != null) used.add(Number(r.flatPrice));
+            if (r.piecePrice != null) used.add(Number(r.piecePrice));
+          }
+          if (!used.size) return false;                       // ไม่มีราคาให้เทียบ -> ไม่นับเสี่ยง
+          if (!locked || !locked.size) return true;            // สาขานี้ไม่ล็อกอะไรเลย -> เสี่ยงทุกใบ
+          return [...used].some((p) => !locked.has(p));        // มีราคาที่ไม่ได้ล็อก -> เสี่ยง
+        });
+        if (atRisk.length) {
+          const brs = [...new Set(atRisk.map((t) => t.branchId))];
+          const names = brs.map((b) => db.branches.find((x) => x.id === b)?.name || b).join(', ');
+          return res.status(409).json({
+            error: `รอบ "${cycle.name}" ไม่ใช่รอบปัจจุบัน และมี ${atRisk.length} ใบ (สาขา ${names}) ` +
+              `ที่ราคาไม่ได้ถูกล็อกไว้กับงวดนี้ — คำนวณใหม่จะใช้ราคาหลักปัจจุบัน (คนละยุคกับตอนทำงาน) ทำให้ยอดเพี้ยน. ` +
+              `ให้ตั้ง "ราคาเฉพาะรอบ" ของงวดนี้ให้ครบก่อน หรือส่ง allowStaleRates=true ถ้ายืนยันว่าต้องการจริง`,
+            staleRates: true, cycleName: cycle.name, atRiskCount: atRisk.length,
+            atRiskBranches: brs, atRiskDocNos: atRisk.slice(0, 20).map((t) => t.documentNo),
+          });
+        }
       }
 
       if (dryRun) {
