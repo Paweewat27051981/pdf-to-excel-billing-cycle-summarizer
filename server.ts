@@ -1948,6 +1948,16 @@ async function startServer() {
       if (!cycle) return res.status(404).json({ error: 'ไม่พบรอบ' });
 
       // คำนวณใหม่จาก trip เดิม (ไม่แก้ cache จนกว่าจะ apply จริง)
+      //
+      // ⚠️ ห้ามส่ง rateChoice = t.rateType (เคยส่ง — เป็นบั๊กที่ทำให้ recalculate ไร้ผล)
+      //   rateChoice = "ผู้ใช้บังคับเลือกเอง" ซึ่งชนะการเลือกอัตโนมัติเสมอ (calc.ts:746)
+      //   แต่ t.rateType คือ "ผลลัพธ์ที่ระบบเลือกตอนบันทึก" ไม่ใช่เจตนาของผู้ใช้
+      //   ส่งกลับเข้าไป = ล็อกผลเดิมไว้ -> ใบที่บันทึกตอนราคายังไม่ครบจะคิดชิ้นค้างตลอดไป
+      //   แม้ราคาเหมาจะเข้าระบบทีหลังและสูงกว่า (กติกาคือเลือกยอดสูงกว่า)
+      //   เจอจริง 7 ก.ย.69: 34 ใบทั่ว 4 สาขา คิดเงินขาดรวม 24,401.76 บาท
+      //   กด "คำนวณใหม่" กี่ครั้งก็ไม่ขยับ เพราะ rateChoice ล็อกไว้
+      // ส่งเฉพาะ rateChoiceLocked = "ผู้ใช้กดเลือกเอง" เท่านั้น (null = ให้ระบบเลือกใหม่)
+      //   -> ใบที่คนจงใจเลือก คงไว้ตามเจตนา · ใบที่ระบบเลือกให้ คำนวณใหม่ตามราคาปัจจุบัน
       const recompute = (t: TripDocument): TripDocument => {
         const extracted: ExtractedTripDocument = {
           documentNo: t.documentNo,
@@ -1955,7 +1965,7 @@ async function startServer() {
           plateNo: t.plateNo,
           provinceRaw: t.provinceRaw,
           districtRaw: t.districtRaw,
-          rateChoice: t.rateType ?? undefined,
+          rateChoice: t.rateChoiceLocked ?? undefined,
           docNote: t.docNote,
           receipts: t.receipts.map((r) => ({
             receiptNo: r.receiptNo,
@@ -2099,13 +2109,15 @@ async function startServer() {
       // recompute เฉพาะใบที่เกี่ยว -> เทียบยอด (ไม่บันทึกอะไร — read only)
       const affected: { docNo: string; plate: string; old: number; new: number; delta: number }[] = [];
       for (const t of related) {
+        // ใช้ rateChoiceLocked เหมือน recalculate (ดูคอมเมนต์ที่นั่น) — ต้องตรงกันเป๊ะ
+        // ไม่งั้นแถบเตือนจะบอกยอดหนึ่ง แต่กดอัปเดตแล้วได้อีกยอดหนึ่ง
         const extracted: ExtractedTripDocument = {
           documentNo: t.documentNo,
           documentDate: t.documentDate,
           plateNo: t.plateNo,
           provinceRaw: t.provinceRaw,
           districtRaw: t.districtRaw,
-          rateChoice: t.rateType ?? undefined,
+          rateChoice: t.rateChoiceLocked ?? undefined,
           docNote: t.docNote,
           receipts: t.receipts.map((r) => ({
             receiptNo: r.receiptNo, receiverName: r.receiverName, senderName: r.senderName,

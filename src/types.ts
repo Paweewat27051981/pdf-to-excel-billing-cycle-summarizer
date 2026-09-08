@@ -272,6 +272,12 @@ export interface TripDocument {
   rateType: PriceType | null;
   rateValue: number | null; // ราคาที่ใช้ (เหมา หรือ ราคา/ชิ้น)
   rateOptions: { flat: number | null; piece: number | null }; // ราคาที่เลือกได้สำหรับปลายทางนี้
+  // ผู้ใช้ "กดเลือกเอง" ว่าจะคิดเหมา/ชิ้น (ไม่ใช่ผลที่ระบบเลือกอัตโนมัติ)
+  // แยกจาก rateType เพราะ recalculate ต้องรู้ว่าอันไหนคือ "เจตนาคน" (ห้ามเปลี่ยน)
+  // อันไหนคือ "ผลอัตโนมัติ" (ต้องคำนวณใหม่ตามราคาปัจจุบัน)
+  // เดิมไม่เก็บ -> recalculate ส่ง rateType กลับเข้าไปเป็น rateChoice = ล็อกผลเดิมตลอดกาล
+  // ทำให้ใบที่บันทึกตอนราคายังไม่ครบ คิดเงินขาดถาวร (34 ใบ / 24,401.76 บาท เจอ 7 ก.ย.69)
+  rateChoiceLocked?: PriceType | null;
   wholeDocFlat?: boolean;    // true = คิดเหมาทั้งใบ (พิเศษ/ชุดอำเภอ) ไม่ใช่ราคาต่อจุด
   totalQty: number;         // รวมจำนวนจริงทุกใบรับ
   billingQty: number;       // รวมจำนวนคิดค่าเที่ยว
