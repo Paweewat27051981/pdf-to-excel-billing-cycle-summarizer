@@ -489,7 +489,9 @@ const POLICY_FIELDS: { key: keyof Policy; label: string; unit: string; step?: st
   { key: 'farSpeedKmh', label: 'ความเร็วขับรถไกล', unit: 'กม./ชม.' },
   { key: 'speedThresholdKm', label: 'จุดตัดใกล้/ไกล (ระยะสูงสุด ≤ นี้ = ใช้ความเร็วใกล้)', unit: 'กม.' },
   { key: 'fuelEfficiencyKmPerL', label: 'อัตราสิ้นเปลืองน้ำมัน', unit: 'กม./ลิตร', step: '0.1' },
-  { key: 'driverHourlyRate', label: 'ค่าแรงคนขับ', unit: 'บาท/ชม.', step: '0.01' },
+  // ป้ายต้องบอก "ต่อชั่วโมง" ในตัวเอง — หน่วยท้ายช่องถูกตัดตกจอบ่อย
+  // เคยเข้าใจผิดว่าเป็นค่าแรงทั้งวัน (150 = ทั้งวัน) ทั้งที่เป็นต่อชั่วโมง
+  { key: 'driverHourlyRate', label: 'ค่าแรงคนขับต่อชั่วโมง', unit: 'บาท/ชม.', step: '0.01' },
   { key: 'unloadingMinutesPerStore', label: 'เวลาลงสินค้าต่อจุด', unit: 'นาที' },
   { key: 'lumpSumBoxThreshold', label: 'เส้นแบ่งเหมา (กล่อง ≤ นี้ = เหมาทั้งเที่ยว)', unit: 'กล่อง' },
 ];
