@@ -3062,6 +3062,12 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
         `เพิ่มใหม่ ${res.createdCount} · อัปเดต ${res.updatedCount} · เท่าเดิม ${res.sameCount}`);
       if (res.summary?.length) alertBox('สรุปการนำเข้าราคา', res.summary.join('\n'));
       reload();
+      // 🔒 กฎเหล็ก (เจ้าของกำหนด 9 ก.ย.69): แก้ราคาของรอบไหน ใบในรอบนั้นต้องอัปเดตตาม
+      //    ไม่งั้น Dashboard/รายงานต่อทะเบียน โชว์ยอดเก่า -> จ่ายเงินผิด
+      // เดิมการแก้ทีละช่องเรียก checkImpact อยู่แล้ว แต่ "นำเข้าไฟล์" ไม่เรียก = ช่องโหว่ใหญ่สุด
+      //    เพราะนำเข้าทีเดียวเปลี่ยนหลายสิบราคา กระทบใบเยอะกว่าแก้ทีละช่องมาก
+      // เจอจริง: ส.ค.1-15 เชียงใหม่ 102/280 ใบ ราคาในใบ != ราคาปัจจุบัน (ต้อง recalc ทีหลัง -1,349 บาท)
+      void checkImpact(res.changedRateIds || []);
     } catch (e: any) { showToast('error', e.message); }
     finally { setImporting(false); clearFile(); }
   };
@@ -3229,16 +3235,55 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
     } catch (e: any) { showToast('error', e.message); }
   };
 
-  // ---- ตรวจใบที่กระทบหลังแก้ราคา (แก้ปัญหาถาวร: ใบเก่าค้างราคาเดิมเงียบๆ) ----
-  // หลังบันทึกราคา -> ถามระบบว่ามีใบที่บันทึกแล้วในรอบนี้ที่ยอดจะเปลี่ยนไหม -> แสดงแถบให้กดอัปเดต
+  // ---- ตรวจใบที่กระทบหลังแก้ราคา แล้ว "อัปเดตอัตโนมัติทันที" ----
+  //
+  // 🔒 กฎเหล็ก (เจ้าของกำหนด 9 ก.ย.69): แก้ราคาของรอบไหน ใบในรอบนั้นต้องอัปเดตตามทุกครั้ง
+  //    Dashboard / รายงานต่อทะเบียน ต้องตรงกับราคาล่าสุดเสมอ — คนดูรายงานเพื่อจ่ายเงินจริง
+  // เดิมแค่ขึ้นแถบเตือนให้กดเอง -> ถ้าคนกด "ไว้ก่อน" ใบค้างราคาเก่าเงียบๆ = จ่ายผิด
+  //    เจอจริง: ส.ค.1-15 เชียงใหม่ 102/280 ใบ ค้างราคาเก่า (ต้อง recalc ทีหลัง -1,349 บาท)
+  //
+  // ⚠️ เจ้าของเลือก "อัตโนมัติล้วน" หลังรับทราบความเสี่ยงแล้ว (พิมพ์ราคาผิด = ใบเปลี่ยนทันที)
+  //    จึงต้องรายงานผลทุกครั้งว่าแก้กี่ใบ ยอดเปลี่ยนเท่าไร ให้เห็นทันทีถ้าผิดปกติ
   const checkImpact = async (rateMasterIds: string[], extraProvinces: string[] = [], broad = false) => {
     if (!cycle || cycle.status === 'closed' || !rateMasterIds.length) return;
     const token = ++impactReqRef.current; // ทิ้ง response ที่กลับมาช้าหลังสลับรอบ/สาขา (Codex P2)
+    // จำรอบ+สาขา ณ ตอนเช็ค — ใช้ตอน apply ด้วย กันผู้ใช้สลับหน้าจอระหว่างรอแล้วอัปเดตผิดที่
+    const atCycleId = cycle.id;
+    const atBranchId = branchId;
     try {
-      const r = await api(`/api/cycles/${cycle.id}/rate-impact`, 'POST', { rateMasterIds, branchId, extraProvinces, broad });
+      const r = await api(`/api/cycles/${atCycleId}/rate-impact`, 'POST', { rateMasterIds, branchId: atBranchId, extraProvinces, broad });
       if (token !== impactReqRef.current) return; // สลับหน้าจอไปแล้ว — ผลนี้เก่า ไม่ใช้
-      if (r?.affected?.length) setImpact({ ...r, _branchId: branchId }); // ผูกสาขาที่เช็คไว้กับผล
-      else setImpact(null);
+      if (!r?.affected?.length) { setImpact(null); return; }
+
+      // ---- อัปเดตทันที ไม่ต้องถาม ----
+      const docNos = r.affected.map((a: any) => (a.docNo || '').trim()).filter(Boolean);
+      const skipped = r.affected.length - docNos.length;
+      if (!docNos.length) {
+        // ใบไม่มีเลข -> recalc แบบระบุใบไม่ได้ (ส่งค่าว่าง server จะคิดทั้งรอบ = อันตราย)
+        if (token !== impactReqRef.current) return;   // มีคำขอใหม่กว่าแล้ว อย่าทับ
+        setImpact({ ...r, _branchId: atBranchId });
+        showToast('error', 'มีใบที่กระทบแต่ไม่มีเลขใบกระจาย — อัปเดตอัตโนมัติไม่ได้ ต้องแก้เอง');
+        return;
+      }
+      setImpactBusy(true);
+      try {
+        const res = await api(`/api/cycles/${atCycleId}/recalculate`, 'POST', { docNos, branchId: atBranchId });
+        const sign = r.totalDelta > 0 ? '+' : '';
+        showToast('success', `อัปเดตอัตโนมัติ ${res.count} ใบ · ยอดรอบเปลี่ยน ${sign}${money(r.totalDelta)} บาท`);
+        if (skipped > 0) showToast('warning', `ข้าม ${skipped} ใบที่ไม่มีเลขใบกระจาย (ต้องแก้เอง)`);
+        // ⚠️ เช็ค token ซ้ำหลัง recalculate (Codex P2) — ระหว่างรอ อาจมีการแก้ราคาครั้งใหม่เข้ามา
+        //   ถ้าครั้งใหม่ล้มเหลวแล้วตั้งแถบเตือนไว้ ครั้งเก่าที่สำเร็จต้องไม่ล้างแถบนั้นทิ้ง
+        //   ไม่งั้นใบของครั้งใหม่ค้างราคาเก่าโดยไม่มีใครเห็น = ยอดผิดเงียบๆ
+        if (token !== impactReqRef.current) return;
+        setImpact(null);
+        reload();
+      } catch (e: any) {
+        // อัปเดตไม่สำเร็จ -> คงแถบเตือนไว้ให้กดเอง (ห้ามเงียบ เพราะยอดยังไม่ตรง)
+        // แต่ถ้ามีคำขอใหม่กว่าแล้ว อย่าทับผลของคำขอนั้น
+        if (token !== impactReqRef.current) return;
+        setImpact({ ...r, _branchId: atBranchId });
+        showToast('error', `อัปเดตอัตโนมัติไม่สำเร็จ: ${e.message} — กดปุ่มในแถบเตือนเพื่อลองใหม่`);
+      } finally { setImpactBusy(false); }
     } catch { /* เช็คไม่ได้ไม่ถือว่าพัง — ผู้ใช้ยัง recalculate เองได้ */ }
   };
   const applyImpact = async () => {
@@ -3248,8 +3293,8 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
     const skipped = impact.affected.length - docNos.length;
     if (!docNos.length) { showToast('error', 'ใบที่กระทบไม่มีเลขใบกระจาย — แก้ผ่าน Recalculate ทั้งรอบ (dry-run ก่อน) แทน'); return; }
     if (skipped > 0) showToast('warning', `ข้าม ${skipped} ใบที่ไม่มีเลขใบกระจาย (ต้องแก้เอง)`);
-    const sign = impact.totalDelta > 0 ? '+' : '';
-    if (!window.confirm(`อัปเดต ${docNos.length} ใบให้ใช้ราคาใหม่? (รอบ ${impact.cycleName})\nยอดรวมรอบจะเปลี่ยน ${sign}${money(impact.totalDelta)} บาท`)) return;
+    // ไม่ถามยืนยัน — ปุ่มนี้ใช้เฉพาะตอนอัปเดตอัตโนมัติล้มเหลว ผู้ใช้กดเองอยู่แล้ว = ยืนยันแล้ว
+    // (เจ้าของกำหนด "อัตโนมัติล้วน" 9 ก.ย.69) · ยอดที่จะเปลี่ยนแสดงอยู่บนแถบเตือนแล้ว
     setImpactBusy(true);
     try {
       // ใช้รอบ+สาขาจากตอนที่เช็ค (ไม่ใช่ค่าปัจจุบัน) — กันสลับหน้าจอแล้ว apply ผิดที่
@@ -3262,13 +3307,17 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
 
   return (
     <Section title="Master ราคาขนส่ง" icon={Tag}>
-      {/* ⚠️ แถบเตือน: ราคาที่เพิ่งแก้กระทบใบที่บันทึกแล้วในรอบนี้ */}
+      {/* 🚨 แถบนี้ขึ้นเฉพาะตอน "อัปเดตอัตโนมัติไม่สำเร็จ" — ปกติระบบอัปเดตให้เองเงียบๆ แล้วแจ้งผลเป็น toast
+          ยอดยังไม่ตรงกับราคาล่าสุด = รายงาน/Dashboard ผิดอยู่ จึงต้องแดงและไม่มีปุ่มปิดทิ้ง */}
       {impact && (
-        <div className="bg-amber-50 border-2 border-amber-400 rounded-xl p-3 mb-3 text-xs text-amber-900 space-y-2">
+        <div className="bg-rose-50 border-2 border-rose-500 rounded-xl p-3 mb-3 text-xs text-rose-900 space-y-2">
           <div className="font-bold flex items-center gap-1.5">
             <AlertTriangle className="w-4 h-4 shrink-0" />
-            ราคาใหม่กระทบใบที่บันทึกแล้ว {impact.affected.length} ใบ ในรอบ {impact.cycleName}
+            ⚠️ ยอดยังไม่อัปเดต {impact.affected.length} ใบ ในรอบ {impact.cycleName}
             (ยอดรวมจะเปลี่ยน {impact.totalDelta > 0 ? '+' : ''}{money(impact.totalDelta)} บาท)
+          </div>
+          <div className="font-semibold">
+            รายงานต่อทะเบียนและ Dashboard ยังแสดงยอดเก่าอยู่ — ต้องกดอัปเดตให้เสร็จ
           </div>
           <div className="max-h-32 overflow-y-auto space-y-0.5">
             {impact.affected.map((a: any) => (
@@ -3277,12 +3326,8 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
           </div>
           <div className="flex gap-2">
             <button onClick={() => { void applyImpact(); }} disabled={impactBusy}
-              className="bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-4 py-1.5 font-bold disabled:opacity-50">
+              className="bg-rose-600 hover:bg-rose-700 text-white rounded-lg px-4 py-1.5 font-bold disabled:opacity-50">
               {impactBusy ? 'กำลังอัปเดต...' : `อัปเดต ${impact.affected.length} ใบตามราคาใหม่`}
-            </button>
-            <button onClick={() => setImpact(null)} disabled={impactBusy}
-              className="bg-white border border-amber-400 text-amber-800 rounded-lg px-4 py-1.5 font-semibold">
-              ไว้ก่อน (ใบเดิมคงราคาเดิม)
             </button>
           </div>
         </div>
@@ -3431,9 +3476,12 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
                 <td className="py-1.5 px-1">{(r.productCategory && r.productCategory !== 'normal') ? <span className="text-amber-700 font-semibold">{catLabel(r.productCategory)}</span> : <span className="text-natural-muted">ปกติ</span>}</td>
                 <td className="py-1.5 px-1">{r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'}</td>
                 <td className="py-1.5 px-1">
-                  <input type="number" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}-${resetKey}`} defaultValue={effPrice(r)} aria-label={`ราคา ${r.destinationName}`}
+                  {/* แสดงทศนิยม 2 ตำแหน่งเสมอ (เจ้าของสั่ง 9 ก.ย.69) — เดิม 7.5 กับ 3100 แสดงไม่เท่ากัน อ่านเทียบยาก
+                      ใช้ toFixed(2) แค่ตอน "แสดง" เท่านั้น · ค่าที่บันทึกยังเป็นตัวเลขเดิม (+e.target.value)
+                      step="0.01" ให้กรอกทศนิยมได้ ไม่ถูกเบราว์เซอร์ปัดเป็นจำนวนเต็ม */}
+                  <input type="number" step="0.01" key={`p-${r.id}-${cycleMode ? 'c' : 'b'}-${effPrice(r)}-${resetKey}`} defaultValue={Number(effPrice(r)).toFixed(2)} aria-label={`ราคา ${r.destinationName}`}
                     onBlur={(e) => { const v = +e.target.value; if (v === lastSaved.current.get(cellKeyOf(r.id, 'price'))) return; if (v !== effPrice(r)) { batch ? markPending(r, 'price', v) : saveCell(r, 'price', v); } }}
-                    className={`w-20 border rounded px-1 py-0.5 text-xs text-right outline-none ${pending[r.id]?.price !== undefined ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-300' : cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
+                    className={`w-24 border rounded px-1 py-0.5 text-xs text-right outline-none ${pending[r.id]?.price !== undefined ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-300' : cycleMode && ovFor(r) ? 'border-amber-400 bg-amber-50' : 'border-natural-border'} focus:border-brand-navy`} />
                   {pending[r.id]?.price !== undefined ? <span className="text-[9px] text-violet-700 ml-0.5 font-bold">รอบันทึก</span> : cycleMode && ovFor(r) && <span className="text-[9px] text-amber-700 ml-0.5">เฉพาะรอบ</span>}
                 </td>
                 <td className="py-1.5 px-1">

@@ -1538,7 +1538,16 @@ async function startServer() {
         return res.status(201).json({
           success: true, ...preview, cycleMode: true, cycleName: cyc.name,
           overrideCount: ovs.length, historyCount: ovHists.length,
-          changedRateIds: [...updated.map((u) => u.old.id), ...newRows.map((r) => r.id)],
+          // ส่ง id ของ "ทุกราคาที่ค่าที่งวดนี้คิดจริงเปลี่ยนไป" ให้ client เช็คใบที่กระทบ (กฎเหล็ก 9 ก.ย.69)
+          // ต้องรวมแถวที่ "เพิ่งถูกล็อกครั้งแรก" ด้วย ไม่ใช่แค่ updated:
+          //   แถวที่ราคาในไฟล์ = ราคาหลัก แต่ก่อนหน้านี้งวดนี้มี override คนละราคาอยู่
+          //   -> ระบบนับเป็น "เท่าเดิม" (เทียบกับไฟล์) แต่ค่าที่งวดคิดจริงเปลี่ยน = ใบกระทบ
+          // ovHists เก็บเฉพาะแถวที่ราคาจริงขยับ จึงเป็นชุดที่ถูกต้องที่สุด
+          changedRateIds: [...new Set([
+            ...ovHists.map((h) => h.rateMasterId),
+            ...updated.map((u) => u.old.id),
+            ...newRows.map((r) => r.id),
+          ])],
         });
       }
 
