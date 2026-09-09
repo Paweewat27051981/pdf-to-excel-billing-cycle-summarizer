@@ -3699,20 +3699,29 @@ function GroupManager({ db, api, branchId, reload, showToast }: any) {
 // ===========================================================================
 function ActivityTab({ db }: any) {
   const [fBranch, setFBranch] = useState('');
+  const [fKind, setFKind] = useState<'' | 'cycle' | 'base'>(''); // '' = ทั้งหมด · cycle = ราคาเฉพาะรอบ · base = ราคาหลัก
   const rateById = new Map((db.rateMasters as RateMaster[]).map((r) => [r.id, r] as [string, RateMaster]));
   const branchName = (id?: string) => (db.branches as Branch[]).find((b) => b.id === id)?.name || id || '—';
   const entries = ((db.rateMasterHistory || []) as any[]).map((h) => {
     const r = rateById.get(h.rateMasterId);
+    // ประวัติราคาเฉพาะรอบเก็บ branchId ไว้ในตัวเอง (ราคาหลักอ่านจาก rateMaster)
+    // -> ราคาที่ถูกลบไปแล้วยังกรองสาขาได้
+    const bId = h.branchId || r?.branchId || '';
     return {
       ...h,
-      branchId: r?.branchId || '',
-      branchName: branchName(r?.branchId),
+      branchId: bId,
+      branchName: branchName(bId),
       dest: r ? `${r.districtName || ''} ${r.provinceName || ''}`.trim() : '(ราคาถูกลบแล้ว)',
+      rateGroup: r?.rateGroup || '',
       priceType: r?.priceType,
+      isCycle: !!h.cycleId,
     };
   }).sort((a, b) => String(b.changedAt || '').localeCompare(String(a.changedAt || '')));
-  const shown = fBranch ? entries.filter((e: any) => e.branchId === fBranch) : entries;
+  const shown = entries.filter((e: any) =>
+    (!fBranch || e.branchId === fBranch) &&
+    (!fKind || (fKind === 'cycle' ? e.isCycle : !e.isCycle)));
   const branches = (db.branches as Branch[]).filter((b) => !b.isHQ);
+  const nCycle = entries.filter((e: any) => e.isCycle).length;
   const fmtDT = (s: string) => { const d = new Date(s); return isNaN(d.getTime()) ? (s || '—') : `${d.toLocaleDateString('th-TH')} ${d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })}`; };
 
   return (
@@ -3724,27 +3733,38 @@ function ActivityTab({ db }: any) {
             <option value="">ทุกสาขา</option>
             {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
           </select>
+          <span className="text-natural-muted font-semibold ml-2">ประเภท:</span>
+          <select aria-label="กรองประเภทราคา" value={fKind} onChange={(e) => setFKind(e.target.value as any)} className="border border-natural-border rounded-lg px-2 py-1.5">
+            <option value="">ทั้งหมด</option>
+            <option value="cycle">🔑 ราคาเฉพาะรอบ ({nCycle})</option>
+            <option value="base">ราคาหลัก ({entries.length - nCycle})</option>
+          </select>
           <span className="text-xs text-natural-muted ml-auto">{shown.length} รายการ</span>
         </div>
         <p className="text-[11px] text-natural-dark-muted bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
-          แสดงเฉพาะ “การเปลี่ยนราคา” ที่แก้ผ่านหน้า Master ราคา (ล่าสุดอยู่บนสุด) — การเพิ่ม/ลบราคา หรือแก้ผ่านการนำเข้า ยังไม่บันทึกในเวอร์ชันนี้
+          แสดง “การเปลี่ยนราคา” ทั้งราคาหลักและราคาเฉพาะรอบ (ล่าสุดอยู่บนสุด) — แถวที่มีชื่องวด = ราคาเฉพาะรอบ ซึ่งเป็นราคาที่คิดเงินจริงของงวดนั้น · การเพิ่ม/ลบราคา ยังไม่บันทึกในเวอร์ชันนี้
         </p>
         {shown.length === 0 ? (
           <EmptyHint text="ยังไม่มีประวัติการเปลี่ยนราคา" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs min-w-[680px]">
+            <table className="w-full text-xs min-w-[820px]">
               <thead><tr className="text-natural-muted text-left border-b border-natural-border">
-                <th className="py-1.5 px-1">เวลา</th><th className="px-1">สาขา</th><th className="px-1">ปลายทาง</th><th className="px-1">แบบ</th><th className="px-1 text-right">เดิม</th><th className="px-1 text-right">ใหม่</th><th className="px-1">เปลี่ยน</th><th className="px-1">โดย/เหตุผล</th>
+                <th className="py-1.5 px-1">เวลา</th><th className="px-1">สาขา</th><th className="px-1">งวด</th><th className="px-1">ปลายทาง</th><th className="px-1">แบบ</th><th className="px-1 text-right">เดิม</th><th className="px-1 text-right">ใหม่</th><th className="px-1">เปลี่ยน</th><th className="px-1">โดย/เหตุผล</th>
               </tr></thead>
               <tbody>
                 {shown.slice(0, 300).map((e, i) => {
                   const up = e.newPrice > e.oldPrice; const diff = Math.abs(e.newPrice - e.oldPrice);
                   return (
-                    <tr key={e.id || i} className="border-b border-natural-border/60 hover:bg-natural-secondary/40">
+                    <tr key={e.id || i} className={`border-b border-natural-border/60 hover:bg-natural-secondary/40 ${e.isCycle ? 'bg-amber-50/60' : ''}`}>
                       <td className="py-1.5 px-1 whitespace-nowrap text-natural-muted">{fmtDT(e.changedAt)}</td>
                       <td className="px-1 font-semibold text-brand-navy whitespace-nowrap">{e.branchName}</td>
-                      <td className="px-1">{e.dest}</td>
+                      <td className="px-1 whitespace-nowrap">
+                        {e.isCycle
+                          ? <span className="text-amber-700 font-semibold">🔑 {e.cycleName || 'เฉพาะรอบ'}</span>
+                          : <span className="text-natural-muted">ราคาหลัก</span>}
+                      </td>
+                      <td className="px-1">{e.dest}{e.rateGroup ? <span className="text-natural-muted"> · {e.rateGroup}</span> : ''}</td>
                       <td className="px-1">{e.priceType === 'flat' ? 'เหมา' : e.priceType === 'piece' ? 'ชิ้น' : '-'}</td>
                       <td className="px-1 text-right">{money(e.oldPrice)}</td>
                       <td className="px-1 text-right font-bold">{money(e.newPrice)}</td>

@@ -1497,12 +1497,25 @@ async function startServer() {
         if (newRows.length) await saveRecords('rateMasters', newRows);
 
         const ovs: RateOverride[] = [];
+        // ประวัติการแก้ราคาเฉพาะรอบผ่านการนำเข้าไฟล์ (เดิมไม่บันทึกเลย — ตามหลังไม่ได้)
+        // เทียบกับ "ราคาที่งวดนี้คิดจริงก่อนนำเข้า" = override เดิม ถ้าไม่มีก็ราคาหลัก
+        const ovHists: RateMasterHistory[] = [];
         const put = (rateMasterId: string, price: number, thr: number | null) => {
           const ex = db.rateOverrides.find((o) => o.branchId === branchId && o.cycleId === cyc.id && o.rateMasterId === rateMasterId);
+          const before = ex ? Number(ex.price)
+            : Number(db.rateMasters.find((m) => m.id === rateMasterId)?.price ?? price);
           if (ex) { ex.price = price; ex.pieceThreshold = thr; ovs.push(ex); }
           else {
             const o: RateOverride = { id: generateId('rov'), branchId, cycleId: cyc.id, rateMasterId, price, pieceThreshold: thr };
             db.rateOverrides.push(o); ovs.push(o);
+          }
+          if (Math.abs(before - Number(price)) > 0.0001) {
+            ovHists.push({
+              id: generateId('rhist'), rateMasterId, oldPrice: before, newPrice: Number(price),
+              changedBy: 'import', changedAt: new Date().toISOString(),
+              changeReason: 'นำเข้าราคาเฉพาะรอบจาก Excel',
+              cycleId: cyc.id, cycleName: cyc.name, branchId,
+            });
           }
         };
         for (const u of updated) put(u.old.id, Number(u.row.price), u.newThreshold);
@@ -1521,9 +1534,10 @@ async function startServer() {
           put(s.old.id, Number(s.row.price), s.newThreshold ?? null);
         }
         if (ovs.length) await saveRecords('rateOverrides', ovs);
+        if (ovHists.length) { db.rateMasterHistory.push(...ovHists); await saveRecords('rateMasterHistory', ovHists); }
         return res.status(201).json({
           success: true, ...preview, cycleMode: true, cycleName: cyc.name,
-          overrideCount: ovs.length,
+          overrideCount: ovs.length, historyCount: ovHists.length,
           changedRateIds: [...updated.map((u) => u.old.id), ...newRows.map((r) => r.id)],
         });
       }
@@ -1713,12 +1727,38 @@ async function startServer() {
     }
   });
 
+  // ---- ประวัติการแก้ "ราคาเฉพาะรอบ" ----
+  // ราคาที่คิดเงินจริงคือราคาเฉพาะรอบ ไม่ใช่ราคาหลัก แต่เดิมบันทึกประวัติเฉพาะราคาหลัก
+  // -> แก้ราคาเฉพาะรอบแล้วไม่มีร่องรอย ตามไม่ได้ว่าใครแก้เมื่อไหร่ (เจ้าของสั่งเพิ่ม 9 ก.ย.69)
+  // ใช้ตาราง rateMasterHistory เดียวกัน + ใส่ cycleId เพื่อแยกว่าเป็นประวัติของงวดไหน
+  //   ราคาเดิมที่ใช้เทียบ = override เดิม (ถ้ามี) ไม่งั้นราคาหลัก — ต้องตรงกับ "ราคาที่งวดนั้นคิดจริง"
+  const ovHistory = (
+    db: DatabaseState, o: RateOverride, oldPrice: number, by: string, reason: string
+  ): RateMasterHistory | null => {
+    if (Math.abs(Number(oldPrice) - Number(o.price)) < 0.0001) return null; // ราคาไม่เปลี่ยน -> ไม่บันทึก
+    const cyc = db.cycles.find((c) => c.id === o.cycleId);
+    return {
+      id: generateId('rhist'), rateMasterId: o.rateMasterId,
+      oldPrice: Number(oldPrice), newPrice: Number(o.price),
+      changedBy: by, changedAt: new Date().toISOString(), changeReason: reason,
+      cycleId: o.cycleId, cycleName: cyc?.name || '', branchId: o.branchId,
+    };
+  };
+  // ราคาที่งวดนั้นคิดจริงอยู่ตอนนี้ (override ถ้ามี ไม่งั้นราคาหลัก)
+  const effectiveNow = (db: DatabaseState, branchId: string, cycleId: string, rateMasterId: string): number => {
+    const ex = db.rateOverrides.find((x) => x.branchId === branchId && x.cycleId === cycleId && x.rateMasterId === rateMasterId);
+    if (ex) return Number(ex.price);
+    const m = db.rateMasters.find((x) => x.id === rateMasterId);
+    return m ? Number(m.price) : 0;
+  };
+
   // ราคาเฉพาะรอบ: สร้างหรืออัปเดต (1 รอบ + 1 ราคาหลัก = 1 override)
   app.post('/api/rate-overrides/upsert', requireRateEditor, async (req, res) => {
     try {
       const { branchId, cycleId, rateMasterId, price, pieceThreshold } = req.body as RateOverride;
       if (!branchId || !cycleId || !rateMasterId) return res.status(400).json({ error: 'ข้อมูลไม่ครบ' });
       const db = await getDb();
+      const before = effectiveNow(db, branchId, cycleId, rateMasterId); // เก็บก่อนแก้
       let o = db.rateOverrides.find((x) => x.branchId === branchId && x.cycleId === cycleId && x.rateMasterId === rateMasterId);
       if (o) { o.price = price; o.pieceThreshold = pieceThreshold ?? null; }
       else {
@@ -1726,6 +1766,8 @@ async function startServer() {
         db.rateOverrides.push(o);
       }
       await saveRecord('rateOverrides', o); // เขียนแค่ record เดียว (ไม่เขียนทั้ง DB) เบามากแม้ server ฟรี
+      const h = ovHistory(db, o, before, req.body?.updatedBy || 'user', 'แก้ราคาเฉพาะรอบ');
+      if (h) { db.rateMasterHistory.push(h); await saveRecord('rateMasterHistory', h); }
       res.json(o);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1739,15 +1781,20 @@ async function startServer() {
       if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'ต้องส่ง items เป็น array' });
       const db = await getDb();
       const changed: RateOverride[] = [];
+      const hists: RateMasterHistory[] = [];
       for (const it of items) {
         const { branchId, cycleId, rateMasterId, price, pieceThreshold } = it;
         if (!branchId || !cycleId || !rateMasterId) continue;
+        const before = effectiveNow(db, branchId, cycleId, rateMasterId); // ต้องอ่านก่อนแก้ทุกตัว
         let o = db.rateOverrides.find((x) => x.branchId === branchId && x.cycleId === cycleId && x.rateMasterId === rateMasterId);
         if (o) { o.price = price; o.pieceThreshold = pieceThreshold ?? null; }
         else { o = { id: generateId('rov'), branchId, cycleId, rateMasterId, price, pieceThreshold: pieceThreshold ?? null }; db.rateOverrides.push(o); }
         changed.push(o);
+        const h = ovHistory(db, o, before, req.body?.updatedBy || 'user', 'แก้ราคาเฉพาะรอบ');
+        if (h) hists.push(h);
       }
       await saveRecords('rateOverrides', changed); // multi-path update = 1 round-trip (ไม่เขียนทั้ง DB)
+      if (hists.length) { db.rateMasterHistory.push(...hists); await saveRecords('rateMasterHistory', hists); }
       res.json({ success: true, count: changed.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
