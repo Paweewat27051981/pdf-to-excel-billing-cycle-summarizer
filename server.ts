@@ -25,7 +25,7 @@ import {
   DeductionEntry,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck } from './src/calc.js';
+import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck, matchRate } from './src/calc.js';
 import { suspectDupReceipts } from './src/serviceArea.js'; // จับบิลซ้ำจากจัสทราน (ใช้ตัวเดียวกับ frontend)
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
@@ -2144,32 +2144,51 @@ async function startServer() {
       // ต้องตรวจถึง "ราคาที่ใบนั้นใช้จริง" ไม่ใช่แค่ "สาขานี้มี override ไหม" (Codex P1)
       //   สาขาที่มี override แค่ 1 รายการ จะปลดล็อกทั้งสาขา แล้วใบที่ปลายทางไม่มี override
       //   ก็ยังถูกคิดด้วยราคาหลักปัจจุบันอยู่ดี = ช่องโหว่เดิมเป๊ะ
-      // วิธีตรวจ: ใบไหนมีใบรับที่ "จับราคาได้ (flat/piece ไม่ null) แต่ราคานั้นไม่มี override ของงวดนี้"
-      //   -> ใบนั้นเสี่ยงราคาผิดยุค. เทียบด้วยราคาที่บันทึกไว้ในใบ vs override ที่มี
+      //
+      // ⚠️ วิธีตรวจต้องดูที่ "ตัวราคา (rateMasterId) ที่ใบจะใช้" ว่ามี override ของงวดนี้ไหม
+      //   ห้ามเทียบด้วย "ตัวเลขราคาที่บันทึกค้างในใบ" (เวอร์ชันแรกทำแบบนั้น — บั๊ก 10 ก.ย.69):
+      //   ใบที่ต้องอัปเดตคือใบที่ราคาในใบ "เก่า" อยู่แล้ว เทียบตัวเลขจึงไม่ตรงกับที่ล็อกเสมอ
+      //   -> ด่านบล็อกใบที่ควรแก้ทุกใบ ทั้งที่งวดล็อกราคาครบ 81/81 = อัปเดตอัตโนมัติ (r22) ตายทั้งงวด
+      //   ผลจริง: ส.ค.16-31 เชียงใหม่ 94 ใบค้างราคาเก่า รายงานต่อทะเบียนไม่ตรงกับ Master
+      // ที่ถูกคือ resolve ราคาแบบเดียวกับตอนคิดเงิน (matchRate ตามกลุ่มรถ) แล้วดูว่า id นั้นล็อกหรือยัง
       //
       // วันที่ต้องใช้เวลาไทย ไม่ใช่ UTC (Codex P2) — UTC ช้ากว่าไทย 7 ชม.
       //   ตี 1 ของวันที่ 1 (ไทย) UTC ยังเป็นวันที่ 31 -> งวดปัจจุบันถูกมองเป็นงวดเก่า แล้วบล็อกผิด
       const today = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10); // Asia/Bangkok
       const isCurrentCycle = cycle.startDate <= today && today <= cycle.endDate;
       if (!isCurrentCycle && !req.body?.allowStaleRates) {
-        // ราคาที่ถูกล็อกไว้กับงวดนี้ (ต่อสาขา) — เก็บเป็นราคาจริง เพื่อเทียบกับที่ใบใช้อยู่
-        const lockedPrices = new Map<string, Set<number>>(); // branchId -> ราคาที่ล็อกไว้
+        // id ราคาที่ถูกล็อกไว้กับงวดนี้ (ต่อสาขา)
+        const lockedIds = new Map<string, Set<string>>(); // branchId -> rateMasterId ที่มี override
         for (const o of db.rateOverrides) {
           if (o.cycleId !== cycle.id) continue;
-          if (!lockedPrices.has(o.branchId)) lockedPrices.set(o.branchId, new Set());
-          lockedPrices.get(o.branchId)!.add(Number(o.price));
+          if (!lockedIds.has(o.branchId)) lockedIds.set(o.branchId, new Set());
+          lockedIds.get(o.branchId)!.add(o.rateMasterId);
         }
-        // ใบที่ "ใช้ราคาซึ่งไม่ได้ถูกล็อกไว้กับงวดนี้" = เสี่ยงถูกคิดด้วยราคาหลักปัจจุบัน
-        const atRisk = inCycle.filter((t) => {
-          const locked = lockedPrices.get(t.branchId);
-          const used = new Set<number>();
-          for (const r of (t.receipts || [])) {
-            if (r.flatPrice != null) used.add(Number(r.flatPrice));
-            if (r.piecePrice != null) used.add(Number(r.piecePrice));
+        // ราคาของสาขา+กลุ่มรถ (logic เดียวกับ recomputeTrip) — cache ต่อ branch|group
+        const ratesCache = new Map<string, RateMaster[]>();
+        const ratesFor = (branchId: string, plateNo: string): RateMaster[] => {
+          const v = db.vehicles.find((x) => x.branchId === branchId && normPlate(x.plateNo) === normPlate(plateNo) && x.status === 'active');
+          const group = v?.rateGroup || '';
+          const k = `${branchId}|${group}`;
+          if (!ratesCache.has(k)) {
+            ratesCache.set(k, db.rateMasters.filter((r) => r.branchId === branchId && (!r.rateGroup || r.rateGroup === group)));
           }
-          if (!used.size) return false;                       // ไม่มีราคาให้เทียบ -> ไม่นับเสี่ยง
-          if (!locked || !locked.size) return true;            // สาขานี้ไม่ล็อกอะไรเลย -> เสี่ยงทุกใบ
-          return [...used].some((p) => !locked.has(p));        // มีราคาที่ไม่ได้ล็อก -> เสี่ยง
+          return ratesCache.get(k)!;
+        };
+        // ใบไหน resolve ไปเจอราคาที่ "ไม่มี override ของงวดนี้" = จะถูกคิดด้วยราคาหลักปัจจุบัน = เสี่ยง
+        const atRisk = inCycle.filter((t) => {
+          const locked = lockedIds.get(t.branchId) || new Set<string>();
+          const rates = ratesFor(t.branchId, t.plateNo);
+          for (const r of (t.receipts || [])) {
+            const m = matchRate({ provinceRaw: r.provinceRaw || t.provinceRaw || '', districtRaw: r.districtRaw || t.districtRaw || '', refDate: t.documentDate }, rates, undefined, 'normal');
+            // ใบรับเคยจับราคาได้ แต่ตอนนี้จับไม่ได้แล้ว (ราคาหลักถูกลบ/ปิด/หมดอายุ) -> คิดใหม่จะได้ราคาหาย = เสี่ยง (Codex P1)
+            if (r.flatPrice != null && !m.flat) return true;
+            if (r.piecePrice != null && !m.piece) return true;
+            for (const hit of [m.flat, m.piece]) {
+              if (hit && !locked.has(hit.rateMasterId)) return true;
+            }
+          }
+          return false; // ทุกราคาที่ใบจะใช้ล็อกครบ (หรือใบไม่เคยมีราคาเลย = ไม่มีอะไรรั่ว)
         });
         if (atRisk.length) {
           const brs = [...new Set(atRisk.map((t) => t.branchId))];
