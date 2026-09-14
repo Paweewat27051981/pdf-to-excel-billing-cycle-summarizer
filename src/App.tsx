@@ -3348,9 +3348,19 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
         <button type="button" onClick={() => downloadRateTemplate()} className="bg-white border border-emerald-400 text-emerald-700 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />ดาวน์โหลดเทมเพลต</button>
         <input ref={rateFileRef} type="file" aria-label="นำเข้าราคา Excel" accept=".xls,.xlsx" className="hidden" onChange={(e) => e.target.files && onImportRates(e.target.files)} />
         <button type="button" disabled={importing || !branchId || !canEdit} title={canEdit ? '' : 'เฉพาะบัญชีผู้ดูแลราคา (admin)'} onClick={() => rateFileRef.current?.click()} className="bg-emerald-600 disabled:bg-natural-muted text-white rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />{importing ? 'กำลังนำเข้า...' : 'นำเข้าราคา (.xlsx)'}</button>
-        <button type="button" disabled={!canEdit || !allRates.length} title={canEdit ? 'ดาวน์โหลดราคาปัจจุบันเป็น Excel รูปแบบเดียวกับไฟล์นำเข้า' : 'เฉพาะบัญชีผู้ดูแลราคา (admin)'}
-          onClick={() => exportRatesToExcel(db.branches.find((b) => b.id === branchId)?.name || 'สาขา', allRates)}
-          className="bg-white border border-emerald-400 disabled:opacity-40 text-emerald-700 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />ส่งออกราคา ({allRates.length})</button>
+        <button type="button" disabled={!canEdit || !allRates.length}
+          title={!canEdit ? 'เฉพาะบัญชีผู้ดูแลราคา (admin)' : cycleMode ? `ดาวน์โหลด "ราคาเฉพาะรอบ ${cycle?.name}" ตามที่จอแสดง (รูปแบบเดียวกับไฟล์นำเข้า)` : 'ดาวน์โหลดราคาหลักเป็น Excel รูปแบบเดียวกับไฟล์นำเข้า'}
+          // ส่งออกตาม "โหมดที่เปิดอยู่" — โหมดเฉพาะรอบต้องได้ราคาเฉพาะรอบ ไม่ใช่ราคาหลัก (ดูเหตุผลที่ exportRatesToExcel)
+          onClick={() => exportRatesToExcel(
+            db.branches.find((b) => b.id === branchId)?.name || 'สาขา', allRates,
+            cycleMode ? {
+              name: cycle!.name, startDate: cycle!.startDate, endDate: cycle!.endDate,
+              overrides: new Map((db.rateOverrides || [])
+                .filter((o: RateOverride) => o.cycleId === cycle!.id && o.branchId === branchId)
+                .map((o: RateOverride) => [o.rateMasterId, { price: Number(o.price), pieceThreshold: o.pieceThreshold ?? null }])),
+            } : undefined,
+          )}
+          className="bg-white border border-emerald-400 disabled:opacity-40 text-emerald-700 rounded-lg px-3 py-1.5 text-xs font-semibold flex items-center gap-1"><FileSpreadsheet className="w-3.5 h-3.5" />{cycleMode ? 'ส่งออกราคาเฉพาะรอบ' : 'ส่งออกราคาหลัก'} ({allRates.length})</button>
         <span className="text-[11px] text-emerald-700/80">เหมาต่ออำเภอ + ชิ้นต่อจังหวัด/อำเภอ · ระบบเทียบ max ให้อัตโนมัติ</span>
       </div>
 

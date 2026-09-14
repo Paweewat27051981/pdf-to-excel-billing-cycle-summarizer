@@ -950,12 +950,40 @@ export async function exportCostAreas(
 //   ชีต "รายชิ้น" = งานปกติ+ชิ้น ที่ไม่มีเงื่อนไขใดๆ
 //   ชีต "พิเศษ"  = ที่เหลือทั้งหมด (หมวดพิเศษ/กลุ่ม/จุดตัด/ขั้นบันได/keyword)
 // ===========================================================================
-export async function exportRatesToExcel(branchName: string, rates: RateMaster[]) {
-  // ส่งออกเฉพาะราคาที่ "ใช้งานอยู่ ณ วันนี้" — ราคาที่หมดอายุแล้วเก็บไว้เป็นประวัติในระบบ
+// ราคาเฉพาะรอบที่จะทับลงไฟล์ (โหมด "ราคาเฉพาะรอบ" ในหน้า Master)
+//   ห้ามส่งออกราคาหลักตอนหน้าจอเปิดโหมดเฉพาะรอบ — เคสจริง 14 ก.ย.69: เชียงใหม่ ก.ย.1-15 ล็อกราคา 81/81
+//   แต่ไฟล์ที่ได้เป็นราคาหลัก 74 รายการไม่ตรงจอ ถ้าแก้แล้วนำเข้ากลับในโหมดเดียวกัน
+//   ราคาเฉพาะรอบทั้งงวดจะถูกทับด้วยราคาหลักเงียบๆ แล้วระบบคำนวณใบทั้งงวดใหม่อัตโนมัติ (r22) = เงินผิดทั้งงวด
+export type RateExportCycle = {
+  name: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string;   // YYYY-MM-DD
+  overrides: Map<string, { price: number; pieceThreshold: number | null }>; // key = rateMasterId
+};
+
+export async function exportRatesToExcel(branchName: string, rates: RateMaster[], cycle?: RateExportCycle) {
+  // ส่งออกเฉพาะราคาที่ "ใช้งานอยู่" — ราคาที่หมดอายุแล้วเก็บไว้เป็นประวัติในระบบ
   // ไม่ใส่ลงไฟล์ เพราะไฟล์นำเข้าไม่มีคอลัมน์วันที่มีผล ถ้าใส่ไปจะนำกลับเข้ามาเป็นราคาที่ใช้งานอยู่
+  // โหมดหลัก = ใช้งาน ณ วันนี้ · โหมดเฉพาะรอบ = ใช้งาน ณ "วันเริ่มงวด"
+  //   ห้ามใช้ "วันนี้" กับงวดเก่า/งวดหน้า (Codex P2): แถวที่ใช้ได้ในงวดนั้นจะหาย และแถวที่เพิ่งมาแทนจะโผล่แทน
+  //   ต้องเป็น "วันเดียว" ไม่ใช่ช่วงทับซ้อนกับงวด (Codex P2 รอบ 2): ถ้ากลางงวดมีราคาเวอร์ชันใหม่มาแทน
+  //   ช่วงทับซ้อนจะได้ 2 แถวปลายทางเดียวกัน ไฟล์นำเข้าไม่มีคอลัมน์วันที่ -> นำกลับแล้วซ้ำ/หายเงียบ
+  //   /api/import-rates จับคู่ด้วย "ราคาที่มีผล ณ วันเริ่มงวด" (server.ts: today = cyc.startDate) จึงต้องใช้วันเดียวกันเป๊ะ
   const today = new Date().toISOString().slice(0, 10);
-  const active = rates.filter((r) => r.status !== 'inactive' &&
-    (!r.effectiveFrom || r.effectiveFrom <= today) && (!r.effectiveTo || r.effectiveTo >= today));
+  const refDate = cycle ? cycle.startDate : today;
+  const activeRaw = rates.filter((r) => r.status !== 'inactive' &&
+    (!r.effectiveFrom || r.effectiveFrom <= refDate) && (!r.effectiveTo || r.effectiveTo >= refDate));
+  // โหมดเฉพาะรอบ: ทับราคา+จุดตัดด้วยค่าของงวดก่อนจัดชีต (ตัวไหนไม่มี override ใช้ราคาหลัก = ตรงกับที่จอแสดง)
+  // ต้องทับ "ก่อน" แยกชีต เพราะจุดตัดชิ้นเป็นตัวตัดสินว่าแถวอยู่ชีตพื้นฐานหรือชีตพิเศษ
+  let overridden = 0;
+  const active: RateMaster[] = cycle
+    ? activeRaw.map((r) => {
+        const o = cycle.overrides.get(r.id);
+        if (!o) return r;
+        overridden++;
+        return { ...r, price: o.price, pieceThreshold: o.pieceThreshold };
+      })
+    : activeRaw;
   const skipped = rates.length - active.length;
   // แถวที่ "ไม่มีเงื่อนไขพิเศษ" เท่านั้นจึงกลับเข้าชีตพื้นฐานได้ ไม่งั้นเงื่อนไขจะหายตอนนำเข้ากลับ
   const isPlain = (r: RateMaster) =>
@@ -1012,9 +1040,13 @@ export async function exportRatesToExcel(branchName: string, rates: RateMaster[]
 
   // ---- ชีต วิธีใช้: เตือนกติกาสำคัญตอนนำกลับเข้าระบบ ----
   const g = wb.addWorksheet('วิธีใช้');
-  [`ราคาขนส่ง — สาขา ${branchName}`,
+  [cycle ? `ราคาขนส่ง — สาขา ${branchName} — ราคาเฉพาะรอบ ${cycle.name}` : `ราคาขนส่ง — สาขา ${branchName}`,
     '',
     `ส่งออก ${active.length} รายการ (เหมา ${flats.length} · ชิ้น ${pieces.length} · พิเศษ ${specials.length})`,
+    ...(cycle ? [
+      `ไฟล์นี้เป็น "ราคาเฉพาะรอบ ${cycle.name}" (ทับด้วยราคาของงวด ${overridden} รายการ ที่เหลือใช้ราคาหลัก) ตรงกับที่หน้าจอโหมดเฉพาะรอบแสดง`,
+      `⚠️ ถ้าจะนำเข้ากลับ ต้องเปิดหน้า Master เป็นโหมด "ราคาเฉพาะรอบ: ${cycle.name}" ก่อน — นำเข้าในโหมด "ราคาหลัก" จะทับราคาหลักด้วยราคาของงวดนี้`,
+    ] : []),
     ...(orphanPieces.length ? [`ในชีต "พิเศษ" มีราคาชิ้น ${orphanPieces.length} รายการที่ไม่มีราคาเหมาคู่กัน`] : []),
     ...(skipped ? [`ไม่รวมราคาที่หมดอายุ/ปิดใช้แล้ว ${skipped} รายการ (ยังอยู่ในระบบเป็นประวัติ)`] : []),
     '',
@@ -1039,7 +1071,9 @@ export async function exportRatesToExcel(branchName: string, rates: RateMaster[]
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `ราคาขนส่ง_${branchName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  // ชื่อไฟล์บอกงวด — คนเปิดไฟล์ทีหลังต้องรู้ทันทีว่าเป็นราคาของงวดไหน ไม่ใช่ราคาหลัก
+  const cycleTag = cycle ? `_${cycle.name.replace(/[\s/\\:*?"<>|]+/g, '_')}` : '';
+  a.download = `ราคาขนส่ง_${branchName}${cycleTag}_${new Date().toISOString().slice(0, 10)}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
 }
