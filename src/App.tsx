@@ -338,7 +338,8 @@ export default function App() {
             {tab === 'jastran-unknown' && <JastranTab key="jas-unknown" db={db} cycle={cycle} cycleTrips={cycleTrips} api={api} branchId={effBranchId} unknownPlate
               reload={() => fetchState(selectedCycleId)} gotoCycle={(id: string) => fetchState(id)} showToast={showToast} />}
             {tab === 'fuel' && <FuelDeductionTab db={db} cycle={cycle} api={api} branchId={effBranchId}
-              reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
+              reload={() => fetchState(selectedCycleId)} showToast={showToast}
+              isAdminHQ={!!(auth?.canEditRates || isHQLike)} />}
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={isHQLike} />}
             {tab === 'driverkpi' && <DriverKpiTab db={db} cycle={cycle} />}
             {tab === 'costarea' && <CostAreaTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
@@ -582,9 +583,12 @@ function CycleBar({ cycles, selectedCycleId, setSelectedCycleId, onCreated, api,
     });
     if (!ok) return;
     try {
-      await api(`/api/cycles/${cur.id}`, 'PUT', { status: closing ? 'closed' : 'open' });
+      const r = await api(`/api/cycles/${cur.id}`, 'PUT', { status: closing ? 'closed' : 'open' });
       onCreated(cur.id);
-      showToast('success', closing ? 'ปิดรอบแล้ว' : 'เปิดรอบแล้ว');
+      // สัญญาผ่อนหัก: รถที่ไม่มีเที่ยววิ่งในรอบนี้ถูกพักงวดให้อัตโนมัติ -> บอกแอดมินทันที (กติกาเจ้าของ)
+      const sk: any[] = r?.loanSkipped || [];
+      if (closing && sk.length) showToast('warning', `ปิดรอบแล้ว — พักงวดสัญญาผ่อนหักให้ ${sk.length} ราย (ไม่มีเที่ยววิ่ง): ${sk.map((s) => `${s.plateNo} ${s.driverName}`).join(', ')} — เลื่อนไปหักรอบถัดไป`);
+      else showToast('success', closing ? 'ปิดรอบแล้ว' : 'เปิดรอบแล้ว');
     } catch (e: any) { showToast('error', e.message); }
   };
 
@@ -2041,7 +2045,185 @@ const TripCard: React.FC<{ trip: TripDocument; onDelete: () => void; branchName?
 // Tab: ค่าน้ำมัน & รายการหัก
 // ===========================================================================
 const ALL_BRANCH_HINT = 'อยู่โหมดภาพรวมทุกสาขา — เลือกสาขาที่มุมบนขวาเพื่อจัดการข้อมูล';
-function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) {
+
+// ---------------------------------------------------------------------------
+// สัญญาผ่อนหัก (admin/HQ เท่านั้น) — ตั้งครั้งเดียว ระบบสร้างแถว "รายการหัก" ให้เองทุกรอบจนครบ
+// ข้อมูลไม่อยู่ใน /api/state (สาขาไม่ควรเห็นยอดคงเหลือ) -> โหลดแยกจาก /api/loan-plans
+// ---------------------------------------------------------------------------
+function LoanPlanPanel({ db, cycle, api, branchId, reload, showToast }: any) {
+  const [plans, setPlans] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showClosed, setShowClosed] = useState(false);
+  const [open, setOpen] = useState<string>(''); // สัญญาที่กางรายละเอียดอยู่
+  const branchVehicles = (db.vehicles as Vehicle[])
+    .filter((v) => v.branchId === branchId && v.status === 'active')
+    .sort((a, b) => a.plateNo.localeCompare(b.plateNo, 'th'));
+  const openCycles = (db.cycles as BillingCycle[]).filter((c) => c.status === 'open').sort((a, b) => b.startDate.localeCompare(a.startDate));
+  const [form, setForm] = useState({ plateNo: '', driverName: '', total: 0, perCycle: 0, startCycleId: cycle?.id || '', note: '' });
+  useEffect(() => { setForm((f) => ({ ...f, plateNo: '', driverName: '', startCycleId: cycle?.id || f.startCycleId })); }, [branchId, cycle?.id]);
+
+  const load = async () => {
+    if (!branchId) { setPlans([]); return; }
+    setLoading(true);
+    try { const r = await api(`/api/loan-plans?branchId=${encodeURIComponent(branchId)}`, 'GET'); setPlans(r.plans || []); }
+    catch (e: any) { showToast('error', e.message); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { void load(); }, [branchId, db.deductions?.length, db.cycles?.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pickPlate = (plateNo: string) => {
+    const v = branchVehicles.find((x) => x.plateNo === plateNo);
+    setForm({ ...form, plateNo, driverName: v?.driverName || '' });
+  };
+  const create = async () => {
+    if (!form.plateNo) return showToast('warning', 'เลือกทะเบียนก่อน');
+    if (!(form.total > 0) || !(form.perCycle > 0)) return showToast('warning', 'กรอกยอดรวมและหักงวดละให้ครบ');
+    if (form.perCycle > form.total) return showToast('warning', 'หักงวดละต้องไม่เกินยอดรวม');
+    const n = Math.ceil(form.total / form.perCycle);
+    const sc = openCycles.find((c) => c.id === form.startCycleId);
+    const ok = await confirmAction({
+      title: 'ตั้งสัญญาผ่อนหัก?',
+      text: `${form.plateNo} ${form.driverName} ยืม ${money(form.total)} บาท หักงวดละ ${money(form.perCycle)} บาท = ${n} งวด เริ่ม "${sc?.name || '-'}" ระบบจะสร้างรายการหักให้เองทุกรอบจนครบ`,
+      confirmText: 'ตั้งสัญญา',
+    });
+    if (!ok) return;
+    try {
+      const r = await api('/api/loan-plans', 'POST', { branchId, ...form });
+      showToast('success', `ตั้งสัญญาแล้ว — สร้างรายการหักในรอบที่เปิดอยู่ ${r.createdRows} รายการ`);
+      setForm({ plateNo: '', driverName: '', total: 0, perCycle: 0, startCycleId: cycle?.id || '', note: '' });
+      await load(); reload();
+    } catch (e: any) { showToast('error', e.message); }
+  };
+  const skip = async (p: any, row: any) => {
+    const un = row.skipped;
+    let reason = '';
+    if (!un) {
+      const ok = await confirmAction({ title: `พักงวด "${row.cycleName}"?`, text: `${p.plateNo} ${p.driverName} จะไม่ถูกหักในรอบนี้ และเลื่อนไปหักรอบถัดไปจนครบ`, confirmText: 'พักงวด', danger: true });
+      if (!ok) return;
+      reason = (window.prompt('เหตุผลที่พักงวด (ไม่บังคับ)', '') || '').trim() || 'แอดมินสั่งพักงวด';
+    }
+    try { await api(`/api/loan-plans/${p.id}/skip`, 'POST', { cycleId: row.cycleId, unskip: un, reason }); showToast('success', un ? 'ยกเลิกพักงวดแล้ว' : 'พักงวดแล้ว'); await load(); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+  const movePlate = async (p: any, plateNo: string) => {
+    if (!plateNo || plateNo === p.plateNo) return;
+    const ok = await confirmAction({ title: 'ย้ายทะเบียน?', text: `ย้ายสัญญาของ ${p.driverName} จาก ${p.plateNo} ไป ${plateNo} — รายการหักในรอบที่ยังเปิดอยู่จะย้ายตาม รอบที่ปิดแล้วคงเดิม`, confirmText: 'ย้าย' });
+    if (!ok) return;
+    try { await api(`/api/loan-plans/${p.id}`, 'PUT', { plateNo }); showToast('success', 'ย้ายทะเบียนแล้ว'); await load(); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+  const closeEarly = async (p: any) => {
+    const raw = window.prompt(`ปิดสัญญาก่อนกำหนดของ ${p.driverName}\nคงเหลือในระบบ ${money(p.stats.remaining)} บาท\nกรอกยอดที่จ่ายคืนนอกระบบ (บาท):`, String(p.stats.remaining));
+    if (raw == null) return;
+    const paidOutside = Number(raw);
+    if (!(paidOutside >= 0)) return showToast('warning', 'ยอดไม่ถูกต้อง');
+    const ok = await confirmAction({ title: 'ยืนยันปิดสัญญาก่อนกำหนด?', text: `จ่ายคืนนอกระบบ ${money(paidOutside)} บาท — รายการหักในรอบที่ยังเปิดอยู่จะถูกลบ รอบที่ปิดแล้วคงเดิม`, confirmText: 'ปิดสัญญา', danger: true });
+    if (!ok) return;
+    try { await api(`/api/loan-plans/${p.id}/close`, 'POST', { paidOutside, reason: 'ปิดก่อนกำหนด (จ่ายคืนนอกระบบ)' }); showToast('success', 'ปิดสัญญาแล้ว'); await load(); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+  const del = async (p: any) => {
+    if (!(await confirmDelete(`สัญญาของ ${p.driverName} (${p.plateNo}) — ลบได้เฉพาะที่ยังไม่เคยหักจริง`))) return;
+    try { await api(`/api/loan-plans/${p.id}`, 'DELETE'); showToast('success', 'ลบสัญญาแล้ว'); await load(); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+
+  const shown = plans.filter((p) => showClosed || p.status === 'active');
+  return (
+    <Section title="สัญญาผ่อนหัก (ยืมเงิน หักอัตโนมัติทุกงวด) — เฉพาะผู้ดูแล/สำนักงานใหญ่" icon={Coins}>
+      <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 mb-3">
+        ตั้งครั้งเดียว ระบบสร้าง "รายการหัก" ให้เองทุกครั้งที่เปิดรอบใหม่จนครบยอด · รอบที่รถไม่มีเที่ยววิ่ง ระบบพักงวดให้ตอนปิดรอบ แล้วเลื่อนไปหักรอบถัดไป · สาขาเห็นแค่แถวหัก ไม่เห็นยอดคงเหลือ
+      </p>
+      {!branchId ? <p className="text-sm text-natural-muted">{ALL_BRANCH_HINT}</p> : (<>
+        <div className="flex flex-wrap gap-2 mb-3">
+          <select aria-label="ทะเบียนรถ (สัญญา)" value={form.plateNo} onChange={(e) => pickPlate(e.target.value)} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-40">
+            <option value="">— เลือกทะเบียน —</option>
+            {branchVehicles.map((v) => <option key={v.id} value={v.plateNo}>{v.plateNo}{v.driverName ? ` · ${v.driverName}` : ''}</option>)}
+          </select>
+          <input aria-label="ชื่อคนขับ" placeholder="ชื่อคนขับ" value={form.driverName} onChange={(e) => setForm({ ...form, driverName: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-44" />
+          <input type="number" aria-label="ยอดรวมที่ยืม" placeholder="ยอดรวม" value={form.total || ''} onChange={(e) => setForm({ ...form, total: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
+          <input type="number" aria-label="หักงวดละ" placeholder="หักงวดละ" value={form.perCycle || ''} onChange={(e) => setForm({ ...form, perCycle: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
+          <select aria-label="รอบที่เริ่มหัก" value={form.startCycleId} onChange={(e) => setForm({ ...form, startCycleId: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm">
+            <option value="">— เริ่มหักรอบ —</option>
+            {openCycles.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <input aria-label="หมายเหตุสัญญา" placeholder="หมายเหตุ" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-40" />
+          <button onClick={create} className="bg-brand-navy text-white rounded-lg px-3 text-sm font-semibold">ตั้งสัญญา</button>
+          {form.total > 0 && form.perCycle > 0 && form.perCycle <= form.total && <span className="text-xs text-natural-muted self-center">= {Math.ceil(form.total / form.perCycle)} งวด</span>}
+        </div>
+        <div className="flex items-center gap-3 mb-2 text-xs">
+          <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} />แสดงสัญญาที่ปิดแล้ว</label>
+          <button type="button" onClick={load} className="text-brand-navy underline">โหลดใหม่</button>
+          {loading && <span className="text-natural-muted">กำลังโหลด...</span>}
+        </div>
+        {!shown.length ? <p className="text-sm text-natural-muted">ยังไม่มีสัญญา</p> : (
+          <div className="overflow-x-auto rounded-xl border border-natural-border">
+            <table className="w-full text-xs min-w-[900px]">
+              <thead><tr className="bg-brand-navy text-white text-left">
+                {['ทะเบียน', 'คนขับ', 'ยอดรวม', 'งวดละ', 'หักแล้ว', 'คงเหลือ', 'เหลืออีก', 'งวดถัดไป', 'สถานะ', ''].map((h) => <th key={h} className="py-2 px-2 font-semibold">{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {shown.map((p) => { const s = p.stats; const isOpen = open === p.id; return (
+                  <Fragment key={p.id}>
+                    <tr className={`border-t border-natural-border ${p.status === 'closed' ? 'text-natural-muted bg-natural-bg/60' : 'bg-white'}`}>
+                      <td className="py-1.5 px-2 font-semibold text-brand-navy">{p.plateNo}</td>
+                      <td className="py-1.5 px-2">{p.driverName}</td>
+                      <td className="py-1.5 px-2 text-right">{money(p.total)}</td>
+                      <td className="py-1.5 px-2 text-right">{money(p.perCycle)}</td>
+                      <td className="py-1.5 px-2 text-right">{s.paidCount}/{s.installmentsTotal} งวด · {money(s.paid)}</td>
+                      <td className="py-1.5 px-2 text-right font-semibold">{money(s.remaining)}</td>
+                      <td className="py-1.5 px-2 text-right">{s.installmentsLeft} งวด</td>
+                      <td className="py-1.5 px-2">{s.nextCycleName || '-'}</td>
+                      <td className="py-1.5 px-2">{p.status === 'active' ? <span className="text-emerald-700 font-semibold">กำลังหัก</span> : <span title={p.closedReason}>{p.closedEarly ? 'ปิดก่อนกำหนด' : 'ครบแล้ว'}</span>}</td>
+                      <td className="py-1.5 px-2 whitespace-nowrap">
+                        <button type="button" onClick={() => setOpen(isOpen ? '' : p.id)} className="text-brand-navy underline mr-2">{isOpen ? 'ซ่อน' : 'รายละเอียด'}</button>
+                        {p.status === 'active' && <button type="button" onClick={() => closeEarly(p)} className="text-amber-700 underline mr-2">ปิดก่อนกำหนด</button>}
+                        {!s.rows.some((r: any) => r.cycleStatus === 'closed' && !r.skipped) && <button type="button" onClick={() => del(p)} className="text-rose-600 underline">ลบ</button>}
+                      </td>
+                    </tr>
+                    {isOpen && <tr className="border-t border-natural-border bg-amber-50/40"><td colSpan={10} className="px-3 py-2">
+                      <div className="flex flex-wrap gap-4 text-xs">
+                        <div className="min-w-[320px]">
+                          <div className="font-semibold text-brand-navy mb-1">รายการหักตามรอบ</div>
+                          {!s.rows.length ? <div className="text-natural-muted">ยังไม่มีแถว (รอบเริ่ม "{p.startCycleName}" ยังไม่ถูกเปิด)</div> : s.rows.map((r: any) => (
+                            <div key={r.id} className="flex items-center gap-2 py-0.5">
+                              <span className="w-40">{r.cycleName}</span>
+                              <span className="w-16 text-right">{r.skipped ? '0.00' : money(r.amount)}</span>
+                              <span className={r.skipped ? 'text-amber-700' : 'text-natural-muted'}>{r.skipped ? `พักงวด — ${r.skipReason}` : `งวด ${r.installmentNo}/${s.installmentsTotal}`}{r.cycleStatus === 'closed' ? ' · รอบปิดแล้ว' : ''}{r.plateNo !== p.plateNo ? ` · ทะเบียน ${r.plateNo}` : ''}</span>
+                              {r.cycleStatus === 'open' && p.status === 'active' && <button type="button" onClick={() => skip(p, r)} className="text-brand-navy underline">{r.skipped ? 'ยกเลิกพัก' : 'พักงวดนี้'}</button>}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="min-w-[260px]">
+                          <div className="font-semibold text-brand-navy mb-1">ย้ายทะเบียน (คนขับย้ายคัน)</div>
+                          {p.status === 'active' ? (
+                            <select aria-label="ย้ายทะเบียน" value={p.plateNo} onChange={(e) => movePlate(p, e.target.value)} className="border border-natural-border rounded-lg px-2 py-1 text-xs">
+                              {branchVehicles.map((v) => <option key={v.id} value={v.plateNo}>{v.plateNo}{v.driverName ? ` · ${v.driverName}` : ''}</option>)}
+                            </select>
+                          ) : <span className="text-natural-muted">สัญญาปิดแล้ว</span>}
+                          {p.note && <div className="mt-2 text-natural-muted">หมายเหตุ: {p.note}</div>}
+                          {p.paidOutside != null && p.closedEarly && <div className="mt-1 text-natural-muted">จ่ายคืนนอกระบบ {money(p.paidOutside)} บาท</div>}
+                        </div>
+                        <div className="min-w-[280px]">
+                          <div className="font-semibold text-brand-navy mb-1">ประวัติ</div>
+                          {(p.history || []).slice().reverse().map((h: any, i: number) => (
+                            <div key={i} className="text-natural-muted py-0.5">{String(h.at).slice(0, 16).replace('T', ' ')} · {h.by} · <span className="text-brand-navy">{h.action}</span>{h.detail ? ` — ${h.detail}` : ''}</div>
+                          ))}
+                        </div>
+                      </div>
+                    </td></tr>}
+                  </Fragment>
+                ); })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </>)}
+    </Section>
+  );
+}
+
+function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdminHQ = false }: any) {
   const cats: MoneyCategory[] = db.moneyCategories || [];
   const incomeCats = cats.filter((c) => c.kind === 'income' && c.status === 'active');
   // รถของ "สาขานี้" เท่านั้น — ใช้เป็นตัวเลือกในช่องทะเบียน (ไม่ให้พิมพ์เอง)
@@ -2174,6 +2356,9 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
         </>}
       </div>
 
+      {/* สัญญาผ่อนหัก — admin/HQ เท่านั้น (สาขาเห็นแค่แถวหักในตาราง "รายการหัก" ด้านล่าง) */}
+      {isAdminHQ && <LoanPlanPanel db={db} cycle={cycle} api={api} branchId={branchId} reload={reload} showToast={showToast} />}
+
     <div className="grid md:grid-cols-2 gap-5">
       <Section title="ค่าน้ำมัน (แยกตามทะเบียน)" icon={Fuel}>
         {/* นำเข้า/เทมเพลตค่าน้ำมันจาก Excel */}
@@ -2236,8 +2421,11 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast }: any) 
           <input aria-label="ใบกระจายเลขที่" placeholder="ใบกระจายเลขที่" value={dForm.docNo} onChange={(e) => setDForm({ ...dForm, docNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-36" />
           <button onClick={() => addEntry(dForm.plateNo, dForm.categoryId, dForm.amount, 'deduction', dForm.docNo, () => setDForm({ plateNo: '', categoryId: '', amount: 0, docNo: '' }))} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={dedF.map((d: DeductionEntry) => [d.plateNo, d.label, d.docNo || '-', money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวน']}
-          onDelete={async (i: number) => { await api(`/api/deductions/${dedF[i].id}`, 'DELETE'); reload(); }} />
+        {/* แถวจากสัญญาผ่อนหัก: บอกให้รู้ว่าเป็นอัตโนมัติ + งวดที่เท่าไร (ลบตรงนี้ไม่ได้ server ตอบ 409 พร้อมเหตุผล) */}
+        <SimpleTable rows={dedF.map((d: DeductionEntry) => [d.plateNo,
+          d.planId ? <span title={d.note || ''}>{d.label} <span className={`text-[10px] font-semibold ${d.skipped ? 'text-amber-700' : 'text-brand-navy'}`}>🔁 {d.skipped ? 'พักงวดนี้' : (d.note || '').replace(/^สัญญาผ่อนหัก\s*/, '')}</span></span> : d.label,
+          d.docNo || '-', money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวน']}
+          onDelete={async (i: number) => { try { await api(`/api/deductions/${dedF[i].id}`, 'DELETE'); reload(); } catch (e: any) { showToast('error', e.message); } }} />
       </Section>
 
       {/* จัดการประเภท — เพิ่มชื่อใน dropdown ได้เองโดยไม่ต้องแก้โค้ด */}

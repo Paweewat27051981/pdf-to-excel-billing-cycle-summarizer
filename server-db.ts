@@ -216,6 +216,7 @@ const ID_KEYED: (keyof DatabaseState)[] = [
   'branches',
   'vehicles', 'receiverGroups', 'receiverGroupAliases', 'conversionRules', 'manualBoxSenders', 'destinationOverrides', 'moneyCategories',
   'oilPrices', 'tripDistances', 'mountainRoutes', // [ทดลอง] ราคาน้ำมัน OR + cache ระยะลูป + master ขึ้นเขา
+  'loanPlans', // สัญญาผ่อนหัก — แก้ทีละฉบับ
 ];
 export function isIdKeyed(collKey: keyof DatabaseState): boolean {
   return ID_KEYED.includes(collKey);
@@ -253,6 +254,8 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     tripDocuments: normalizeTrips(withBranch(toArray(state.tripDocuments), [])),
     fuelEntries: withBranch(toArray(state.fuelEntries), []),
     deductions: withBranch(migrateDeductions(toArray(state.deductions)), []),
+    // สัญญาผ่อนหัก: history เป็น array -> Firebase ตัด array ว่างทิ้ง ต้องเติมกลับ (ดู memory firebase-strips-empty-arrays)
+    loanPlans: toArray(state.loanPlans).map((p: any) => ({ ...p, history: toArray(p.history) })),
     oilPrices: toArray(state.oilPrices), // [ทดลอง] อ่านได้ทั้ง array/map (ว่าง = [])
     tripDistances: toArray(state.tripDistances), // [ทดลอง] cache ระยะลูป
     mountainRoutes: toArray(state.mountainRoutes), // [ทดลอง] master น้ำมันขึ้นเขา
@@ -278,7 +281,7 @@ const ROOT_NODES = [
   'settings', 'branches', 'cycles', 'vehicles', 'rateMasters', 'rateOverrides', 'rateMasterHistory',
   'receiverGroups', 'receiverGroupAliases', 'conversionRules', 'manualBoxSenders', 'destinationOverrides',
   'moneyCategories', 'tripDocuments', 'fuelEntries', 'deductions', 'tripDistances', 'oilPrices',
-  'mountainRoutes', 'fuelPolicy',
+  'mountainRoutes', 'fuelPolicy', 'loanPlans',
 ] as const;
 
 // อ่าน Firebase ทีละ top-level node (ไม่อ่าน root ทั้งก้อน) — กัน .val() build object 35MB

@@ -23,6 +23,7 @@ import {
   TripDocument,
   FuelEntry,
   DeductionEntry,
+  LoanPlan,
   ExtractedTripDocument,
 } from './src/types.js';
 import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck, matchRate } from './src/calc.js';
@@ -995,6 +996,8 @@ async function startServer() {
         destinationOverrides: inBranch(db.destinationOverrides),
         moneyCategories: inBranch(db.moneyCategories),
         tripDistances: inBranch(db.tripDistances || []),
+        // สัญญาผ่อนหัก "ไม่ส่งออก" ทาง state (endpoint นี้ไม่มีด่านสิทธิ์) — admin/HQ ดูผ่าน /api/loan-plans
+        loanPlans: [],
       };
       // บอก client ว่า tripDocuments ในก้อนนี้ครอบคลุมแค่งวดไหน ('' = ทุกงวด)
       res.json({ ...safe, _tripsCycleId: tripsCycleId });
@@ -1081,7 +1084,13 @@ async function startServer() {
       // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
       await flushCollection('cycles');
 
-      res.status(201).json({ ...newCycle, copiedOverrides, copiedFrom });
+      // ---- สัญญาผ่อนหัก: สร้างแถวหักของรอบใหม่ให้ทุกสัญญาที่ยังไม่ครบ ----
+      // ทำหลังประกาศรอบ (reconcile มองเฉพาะรอบที่มีอยู่จริง) พลาดไม่ทำให้เปิดรอบล้ม — เรียกซ้ำได้ตอนตั้ง/แก้สัญญา
+      let autoDeductions = 0;
+      try { autoDeductions = await reconcileAllPlans(db); }
+      catch (e: any) { console.error('[cycles] สร้างแถวสัญญาผ่อนหักไม่สำเร็จ:', e.message); }
+
+      res.status(201).json({ ...newCycle, copiedOverrides, copiedFrom, autoDeductions });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1093,10 +1102,31 @@ async function startServer() {
       const idx = db.cycles.findIndex((c) => c.id === req.params.id);
       if (idx === -1) return res.status(404).json({ error: 'ไม่พบรอบ' });
       const { status } = req.body;
-      if (status) db.cycles[idx].status = status;
+      const cyc = db.cycles[idx];
+      // ---- สัญญาผ่อนหัก: ปิดรอบแล้วรถคันไหน "ไม่มีเที่ยววิ่งเลย" -> พักงวดนั้นให้อัตโนมัติ เลื่อนไปหักรอบถัดไป ----
+      // (กติกาเจ้าของ: ห้ามหักจนติดลบ) ทำก่อนเปลี่ยนสถานะ เพื่อให้แถวถูกแก้ได้ขณะรอบยังเปิด
+      const loanSkipped: { plateNo: string; driverName: string; planId: string }[] = [];
+      if (status === 'closed' && cyc.status !== 'closed') {
+        const plans = (db.loanPlans || []).filter((p) => p.status === 'active');
+        for (const p of plans) {
+          const row = db.deductions.find((d) => d.planId === p.id && d.cycleId === cyc.id && !d.skipped);
+          if (!row) continue;
+          const income = db.tripDocuments.filter((t) => t.cycleId === cyc.id && normPlate(t.plateNo) === normPlate(row.plateNo))
+            .reduce((s, t) => s + Number(t.tripAmount || 0), 0);
+          if (income > 0) continue;
+          row.skipped = true; row.amount = 0; row.skipReason = 'ไม่มีเที่ยววิ่งในรอบนี้ — ระบบพักงวดให้ เลื่อนไปหักรอบถัดไป';
+          await saveRecord('deductions', row);
+          p.history.push({ at: new Date().toISOString(), by: 'system', action: 'พักงวดอัตโนมัติ', detail: `${cyc.name} — ไม่มีเที่ยววิ่ง` });
+          p.updatedAt = new Date().toISOString();
+          loanSkipped.push({ plateNo: row.plateNo, driverName: p.driverName, planId: p.id });
+        }
+      }
+      if (status) cyc.status = status;
       // เขียนเฉพาะ node ที่แก้ (เดิม saveDb เขียนทั้ง tree -> Firebase "Write too large" เมื่อ DB โต)
       await flushCollection('cycles');
-      res.json(db.cycles[idx]);
+      // ปิด/เปิดรอบเปลี่ยนว่าแถวไหน "แก้ได้" -> ให้สัญญาเรียงงวด/สถานะใหม่ (พลาดไม่ทำให้ปิดรอบล้ม)
+      if (status) { try { await reconcileAllPlans(db); for (const s of loanSkipped) { const p = db.loanPlans?.find((x) => x.id === s.planId); if (p) await saveRecord('loanPlans', p); } } catch (e: any) { console.error('[cycles] reconcile สัญญาผ่อนหักไม่สำเร็จ:', e.message); } }
+      res.json({ ...cyc, loanSkipped });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1253,6 +1283,278 @@ async function startServer() {
   masterRoutes<ProductConversionRule>('conversion-rules', 'conversionRules', 'rule');
   masterRoutes<DestinationOverride>('destination-overrides', 'destinationOverrides', 'do');
   masterRoutes<FuelEntry>('fuel', 'fuelEntries', 'fuel');
+
+  // ===================== สัญญาผ่อนหัก (LoanPlan) =====================
+  // คนขับยืมเงินบริษัท -> ระบบสร้าง "แถวรายการหัก" ให้เองทุกรอบจนครบ (เจ้าของสั่ง 15 ก.ย.69)
+  // กติกาที่เจ้าของเคาะ: สาขาเห็นแถวหัก (ยอดจ่ายต้องตรง) แต่ไม่เห็นสัญญา/ยอดคงเหลือ (admin/HQ เท่านั้น)
+  //   · รอบที่รถไม่มีเที่ยววิ่งเลย -> พักงวดนั้น เลื่อนไปหักรอบถัดไป (ห้ามหักจนติดลบ)
+  //   · สัญญาผูกกับคนขับ ย้ายทะเบียนได้ · จ่ายคืนก้อนใหญ่ -> ปิดก่อนกำหนด ระบุยอดที่จ่ายนอกระบบ
+  const cycleOrd = (c: { year: number; month: number; half: string }) => c.year * 100 + c.month * 2 + (c.half === 'first' ? 0 : 1);
+  const nowIso = () => new Date().toISOString();
+  // สิทธิ์ดู/จัดการสัญญา: admin (canEditRates) หรือ HQ — อ่านจาก DB ปัจจุบันเสมอ (แบบเดียวกับ requireRateEditor)
+  const requireAdminOrHQ = async (req: any, res: any, next: any) => {
+    try {
+      const sess = getSession(req);
+      if (!sess) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบใหม่ (เซสชันหมดอายุ)' });
+      const db = await getDb();
+      const me = db.branches.find((b) => b.id === sess.branchId);
+      if (!me || me.status !== 'active') return res.status(403).json({ error: 'บัญชีนี้ถูกปิดใช้งานแล้ว' });
+      if (me.canEditRates || me.isHQ) return next();
+      return res.status(403).json({ error: 'สัญญาผ่อนหักดูได้เฉพาะผู้ดูแลราคา (admin) และสำนักงานใหญ่' });
+    } catch (err: any) { return res.status(500).json({ error: err.message }); }
+  };
+  const planRows = (db: DatabaseState, planId: string) => {
+    const ord = new Map(db.cycles.map((c) => [c.id, cycleOrd(c)]));
+    return db.deductions.filter((d) => d.planId === planId).sort((a, b) => (ord.get(a.cycleId) ?? 0) - (ord.get(b.cycleId) ?? 0));
+  };
+  const planStats = (db: DatabaseState, p: LoanPlan) => {
+    const rows = planRows(db, p.id);
+    const cyc = (id: string) => db.cycles.find((c) => c.id === id);
+    // "หักแล้ว" = แถวในรอบที่ปิดแล้วเท่านั้น (รอบเปิดอยู่ = ยังไม่จ่าย แค่ "จ่อหัก") — ตรงกับที่บัญชีเข้าใจ
+    const paidRows = rows.filter((r) => !r.skipped && cyc(r.cycleId)?.status === 'closed');
+    const scheduledRows = rows.filter((r) => !r.skipped && cyc(r.cycleId)?.status !== 'closed');
+    const paid = round2(paidRows.reduce((s, r) => s + Number(r.amount || 0), 0));
+    const scheduled = round2(scheduledRows.reduce((s, r) => s + Number(r.amount || 0), 0));
+    const remaining = round2(Math.max(0, p.total - paid - Number(p.paidOutside || 0)));
+    const installmentsTotal = Math.max(1, Math.ceil(p.total / p.perCycle));
+    const installmentsLeft = remaining > 0 ? Math.ceil(remaining / p.perCycle) : 0;
+    const nextRow = scheduledRows[0];
+    return {
+      paid, scheduled, remaining, installmentsTotal, installmentsLeft, paidCount: paidRows.length,
+      nextCycleName: p.status === 'active' ? (nextRow ? cyc(nextRow.cycleId)?.name || '' : '(รอเปิดรอบถัดไป)') : '',
+      rows: rows.map((r) => ({ id: r.id, cycleId: r.cycleId, cycleName: cyc(r.cycleId)?.name || r.cycleId, cycleStatus: cyc(r.cycleId)?.status || 'open',
+        plateNo: r.plateNo, amount: r.amount, installmentNo: r.installmentNo ?? null, skipped: !!r.skipped, skipReason: r.skipReason || '' })),
+    };
+  };
+  // หัวใจของฟีเจอร์ — ทำให้แถวหักของสัญญา "ตรงกับสัญญา" เสมอ (idempotent เรียกซ้ำได้ไม่มีผลข้างเคียง):
+  //   1) รอบที่เปิดอยู่และอยู่ตั้งแต่รอบเริ่มเป็นต้นไป ต้องมีแถว 1 แถว (ถ้ายังไม่ครบ)
+  //   2) ไล่ตามลำดับรอบ: แถวในรอบที่ "ปิดแล้ว" ถือเป็นเงินที่หักไปจริง ห้ามแตะ
+  //      แถวในรอบที่เปิดอยู่ คำนวณใหม่ = min(งวดละ, คงเหลือ) + เรียงเลขงวดใหม่ (พักงวดแล้วเลขต้องเลื่อน)
+  //   3) คงเหลือ 0 แล้วยังมีแถวในรอบเปิดเกินมา -> ลบทิ้ง · ปิดก่อนกำหนด -> ลบแถวในรอบเปิดทั้งหมด
+  //   4) ครบ -> ปิดสัญญาอัตโนมัติ / พักงวดจนคงเหลือกลับมา > 0 -> เปิดสัญญากลับ
+  async function reconcilePlan(db: DatabaseState, p: LoanPlan): Promise<{ created: number; updated: number; removed: number }> {
+    const cycById = new Map(db.cycles.map((c) => [c.id, c]));
+    const existing = planRows(db, p.id);
+    const targets = new Map<string, BillingCycle>();
+    for (const r of existing) { const c = cycById.get(r.cycleId); if (c) targets.set(c.id, c); }
+    // ดูที่ closedEarly ไม่ใช่ status: สัญญาที่ "ครบแล้ว" (ปิดอัตโนมัติ) ต้องกลับมาจัดตารางได้
+    // ถ้ารอบที่มีงวดสุดท้ายถูกเปิดใหม่ -> งวดนั้นไม่นับว่าหักแล้ว -> คงเหลือ > 0 -> ต้องเปิดสัญญากลับ (Codex P2)
+    if (!p.closedEarly) {
+      for (const c of db.cycles) if (c.status === 'open' && cycleOrd(c) >= p.startOrd) targets.set(c.id, c);
+    }
+    const ordered = [...targets.values()].sort((a, b) => cycleOrd(a) - cycleOrd(b));
+    const installmentsTotal = Math.max(1, Math.ceil(p.total / p.perCycle));
+    let remaining = round2(p.total - Number(p.paidOutside || 0));
+    let n = 0;
+    const created: DeductionEntry[] = [], updated: DeductionEntry[] = [], removed: string[] = [];
+    for (const c of ordered) {
+      const row = existing.find((r) => r.cycleId === c.id);
+      const closedCycle = c.status === 'closed';
+      if (row && closedCycle) { // เงินที่หักไปแล้วจริง — ห้ามแตะ
+        if (!row.skipped) { remaining = round2(remaining - Number(row.amount || 0)); n++; }
+        continue;
+      }
+      if (row && row.skipped) { // พักงวด: amount ต้องเป็น 0 เสมอ
+        if (Number(row.amount) !== 0) { row.amount = 0; updated.push(row); }
+        if (p.closedEarly) { removed.push(row.id); }
+        continue;
+      }
+      if (p.closedEarly || remaining <= 0) { // ไม่ต้องหักอีก -> แถวในรอบเปิดที่เกินมาต้องหายไป
+        if (row) removed.push(row.id);
+        continue;
+      }
+      const amount = round2(Math.min(p.perCycle, remaining));
+      n++;
+      const note = `สัญญาผ่อนหัก ${p.driverName} งวด ${n}/${installmentsTotal}`;
+      if (!row) {
+        const nr: DeductionEntry = { id: generateId('ded'), branchId: p.branchId, cycleId: c.id, plateNo: p.plateNo, categoryId: p.categoryId,
+          kind: 'deduction', label: p.label, amount, note, planId: p.id, installmentNo: n };
+        db.deductions.push(nr); created.push(nr);
+      } else if (row.amount !== amount || row.installmentNo !== n || row.note !== note || row.plateNo !== p.plateNo) {
+        row.amount = amount; row.installmentNo = n; row.note = note; row.plateNo = p.plateNo; updated.push(row);
+      }
+      remaining = round2(remaining - amount);
+    }
+    if (removed.length) db.deductions = db.deductions.filter((d) => !removed.includes(d.id));
+    // สถานะสัญญา (ยกเว้นปิดก่อนกำหนด ซึ่ง admin เป็นคนตัดสิน)
+    if (!p.closedEarly) {
+      const st = planStats(db, p);
+      const shouldClose = st.remaining <= 0;
+      if (shouldClose && p.status === 'active') {
+        p.status = 'closed'; p.closedAt = nowIso(); p.closedReason = 'หักครบตามสัญญา';
+        p.history.push({ at: nowIso(), by: 'system', action: 'ครบสัญญา', detail: `หักครบ ${money2(p.total)} บาท` });
+        p.updatedAt = nowIso();
+      } else if (!shouldClose && p.status === 'closed') {
+        p.status = 'active'; p.closedAt = undefined; p.closedReason = undefined;
+        p.history.push({ at: nowIso(), by: 'system', action: 'เปิดสัญญากลับ', detail: 'ยอดคงเหลือกลับมามากกว่า 0 (พักงวด)' });
+        p.updatedAt = nowIso();
+      }
+    }
+    if (created.length) await saveRecords('deductions', created);
+    if (updated.length) await saveRecords('deductions', updated);
+    if (removed.length) await removeRecords('deductions', removed);
+    await saveRecord('loanPlans', p);
+    return { created: created.length, updated: updated.length, removed: removed.length };
+  }
+  function money2(n: number) { return Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  // เรียกตอนเปิดรอบใหม่ / ปิดรอบ — ทุกสัญญาที่ยังเปิดอยู่
+  async function reconcileAllPlans(db: DatabaseState): Promise<number> {
+    let created = 0;
+    for (const p of (db.loanPlans || [])) {
+      if (p.closedEarly) continue; // ปิดก่อนกำหนด = admin ตัดสินแล้ว ไม่แตะ; สัญญาครบแล้วยังต้องดู (เปิดรอบใหม่อาจทำให้คงเหลือกลับมา)
+      try { created += (await reconcilePlan(db, p)).created; }
+      catch (e: any) { console.error(`[loan] reconcile ${p.id} ล้มเหลว:`, e.message); }
+    }
+    return created;
+  }
+  const withStats = (db: DatabaseState, p: LoanPlan) => ({ ...p, stats: planStats(db, p) });
+
+  app.get('/api/loan-plans', requireAdminOrHQ, async (req, res) => {
+    try {
+      const db = await getDb();
+      const branchId = typeof req.query.branchId === 'string' ? req.query.branchId : '';
+      const plans = (db.loanPlans || []).filter((p) => !branchId || p.branchId === branchId)
+        .sort((a, b) => (a.status === b.status ? String(b.createdAt).localeCompare(String(a.createdAt)) : a.status === 'active' ? -1 : 1));
+      res.json({ plans: plans.map((p) => withStats(db, p)) });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/loan-plans', requireAdminOrHQ, async (req, res) => {
+    try {
+      const sess = getSession(req)!;
+      const db = await getDb();
+      const b = req.body || {};
+      const branchId = String(b.branchId || '');
+      const plateNo = String(b.plateNo || '').trim();
+      const total = round2(Number(b.total)), perCycle = round2(Number(b.perCycle));
+      if (!branchId || !db.branches.some((x) => x.id === branchId && !x.isHQ && !x.isSystemUser)) return res.status(400).json({ error: 'ต้องระบุสาขา' });
+      const veh = db.vehicles.find((v) => v.branchId === branchId && v.status === 'active' && normPlate(v.plateNo) === normPlate(plateNo));
+      if (!veh) return res.status(400).json({ error: `ไม่พบทะเบียน "${plateNo}" ในรถของสาขานี้` });
+      const driverName = String(b.driverName || veh.driverName || '').trim();
+      if (!driverName) return res.status(400).json({ error: 'ต้องระบุชื่อคนขับ' });
+      if (!(total > 0)) return res.status(400).json({ error: 'ยอดรวมต้องมากกว่า 0' });
+      if (!(perCycle > 0) || perCycle > total) return res.status(400).json({ error: 'หักงวดละต้องมากกว่า 0 และไม่เกินยอดรวม' });
+      const start = db.cycles.find((c) => c.id === String(b.startCycleId || ''));
+      if (!start) return res.status(400).json({ error: 'ต้องเลือกรอบที่เริ่มหัก' });
+      if (start.status === 'closed') return res.status(400).json({ error: `รอบ "${start.name}" ปิดแล้ว เริ่มหักในรอบที่ปิดแล้วไม่ได้` });
+      const cat = db.moneyCategories.find((c) => c.branchId === branchId && c.kind === 'deduction' && c.status === 'active' &&
+        (b.categoryId ? c.id === b.categoryId : /ยืมเงิน/.test(c.name)));
+      if (!cat) return res.status(400).json({ error: 'ไม่พบประเภทรายการหัก "ยืมเงิน" ของสาขานี้ — เพิ่มประเภทก่อน' });
+      const dup = (db.loanPlans || []).find((p) => p.branchId === branchId && p.status === 'active' && p.driverName === driverName && p.categoryId === cat.id);
+      if (dup) return res.status(409).json({ error: `คนขับ "${driverName}" มีสัญญา "${cat.name}" ที่ยังหักไม่ครบอยู่แล้ว (คงเหลือ ${money2(planStats(db, dup).remaining)}) — ปิดสัญญาเดิมก่อน` });
+      const p: LoanPlan = {
+        id: generateId('loan'), branchId, plateNo: veh.plateNo, driverName, categoryId: cat.id, label: cat.name,
+        total, perCycle, startCycleId: start.id, startCycleName: start.name, startOrd: cycleOrd(start),
+        status: 'active', note: String(b.note || '').trim() || undefined,
+        history: [{ at: nowIso(), by: sess.name, action: 'ตั้งสัญญา', detail: `${money2(total)} บาท หักงวดละ ${money2(perCycle)} เริ่ม ${start.name} ทะเบียน ${veh.plateNo}` }],
+        createdBy: sess.name, createdAt: nowIso(),
+      };
+      if (!db.loanPlans) db.loanPlans = [];
+      db.loanPlans.push(p);
+      await saveRecord('loanPlans', p);
+      const r = await reconcilePlan(db, p); // รอบเริ่มเปิดอยู่แล้ว -> สร้างแถวให้ทันที
+      res.status(201).json({ ...withStats(db, p), createdRows: r.created });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // แก้สัญญา: ย้ายทะเบียน / แก้ชื่อคนขับ / หมายเหตุ (ยอดรวม-งวดละ แก้ไม่ได้ ให้ปิดแล้วตั้งใหม่ กันตัวเลขเพี้ยนกลางทาง)
+  app.put('/api/loan-plans/:id', requireAdminOrHQ, async (req, res) => {
+    try {
+      const sess = getSession(req)!;
+      const db = await getDb();
+      const p = (db.loanPlans || []).find((x) => x.id === req.params.id);
+      if (!p) return res.status(404).json({ error: 'ไม่พบสัญญา' });
+      const b = req.body || {};
+      const changes: string[] = [];
+      if (b.plateNo != null && String(b.plateNo).trim() && normPlate(String(b.plateNo)) !== normPlate(p.plateNo)) {
+        const veh = db.vehicles.find((v) => v.branchId === p.branchId && v.status === 'active' && normPlate(v.plateNo) === normPlate(String(b.plateNo)));
+        if (!veh) return res.status(400).json({ error: `ไม่พบทะเบียน "${b.plateNo}" ในรถของสาขานี้` });
+        changes.push(`ย้ายทะเบียน ${p.plateNo} -> ${veh.plateNo}`); p.plateNo = veh.plateNo;
+      }
+      if (b.driverName != null && String(b.driverName).trim() && String(b.driverName).trim() !== p.driverName) { changes.push(`ชื่อคนขับ ${p.driverName} -> ${String(b.driverName).trim()}`); p.driverName = String(b.driverName).trim(); }
+      if (b.note != null && String(b.note).trim() !== (p.note || '')) { p.note = String(b.note).trim() || undefined; changes.push('แก้หมายเหตุ'); }
+      if (!changes.length) return res.json(withStats(db, p));
+      p.history.push({ at: nowIso(), by: sess.name, action: 'แก้สัญญา', detail: changes.join(' · ') });
+      p.updatedAt = nowIso();
+      await reconcilePlan(db, p); // ย้ายทะเบียน -> แถวในรอบเปิดย้ายตาม (รอบปิดแล้วคงเดิม)
+      res.json(withStats(db, p));
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // พักงวด / ยกเลิกพัก — เฉพาะรอบที่ยังเปิดอยู่
+  app.post('/api/loan-plans/:id/skip', requireAdminOrHQ, async (req, res) => {
+    try {
+      const sess = getSession(req)!;
+      const db = await getDb();
+      const p = (db.loanPlans || []).find((x) => x.id === req.params.id);
+      if (!p) return res.status(404).json({ error: 'ไม่พบสัญญา' });
+      const cycleId = String(req.body?.cycleId || ''), unskip = !!req.body?.unskip;
+      const c = db.cycles.find((x) => x.id === cycleId);
+      if (!c) return res.status(400).json({ error: 'ต้องระบุรอบ' });
+      if (c.status === 'closed') return res.status(400).json({ error: `รอบ "${c.name}" ปิดแล้ว แก้การพักงวดไม่ได้` });
+      const row = db.deductions.find((d) => d.planId === p.id && d.cycleId === cycleId);
+      if (!row) return res.status(404).json({ error: `สัญญานี้ไม่มีแถวหักในรอบ "${c.name}"` });
+      if (unskip) { row.skipped = false; row.skipReason = undefined; }
+      else { row.skipped = true; row.amount = 0; row.skipReason = String(req.body?.reason || 'แอดมินสั่งพักงวด').trim(); }
+      await saveRecord('deductions', row);
+      p.history.push({ at: nowIso(), by: sess.name, action: unskip ? 'ยกเลิกพักงวด' : 'พักงวด', detail: `${c.name}${unskip ? '' : ' — ' + row.skipReason}` });
+      p.updatedAt = nowIso();
+      await reconcilePlan(db, p);
+      res.json(withStats(db, p));
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ปิดก่อนกำหนด (จ่ายคืนนอกระบบ) — แถวในรอบที่เปิดอยู่ถูกลบ รอบที่ปิดแล้วคงเดิม
+  app.post('/api/loan-plans/:id/close', requireAdminOrHQ, async (req, res) => {
+    try {
+      const sess = getSession(req)!;
+      const db = await getDb();
+      const p = (db.loanPlans || []).find((x) => x.id === req.params.id);
+      if (!p) return res.status(404).json({ error: 'ไม่พบสัญญา' });
+      if (p.status === 'closed') return res.status(400).json({ error: 'สัญญานี้ปิดแล้ว' });
+      const paidOutside = round2(Number(req.body?.paidOutside || 0));
+      if (paidOutside < 0) return res.status(400).json({ error: 'ยอดที่จ่ายนอกระบบต้องไม่ติดลบ' });
+      p.closedEarly = true; p.paidOutside = paidOutside; p.status = 'closed'; p.closedAt = nowIso();
+      p.closedReason = String(req.body?.reason || 'ปิดก่อนกำหนด').trim();
+      p.history.push({ at: nowIso(), by: sess.name, action: 'ปิดก่อนกำหนด', detail: `จ่ายคืนนอกระบบ ${money2(paidOutside)} บาท — ${p.closedReason}` });
+      p.updatedAt = nowIso();
+      const r = await reconcilePlan(db, p);
+      res.json({ ...withStats(db, p), removedRows: r.removed });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ลบสัญญา — ได้เฉพาะที่ยังไม่เคยหักจริง (ไม่มีแถวในรอบที่ปิดแล้ว)
+  app.delete('/api/loan-plans/:id', requireAdminOrHQ, async (req, res) => {
+    try {
+      const db = await getDb();
+      const p = (db.loanPlans || []).find((x) => x.id === req.params.id);
+      if (!p) return res.status(404).json({ error: 'ไม่พบสัญญา' });
+      const rows = planRows(db, p.id);
+      const paidRows = rows.filter((r) => db.cycles.find((c) => c.id === r.cycleId)?.status === 'closed' && !r.skipped);
+      if (paidRows.length) return res.status(409).json({ error: `สัญญานี้หักไปแล้ว ${paidRows.length} งวดในรอบที่ปิดแล้ว ลบไม่ได้ — ใช้ "ปิดก่อนกำหนด" แทน` });
+      const ids = rows.map((r) => r.id);
+      db.deductions = db.deductions.filter((d) => !ids.includes(d.id));
+      db.loanPlans = (db.loanPlans || []).filter((x) => x.id !== p.id);
+      if (ids.length) await removeRecords('deductions', ids);
+      await removeRecord('loanPlans', p.id);
+      res.json({ success: true, removedRows: ids.length });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // 🔒 แถวหักที่มาจากสัญญา: ห้ามลบ/แก้ตรงๆ (ลงทะเบียนก่อน masterRoutes เพื่อดักก่อน)
+  //    สาขาเห็นแถวนี้ในหน้ารายการหัก ถ้าลบได้ ยอดหักจะหายเงียบๆ และสัญญานับงวดผิด -> ต้อง "พักงวด" ผ่านสัญญาแทน
+  const blockPlanRow = (msg: string) => async (req: any, res: any, next: any) => {
+    try {
+      const db = await getDb();
+      const ids: string[] = req.params.id ? [req.params.id] : (req.body?.ids || []);
+      const hit = db.deductions.find((d) => ids.includes(d.id) && d.planId);
+      if (hit) return res.status(409).json({ error: `${msg} — รายการนี้มาจากสัญญาผ่อนหักของ ${hit.note || hit.plateNo} ให้ผู้ดูแลจัดการที่ "สัญญาผ่อนหัก" แทน` });
+      next();
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  };
+  app.delete('/api/deductions/:id', blockPlanRow('ลบไม่ได้'));
+  app.put('/api/deductions/:id', blockPlanRow('แก้ไม่ได้'));
+  app.post('/api/deductions/bulk-delete', blockPlanRow('ลบไม่ได้'));
   masterRoutes<DeductionEntry>('deductions', 'deductions', 'ded');
 
   // ===================== RATE MASTER (มีประวัติราคา) =====================

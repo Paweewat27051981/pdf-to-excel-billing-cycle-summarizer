@@ -347,6 +347,44 @@ export interface DeductionEntry {
   note?: string;
   imageFile?: string;  // ชื่อไฟล์รูปแนบ (เก็บบน NAS โฟลเดอร์ uploads/ — ดูผ่าน /api/uploads/<ชื่อไฟล์>)
   type?: DeductionType; // legacy
+  // ---- แถวที่ระบบสร้างจาก "สัญญาผ่อนหัก" (LoanPlan) ----
+  planId?: string;         // มี = แถวอัตโนมัติ สาขาลบเองไม่ได้ (ต้อง "พักงวด" ผ่านสัญญาแทน)
+  installmentNo?: number;  // งวดที่เท่าไร (นับเฉพาะงวดที่หักจริง)
+  skipped?: boolean;       // true = พักงวดนี้ (amount = 0) หักไม่ได้เพราะไม่มีเที่ยววิ่ง/แอดมินสั่งพัก
+  skipReason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// สัญญาผ่อนหัก — คนขับยืมเงินบริษัท แล้วให้ระบบหักออกจากค่าเที่ยวทุกงวดจนครบ (เจ้าของสั่ง 15 ก.ย.69)
+//   ระบบสร้าง DeductionEntry (planId=สัญญานี้) 1 แถว/รอบ ตอน "เปิดรอบใหม่" (และตอนตั้งสัญญาถ้ารอบเริ่มเปิดอยู่แล้ว)
+//   รายงานทุกหน้ารวมจาก DeductionEntry อยู่แล้ว -> ยอดจ่ายรถถูกหักทันทีโดยไม่ต้องแก้รายงาน
+//   ผูกกับ "คนขับ (ชื่อ)" ไม่ใช่ทะเบียน — admin ย้ายทะเบียนได้เมื่อคนขับย้ายคัน
+//   เห็นได้เฉพาะ admin (canEditRates) และ HQ (isHQ) — สาขาเห็นแค่แถวหักในงวดของตัวเอง
+// ---------------------------------------------------------------------------
+export type LoanPlanStatus = 'active' | 'closed';
+export interface LoanPlanEvent { at: string; by: string; action: string; detail?: string }
+export interface LoanPlan {
+  id: string;
+  branchId: string;
+  plateNo: string;          // ทะเบียนที่หักอยู่ตอนนี้ (ย้ายได้)
+  driverName: string;       // คนขับที่ยืม (ตัวตนของสัญญา)
+  categoryId: string;       // ประเภทรายการหัก (ปกติ "ยืมเงิน")
+  label: string;            // ชื่อประเภท ณ ตอนตั้ง
+  total: number;            // ยอดรวมที่ต้องหัก
+  perCycle: number;         // หักงวดละ
+  startCycleId: string;     // รอบแรกที่เริ่มหัก
+  startCycleName: string;
+  startOrd: number;         // ลำดับรอบ (year*100 + month*2 + half) ไว้เทียบ "รอบตั้งแต่...เป็นต้นไป"
+  status: LoanPlanStatus;
+  closedEarly?: boolean;    // ปิดก่อนกำหนด (จ่ายคืนนอกระบบ)
+  paidOutside?: number;     // ยอดที่จ่ายคืนนอกระบบตอนปิดก่อนกำหนด
+  closedAt?: string;
+  closedReason?: string;
+  note?: string;
+  history: LoanPlanEvent[]; // ตั้ง/ย้ายทะเบียน/พัก/ปิด — เก็บในตัวสัญญาเลย
+  createdBy: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +436,7 @@ export interface DatabaseState {
   tripDocuments: TripDocument[];
   fuelEntries: FuelEntry[];
   deductions: DeductionEntry[];
+  loanPlans?: LoanPlan[]; // สัญญาผ่อนหัก (optional กัน DB เก่า) — ไม่ส่งออกทาง /api/state (admin/HQ ดูผ่าน /api/loan-plans)
   oilPrices?: OilPriceRecord[]; // [ทดลอง] ราคาน้ำมัน OR ที่บันทึกถาวร (optional กัน DB เก่า)
   tripDistances?: TripDistanceRecord[]; // [ทดลอง] cache ระยะลูปต่อใบ (คิดจาก DOH ครั้งเดียว เก็บไว้)
   mountainRoutes?: MountainRouteRecord[]; // [ทดลอง] master น้ำมันขึ้นเขา (ลิตรเพิ่มต่อปลายทาง)

@@ -941,8 +941,9 @@ export function summarizeByVehicle(
         .reduce((s, f) => s + f.amount, 0)
     );
 
+    // แถวสัญญาผ่อนหักที่ "พักงวด" (skipped, amount 0) ไม่ต้องโผล่ในรายงานเป็นบรรทัด 0 บาท
     const plateDeductions = deductions.filter(
-      (d) => d.cycleId === cycleId && normPlate(d.plateNo) === key
+      (d) => d.cycleId === cycleId && normPlate(d.plateNo) === key && !d.skipped
     );
 
     // หัก 1%: คิดจากค่าเที่ยว + รายได้เพิ่มทุกประเภท ยกเว้น "ค่าอัพเดทบิล"
