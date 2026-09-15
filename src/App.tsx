@@ -2079,6 +2079,7 @@ function LoanPlanPanel({ db, cycle, api, branchId, reload, showToast }: any) {
     if (!form.plateNo) return showToast('warning', 'เลือกทะเบียนก่อน');
     if (!(form.total > 0) || !(form.perCycle > 0)) return showToast('warning', 'กรอกยอดรวมและหักงวดละให้ครบ');
     if (form.perCycle > form.total) return showToast('warning', 'หักงวดละต้องไม่เกินยอดรวม');
+    if (!form.note.trim()) return showToast('warning', 'ระบุเหตุผลที่ยืมในช่องหมายเหตุ เช่น ซ่อมรถ เปลี่ยนยาง');
     const n = Math.ceil(form.total / form.perCycle);
     const sc = openCycles.find((c) => c.id === form.startCycleId);
     const ok = await confirmAction({
@@ -2147,7 +2148,7 @@ function LoanPlanPanel({ db, cycle, api, branchId, reload, showToast }: any) {
             <option value="">— เริ่มหักรอบ —</option>
             {openCycles.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <input aria-label="หมายเหตุสัญญา" placeholder="หมายเหตุ" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-40" />
+          <input aria-label="เหตุผลที่ยืม (บังคับ)" placeholder="เหตุผลที่ยืม* เช่น เปลี่ยนยาง" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} className={`border rounded-lg px-2 py-1.5 text-sm w-52 ${form.note.trim() ? 'border-natural-border' : 'border-amber-400'}`} />
           <button onClick={create} className="bg-brand-navy text-white rounded-lg px-3 text-sm font-semibold">ตั้งสัญญา</button>
           {form.total > 0 && form.perCycle > 0 && form.perCycle <= form.total && <span className="text-xs text-natural-muted self-center">= {Math.ceil(form.total / form.perCycle)} งวด</span>}
         </div>
@@ -2423,7 +2424,8 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
         </div>
         {/* แถวจากสัญญาผ่อนหัก: บอกให้รู้ว่าเป็นอัตโนมัติ + งวดที่เท่าไร (ลบตรงนี้ไม่ได้ server ตอบ 409 พร้อมเหตุผล) */}
         <SimpleTable rows={dedF.map((d: DeductionEntry) => [d.plateNo,
-          d.planId ? <span title={d.note || ''}>{d.label} <span className={`text-[10px] font-semibold ${d.skipped ? 'text-amber-700' : 'text-brand-navy'}`}>🔁 {d.skipped ? 'พักงวดนี้' : (d.note || '').replace(/^สัญญาผ่อนหัก\s*/, '')}</span></span> : d.label,
+          // "ยืมเงิน 🔁 งวด 1/4 · เปลี่ยนยาง" — เหตุผลที่ยืมมาจากหมายเหตุสัญญา (ต่อท้าย note หลัง " — ")
+          d.planId ? <span title={d.note || ''}>{d.label} <span className={`text-[10px] font-semibold ${d.skipped ? 'text-amber-700' : 'text-brand-navy'}`}>🔁 {d.skipped ? 'พักงวดนี้' : ((d.note || '').match(/งวด\s*\d+\/\d+/) || [''])[0]}{(d.note || '').includes(' — ') ? ` · ${(d.note || '').split(' — ').slice(1).join(' — ')}` : ''}</span></span> : d.label,
           d.docNo || '-', money(d.amount)])} cols={['ทะเบียน', 'รายการ', 'ใบกระจาย', 'จำนวน']}
           onDelete={async (i: number) => { try { await api(`/api/deductions/${dedF[i].id}`, 'DELETE'); reload(); } catch (e: any) { showToast('error', e.message); } }} />
       </Section>

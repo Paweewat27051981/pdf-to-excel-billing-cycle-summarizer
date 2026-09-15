@@ -1365,7 +1365,8 @@ async function startServer() {
       }
       const amount = round2(Math.min(p.perCycle, remaining));
       n++;
-      const note = `สัญญาผ่อนหัก ${p.driverName} งวด ${n}/${installmentsTotal}`;
+      // เหตุผลที่ยืม (หมายเหตุสัญญา) ติดไปกับแถวหักด้วย -> สาขา/คนขับเห็นว่าหักเรื่องอะไร (เจ้าของสั่ง 15 ก.ย.69)
+      const note = `สัญญาผ่อนหัก ${p.driverName} งวด ${n}/${installmentsTotal}${p.note ? ` — ${p.note}` : ''}`;
       if (!row) {
         const nr: DeductionEntry = { id: generateId('ded'), branchId: p.branchId, cycleId: c.id, plateNo: p.plateNo, categoryId: p.categoryId,
           kind: 'deduction', label: p.label, amount, note, planId: p.id, installmentNo: n };
@@ -1434,6 +1435,9 @@ async function startServer() {
       if (!driverName) return res.status(400).json({ error: 'ต้องระบุชื่อคนขับ' });
       if (!(total > 0)) return res.status(400).json({ error: 'ยอดรวมต้องมากกว่า 0' });
       if (!(perCycle > 0) || perCycle > total) return res.status(400).json({ error: 'หักงวดละต้องมากกว่า 0 และไม่เกินยอดรวม' });
+      // เหตุผลที่ยืมบังคับกรอก — อีก 2 เดือนไม่มีใครจำได้ว่ายืมทำไม (เจ้าของสั่ง 15 ก.ย.69)
+      const note = String(b.note || '').trim();
+      if (!note) return res.status(400).json({ error: 'ต้องระบุเหตุผลที่ยืม (หมายเหตุ) เช่น ซ่อมรถ เปลี่ยนยาง' });
       const start = db.cycles.find((c) => c.id === String(b.startCycleId || ''));
       if (!start) return res.status(400).json({ error: 'ต้องเลือกรอบที่เริ่มหัก' });
       if (start.status === 'closed') return res.status(400).json({ error: `รอบ "${start.name}" ปิดแล้ว เริ่มหักในรอบที่ปิดแล้วไม่ได้` });
@@ -1445,8 +1449,8 @@ async function startServer() {
       const p: LoanPlan = {
         id: generateId('loan'), branchId, plateNo: veh.plateNo, driverName, categoryId: cat.id, label: cat.name,
         total, perCycle, startCycleId: start.id, startCycleName: start.name, startOrd: cycleOrd(start),
-        status: 'active', note: String(b.note || '').trim() || undefined,
-        history: [{ at: nowIso(), by: sess.name, action: 'ตั้งสัญญา', detail: `${money2(total)} บาท หักงวดละ ${money2(perCycle)} เริ่ม ${start.name} ทะเบียน ${veh.plateNo}` }],
+        status: 'active', note,
+        history: [{ at: nowIso(), by: sess.name, action: 'ตั้งสัญญา', detail: `${money2(total)} บาท หักงวดละ ${money2(perCycle)} เริ่ม ${start.name} ทะเบียน ${veh.plateNo} — ${note}` }],
         createdBy: sess.name, createdAt: nowIso(),
       };
       if (!db.loanPlans) db.loanPlans = [];
@@ -1472,7 +1476,11 @@ async function startServer() {
         changes.push(`ย้ายทะเบียน ${p.plateNo} -> ${veh.plateNo}`); p.plateNo = veh.plateNo;
       }
       if (b.driverName != null && String(b.driverName).trim() && String(b.driverName).trim() !== p.driverName) { changes.push(`ชื่อคนขับ ${p.driverName} -> ${String(b.driverName).trim()}`); p.driverName = String(b.driverName).trim(); }
-      if (b.note != null && String(b.note).trim() !== (p.note || '')) { p.note = String(b.note).trim() || undefined; changes.push('แก้หมายเหตุ'); }
+      if (b.note != null) {
+        const nn = String(b.note).trim();
+        if (!nn) return res.status(400).json({ error: 'เหตุผลที่ยืมต้องไม่ว่าง (Codex P3: บังคับเหมือนตอนตั้งสัญญา)' });
+        if (nn !== (p.note || '')) { changes.push(`แก้เหตุผล "${p.note || ''}" -> "${nn}"`); p.note = nn; }
+      }
       if (!changes.length) return res.json(withStats(db, p));
       p.history.push({ at: nowIso(), by: sess.name, action: 'แก้สัญญา', detail: changes.join(' · ') });
       p.updatedAt = nowIso();
