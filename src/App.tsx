@@ -2303,7 +2303,15 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
       });
       if (!ok) return;
     }
-    await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id, branchId });
+    // server ปฏิเสธ (เช่น เลขใบสั่งเติมซ้ำ 409) ต้องบอกคนกด — เดิมเงียบ ปุ่มเหมือนไม่ทำงาน
+    // (เคสจริง 19 ก.ย.69 กำแพงเพชร: 46737 ถูกใช้กับ บว-1406 ไปแล้ว ทีมกดเพิ่ม บว-9334 ไม่ได้และไม่รู้ว่าทำไม)
+    // server บอกเองว่าเลขนั้นใช้กับรถคันไหน/วันไหน/งวดไหน (client เห็นแค่งวดที่เลือก หาข้ามงวดเองไม่ได้)
+    try {
+      await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id, branchId });
+    } catch (e: any) {
+      return showToast('error', e.message);
+    }
+    showToast('success', 'เพิ่มค่าน้ำมันแล้ว');
     setFForm({ plateNo: '', refNo: '', date: cycle.startDate, amount: 0 }); reload();
   };
   const dlFuelTemplate = () => {

@@ -1262,7 +1262,11 @@ async function startServer() {
       const refNo = (body.refNo || '').trim();
       if (refNo) {
         const dup = db.fuelEntries.find((f) => f.branchId === body.branchId && (f.refNo || '').trim() === refNo);
-        if (dup) return res.status(409).json({ error: `เลขใบสั่งเติมน้ำมัน "${refNo}" ซ้ำ — มีอยู่แล้วในระบบ (ห้ามบันทึกซ้ำ)` });
+        // บอกด้วยว่าเลขนี้ถูกใช้กับรถคันไหน/วันไหน/งวดไหน (client เห็นแค่งวดที่เลือก หาเองข้ามงวดไม่ได้)
+        if (dup) {
+          const cyc = db.cycles.find((c) => c.id === dup.cycleId);
+          return res.status(409).json({ error: `เลขใบสั่งเติมน้ำมัน "${refNo}" ซ้ำ — ใช้อยู่กับ ${dup.plateNo} วันที่ ${dup.date} ${Number(dup.amount).toLocaleString('th-TH')} บาท (งวด ${cyc?.name || '-'}) ห้ามบันทึกซ้ำ` });
+        }
       }
       const item = { ...body, id: generateId('fuel') } as FuelEntry;
       db.fuelEntries.push(item);
