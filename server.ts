@@ -1642,17 +1642,34 @@ async function startServer() {
       }
       await saveRecords('fuelEntries', createdEntries);
       if (createdCycles.size) await flushCollection('cycles');
+      // ---- รายงานแบบมีระดับ (ok/info/warn/error) ให้หน้าจอจัดสี — เจ้าของสั่ง 19 ก.ย.69 ----
+      //   summary (ข้อความล้วน) ยังส่งไปด้วย ให้ client เก่า/สคริปต์ที่อ่านอยู่ไม่พัง
+      type Level = 'ok' | 'info' | 'warn' | 'error';
+      const report: { level: Level; title: string; items?: string[] }[] = [];
+      report.push({ level: 'info', title: summary[0] }); // "อ่านได้ N ใบ จาก M ทะเบียน/ชีต" (จาก parser)
+      report.push({ level: created ? 'ok' : 'warn', title: `บันทึกใหม่ ${created} รายการ`,
+        items: [...perCycle.values()].sort((a, b) => b.refs.length - a.refs.length).map((g) => `งวด "${g.name}": ${g.refs.length} รายการ`) });
+      if (summary.length > 1) report.push({ level: 'warn', title: summary[1] }); // แถววันที่อ่านไม่ได้ (จาก parser)
       if (createdCycles.size) summary.push(`เปิดรอบใหม่อัตโนมัติ: ${[...createdCycles].join(', ')}`);
+      if (createdCycles.size) report.push({ level: 'info', title: 'เปิดรอบใหม่อัตโนมัติ', items: [...createdCycles] });
       // ⚠️ เตือนเมื่อใบในไฟล์เดียวกระจายเข้าหลายรอบ — ให้ตรวจวันที่ใบส่วนน้อยว่าพิมพ์ผิดเดือน/ปีไหม
       if (perCycle.size > 1) {
         const groups = [...perCycle.values()].sort((a, b) => b.refs.length - a.refs.length);
         const minority = groups.slice(1); // ทุกกลุ่มที่ไม่ใช่กลุ่มใหญ่สุด
         const detail = minority.map((g) => `${g.refs.join(', ')} -> เข้ารอบ "${g.name}"`).join(' | ');
         summary.push(`⚠️ ใบในไฟล์กระจายเข้า ${perCycle.size} รอบ (ส่วนใหญ่เข้า "${groups[0].name}") — โปรดตรวจวันที่ของ: ${detail} ว่าพิมพ์เดือน/ปีถูกต้องไหม (ถ้าผิด ให้ลบใบนั้นในรอบที่เข้าไป แล้วแก้วันที่ในไฟล์และนำเข้าใหม่)`);
+        report.push({ level: 'warn', title: `ใบในไฟล์กระจายเข้า ${perCycle.size} รอบ (ส่วนใหญ่เข้า "${groups[0].name}") — ตรวจว่าวันที่ของใบเหล่านี้พิมพ์เดือน/ปีถูกไหม ถ้าผิด ให้ลบใบนั้นในรอบที่เข้าไป แล้วแก้วันที่ในไฟล์และนำเข้าใหม่`,
+          items: minority.flatMap((g) => g.refs.map((r) => `${r} -> เข้ารอบ "${g.name}"`)) });
       }
-      if (skippedDup) summary.push(`⚠️ ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ (ไม่ได้บันทึก ให้ตรวจใบจริงแล้วแก้เลขในไฟล์):\n  - ${dupDetails.join('\n  - ')}`);
-      if (closedCycles.size) summary.push(`⚠️ ข้ามรายการของรอบที่ปิดอยู่: ${[...closedCycles].join(', ')} (ให้ HQ เปิดรอบก่อน)`);
-      res.status(201).json({ success: true, created, summary });
+      if (skippedDup) {
+        summary.push(`⚠️ ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ (ไม่ได้บันทึก ให้ตรวจใบจริงแล้วแก้เลขในไฟล์):\n  - ${dupDetails.join('\n  - ')}`);
+        report.push({ level: 'error', title: `ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ — ไม่ได้บันทึก ให้ตรวจใบจริงแล้วแก้เลขในไฟล์`, items: dupDetails });
+      }
+      if (closedCycles.size) {
+        summary.push(`⚠️ ข้ามรายการของรอบที่ปิดอยู่: ${[...closedCycles].join(', ')} (ให้ HQ เปิดรอบก่อน)`);
+        report.push({ level: 'error', title: 'ข้ามรายการของรอบที่ปิดอยู่ (ให้ HQ เปิดรอบก่อน)', items: [...closedCycles] });
+      }
+      res.status(201).json({ success: true, created, summary, report });
     } catch (err: any) {
       console.error('import-fuel error:', err);
       res.status(500).json({ error: `นำเข้าค่าน้ำมันไม่สำเร็จ: ${err.message}` });

@@ -12,7 +12,7 @@ import {
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas, exportRatesToExcel } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc, makeCollectBackCheck } from './calc';
-import { confirmDelete, confirmAction, confirmPassword, notify, alertBox } from './ui';
+import { confirmDelete, confirmAction, confirmPassword, notify, alertBox, reportBox } from './ui';
 
 // base path เมื่อรันใต้ subpath (เช่น /neosiam บน NAS) — vite ตั้ง import.meta.env.BASE_URL ให้ตอน build
 // root (Render) = '' ; NAS build (VITE_BASE_PATH=/neosiam/) = '/neosiam'
@@ -2326,8 +2326,10 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
     setImpFuel(true);
     try {
       const res = await api('/api/import-fuel', 'POST', { branchId, fileBase64: b64 });
-      showToast('success', `นำเข้าค่าน้ำมันสำเร็จ — บันทึก ${res.created} รายการ`);
-      if (res.summary?.length) alertBox('สรุปการนำเข้าค่าน้ำมัน', res.summary.join('\n'));
+      showToast(res.created ? 'success' : 'warning', `นำเข้าค่าน้ำมัน — บันทึก ${res.created} รายการ`);
+      // รายงานแบบมีสี/ระดับ (server ใหม่ส่ง report) — ถ้าไม่มี (server เก่า) ใช้ข้อความล้วนแบบเดิม
+      if (res.report?.length) reportBox('สรุปการนำเข้าค่าน้ำมัน', res.report);
+      else if (res.summary?.length) alertBox('สรุปการนำเข้าค่าน้ำมัน', res.summary.join('\n'));
       reload();
     } catch (e: any) { showToast('error', e.message); }
     finally { setImpFuel(false); if (fuelFileRef.current) fuelFileRef.current.value = ''; }

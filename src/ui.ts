@@ -99,6 +99,35 @@ export function alertBox(title: string, text?: string, icon: 'success' | 'error'
   Themed.fire({ title, text, icon, confirmButtonText: 'ตกลง' });
 }
 
+// กล่องรายงานแบบมีระดับ (ok/info/warn/error) — ใช้กับสรุปการนำเข้า
+//   เดิม alertBox ยัดทุกอย่างเป็นข้อความก้อนเดียว อ่านไม่ออกเมื่อมี 45 รายการ (เจ้าของสั่งจัดรูปแบบ 19 ก.ย.69)
+//   แต่ละหัวข้อเป็นการ์ดสีตามระดับ รายการย่อยเป็น bullet เลื่อนดูได้ ไอคอนใหญ่เลือกตามระดับที่แย่ที่สุด
+export type ReportLevel = 'ok' | 'info' | 'warn' | 'error';
+export interface ReportSection { level: ReportLevel; title: string; items?: string[] }
+const LEVEL_STYLE: Record<ReportLevel, { bg: string; border: string; fg: string; badge: string; label: string }> = {
+  ok:    { bg: '#ecfdf5', border: '#6ee7b7', fg: '#065f46', badge: '#059669', label: 'สำเร็จ' },
+  info:  { bg: '#eff6ff', border: '#93c5fd', fg: '#1e3a8a', badge: '#2563eb', label: 'ข้อมูล' },
+  warn:  { bg: '#fffbeb', border: '#fcd34d', fg: '#92400e', badge: '#d97706', label: 'ควรตรวจ' },
+  error: { bg: '#fef2f2', border: '#fca5a5', fg: '#991b1b', badge: '#dc2626', label: 'ไม่ได้บันทึก' },
+};
+const LEVEL_RANK: Record<ReportLevel, number> = { ok: 0, info: 1, warn: 2, error: 3 };
+export function reportBox(title: string, sections: ReportSection[]) {
+  const worst = sections.reduce<ReportLevel>((w, s) => (LEVEL_RANK[s.level] > LEVEL_RANK[w] ? s.level : w), 'ok');
+  const icon = worst === 'error' ? 'error' : worst === 'warn' ? 'warning' : worst === 'ok' ? 'success' : 'info';
+  const html = sections.map((s) => {
+    const st = LEVEL_STYLE[s.level] || LEVEL_STYLE.info;
+    const items = (s.items || []).length
+      ? `<ul style="margin:6px 0 0;padding-left:18px;max-height:220px;overflow:auto;font-size:12px;line-height:1.5">${s.items!.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul>`
+      : '';
+    return `<div style="background:${st.bg};border:1px solid ${st.border};border-left:5px solid ${st.badge};color:${st.fg};border-radius:10px;padding:8px 10px;margin:6px 0;text-align:left">
+      <div style="font-weight:600;font-size:13px;display:flex;gap:8px;align-items:flex-start">
+        <span style="background:${st.badge};color:#fff;border-radius:999px;padding:1px 8px;font-size:11px;white-space:nowrap">${st.label}</span>
+        <span>${escapeHtml(s.title)}${s.items?.length ? ` <span style="opacity:.7;font-weight:400">(${s.items.length})</span>` : ''}</span>
+      </div>${items}</div>`;
+  }).join('');
+  return Themed.fire({ title, icon, html, confirmButtonText: 'ตกลง', width: 720, customClass: { popup: 'rounded-2xl', htmlContainer: 'text-left' } });
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
