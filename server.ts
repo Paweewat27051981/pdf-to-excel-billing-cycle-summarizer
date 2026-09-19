@@ -1607,15 +1607,30 @@ async function startServer() {
       // น่าจะพิมพ์ผิด (เคสจริง: ใบ 3242 พิมพ์ 17/6 แทน 17/7 -> เข้ารอบ มิ.ย. เงียบๆ ยอดรอบขาด 1,000)
       const perCycle = new Map<string, { name: string; refs: string[] }>();
       // เลขใบสั่งเติมห้ามซ้ำในสาขา (เทียบกับของเดิม + ในไฟล์เดียวกัน)
-      const seenRef = new Set(db.fuelEntries.filter((f) => f.branchId === branchId).map((f) => (f.refNo || '').trim()).filter(Boolean));
+      // เก็บ "ของเดิม" ไว้บอกว่าเลขที่ซ้ำใช้กับรถคันไหน/วันไหน/งวดไหน (ไม่ใช่แค่นับจำนวน)
+      //   เคสจริง 19 ก.ย.69 กำแพงเพชร: 46737 ชนกับ บว-1406 — สรุปเดิมบอกแค่ "ข้าม 1 รายการ" ทีมหาไม่เจอว่าใบไหน
+      const existingByRef = new Map<string, FuelEntry>();
+      for (const f of db.fuelEntries) { const rn = (f.refNo || '').trim(); if (f.branchId === branchId && rn && !existingByRef.has(rn)) existingByRef.set(rn, f); }
+      const seenRef = new Set(existingByRef.keys());
+      const inFileRef = new Map<string, string>(); // เลขที่ซ้ำกันเองในไฟล์ -> แถวแรกที่ใช้
+      const dupDetails: string[] = [];
       const thDate = (iso: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : iso; };
+      const cycName = (id: string) => db.cycles.find((c) => c.id === id)?.name || '-';
       for (const f of fuel) {
         const rv = resolveCycleForDate(db, f.date, true);
         if (rv.invalid || !rv.cycle) continue;
         if (rv.closed) { closedCycles.add(rv.cycle.name); continue; }
         const rn = (f.refNo || '').trim();
-        if (rn && seenRef.has(rn)) { skippedDup++; continue; }
-        if (rn) seenRef.add(rn);
+        if (rn && seenRef.has(rn)) {
+          skippedDup++;
+          const ex = existingByRef.get(rn);
+          const mine = `${rn} (${f.plateNo} ${thDate(f.date)} ${Number(f.amount).toLocaleString('th-TH')} บาท)`;
+          dupDetails.push(ex
+            ? `${mine} ชนกับที่บันทึกไว้แล้ว: ${ex.plateNo} ${thDate(ex.date)} ${Number(ex.amount).toLocaleString('th-TH')} บาท งวด "${cycName(ex.cycleId)}"`
+            : `${mine} ซ้ำกับแถวก่อนหน้าในไฟล์เดียวกัน: ${inFileRef.get(rn) || '-'}`);
+          continue;
+        }
+        if (rn) { seenRef.add(rn); inFileRef.set(rn, `${f.plateNo} ${thDate(f.date)} ${Number(f.amount).toLocaleString('th-TH')} บาท`); }
         if (rv.created) createdCycles.add(rv.cycle.name);
         const entry: FuelEntry = { id: generateId('fuel'), branchId, cycleId: rv.cycle.id, plateNo: f.plateNo, refNo: f.refNo, date: f.date, amount: f.amount };
         db.fuelEntries.push(entry);
@@ -1635,7 +1650,7 @@ async function startServer() {
         const detail = minority.map((g) => `${g.refs.join(', ')} -> เข้ารอบ "${g.name}"`).join(' | ');
         summary.push(`⚠️ ใบในไฟล์กระจายเข้า ${perCycle.size} รอบ (ส่วนใหญ่เข้า "${groups[0].name}") — โปรดตรวจวันที่ของ: ${detail} ว่าพิมพ์เดือน/ปีถูกต้องไหม (ถ้าผิด ให้ลบใบนั้นในรอบที่เข้าไป แล้วแก้วันที่ในไฟล์และนำเข้าใหม่)`);
       }
-      if (skippedDup) summary.push(`⚠️ ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ`);
+      if (skippedDup) summary.push(`⚠️ ข้ามเลขใบสั่งเติมที่ซ้ำ ${skippedDup} รายการ (ไม่ได้บันทึก ให้ตรวจใบจริงแล้วแก้เลขในไฟล์):\n  - ${dupDetails.join('\n  - ')}`);
       if (closedCycles.size) summary.push(`⚠️ ข้ามรายการของรอบที่ปิดอยู่: ${[...closedCycles].join(', ')} (ให้ HQ เปิดรอบก่อน)`);
       res.status(201).json({ success: true, created, summary });
     } catch (err: any) {
