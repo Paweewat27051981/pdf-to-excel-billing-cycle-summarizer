@@ -2413,11 +2413,16 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
           {/* เปลี่ยนวันที่/ยอด = ใบ Caltex ที่ค้น/จิ้มไว้ใช้ไม่ได้แล้ว ต้องล้าง (Codex P2: ไม่งั้นบันทึกใบของวันเก่าติดไปกับวันใหม่) */}
           <input type="date" aria-label="วันที่เติมน้ำมัน" value={fForm.date} onChange={(e) => { setFForm({ ...fForm, date: e.target.value }); setCxPick(null); setCxList(null); }} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
           <input type="number" aria-label="จำนวนเงินค่าน้ำมัน" placeholder="จำนวนเงิน" value={fForm.amount || ''} onChange={(e) => { setFForm({ ...fForm, amount: +e.target.value }); setCxPick(null); setCxList(null); }} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
-          {!cxOff && (
+          {!cxOff ? (
             <button type="button" onClick={findCaltex} disabled={cxBusy} title="ดึงใบเติมจริงจากบัตร Caltex ของวัน/ยอดนี้มาให้เลือก — ไม่ต้องพิมพ์เลขอ้างอิง"
               className="bg-white border border-sky-400 text-sky-700 disabled:opacity-50 rounded-lg px-2.5 py-1.5 text-sm font-semibold">
               {cxBusy ? 'กำลังค้น…' : '🔍 ค้นใบ Caltex'}
             </button>
+          ) : (
+            // ⚠️ ห้ามหายเงียบ (CFC เจอ 23 ก.ย.69: กดแล้วปุ่มหายไปเฉยๆ ไม่รู้ว่าทำไม) — บอกเหตุผลตรงที่ปุ่มเคยอยู่
+            <span className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 max-w-md" title={cxOff}>
+              ⚠️ ค้นใบ Caltex ยังใช้ไม่ได้: {cxOff}
+            </span>
           )}
           <button onClick={addFuel} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
