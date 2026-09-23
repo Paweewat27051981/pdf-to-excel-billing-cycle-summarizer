@@ -1260,11 +1260,30 @@ async function startServer() {
   //   ตั้งใน .env:  KPI_API_URL (default https://neosiam.dscloud.biz:8443) · KPI_FUEL_LINK_TOKEN (ค่าเดียวกับ FUEL_LINK_TOKEN ฝั่ง KPI)
   //   ยังไม่ตั้ง = ตอบ 503 บอกเหตุผล หน้าเว็บซ่อนปุ่มเอง (ระบบเดิมใช้ต่อได้ปกติ)
   const KPI_API_URL = (process.env.KPI_API_URL || 'https://neosiam.dscloud.biz:8443').replace(/\/+$/, '');
-  const kpiToken = () => (process.env.KPI_FUEL_LINK_TOKEN || '').trim();
+  // 🔑 token อ่านได้ 2 ทางเหมือน AGENT_TOKEN (ดู readAgentToken ด้านบน): env หรือไฟล์ kpi-fuel-link-token.txt
+  //    ทำไม (CFC พิสูจน์ 23 ก.ย.69): แก้ .env แล้ว Stop/Start container **ค่าไม่เข้า** — env ถูกฝังตอนสร้าง container
+  //    การ recreate บน NAS = ห้าม (กติกาโปรเจ็ค) ⇒ วางไฟล์ใน jastran-data/ (volume · ไม่ถูกเสิร์ฟ) แล้วมีผลทันที
+  const KPI_TOKEN_FILES = [
+    path.join(JASTRAN_DIR, 'kpi-fuel-link-token.txt'),
+    path.join(UPLOADS_DIR, 'jastran-data', 'kpi-fuel-link-token.txt'),
+  ];
+  const kpiToken = () => {
+    const fromEnv = (process.env.KPI_FUEL_LINK_TOKEN || '').trim();
+    if (fromEnv) return fromEnv;
+    for (const f of KPI_TOKEN_FILES) {
+      try {
+        const t = fs.readFileSync(f, 'utf8').trim();
+        if (t) return t;
+      } catch (e: any) {
+        if (e?.code && e.code !== 'ENOENT') console.warn(`[caltex-link] อ่าน ${f} ไม่ได้: ${e.code}`);
+      }
+    }
+    return '';
+  };
   type CaltexCand = { txnKey: string; refNo: string; station: string; at: string; amount: number; cardLast6: string; plate: string; sameDay: boolean };
   /** ถาม KPI ว่าวัน/ยอดนี้มีใบ Caltex อะไรบ้าง — **แหล่งความจริงเดียว** ทั้งตอนให้จิ้มและตอนตรวจก่อนบันทึก */
   const fetchCaltexCandidates = async (date: string, amount: number): Promise<CaltexCand[]> => {
-    if (!kpiToken()) throw new Error('ยังไม่ได้ตั้ง KPI_FUEL_LINK_TOKEN ใน .env ของระบบค่าเที่ยว — ยังจิ้มใบ Caltex ไม่ได้ (บันทึกแบบเดิมได้ตามปกติ)');
+    if (!kpiToken()) throw new Error('ยังไม่ได้ตั้ง KPI_FUEL_LINK_TOKEN (วางไฟล์ jastran-data/kpi-fuel-link-token.txt หรือตั้งใน .env แล้ว recreate) — ยังจิ้มใบ Caltex ไม่ได้ (บันทึกแบบเดิมได้ตามปกติ)');
     const u = `${KPI_API_URL}/api/fuel-txns/candidates?date=${encodeURIComponent(date)}&amount=${encodeURIComponent(String(amount))}&window=1`;
     const r = await fetch(u, { headers: { 'x-fuel-link-token': kpiToken() }, signal: AbortSignal.timeout(20000) });
     const text = await r.text();
