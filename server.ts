@@ -1261,20 +1261,25 @@ async function startServer() {
   //   ยังไม่ตั้ง = ตอบ 503 บอกเหตุผล หน้าเว็บซ่อนปุ่มเอง (ระบบเดิมใช้ต่อได้ปกติ)
   const KPI_API_URL = (process.env.KPI_API_URL || 'https://neosiam.dscloud.biz:8443').replace(/\/+$/, '');
   const kpiToken = () => (process.env.KPI_FUEL_LINK_TOKEN || '').trim();
+  type CaltexCand = { txnKey: string; refNo: string; station: string; at: string; amount: number; cardLast6: string; plate: string; sameDay: boolean };
+  /** ถาม KPI ว่าวัน/ยอดนี้มีใบ Caltex อะไรบ้าง — **แหล่งความจริงเดียว** ทั้งตอนให้จิ้มและตอนตรวจก่อนบันทึก */
+  const fetchCaltexCandidates = async (date: string, amount: number): Promise<CaltexCand[]> => {
+    if (!kpiToken()) throw new Error('ยังไม่ได้ตั้ง KPI_FUEL_LINK_TOKEN ใน .env ของระบบค่าเที่ยว — ยังจิ้มใบ Caltex ไม่ได้ (บันทึกแบบเดิมได้ตามปกติ)');
+    const u = `${KPI_API_URL}/api/fuel-txns/candidates?date=${encodeURIComponent(date)}&amount=${encodeURIComponent(String(amount))}&window=1`;
+    const r = await fetch(u, { headers: { 'x-fuel-link-token': kpiToken() }, signal: AbortSignal.timeout(20000) });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`ระบบ KPI ตอบ ${r.status}: ${text.slice(0, 200)}`);
+    return JSON.parse(text) as CaltexCand[];
+  };
   app.get('/api/fuel/caltex-candidates', async (req, res) => {
     try {
       // 🔒 ต้องมีเซสชันสาขา — ไม่งั้นใครก็ยิงมาไล่ดูรายการเติมน้ำมัน Caltex ผ่าน token ของ server ได้ (Codex P1)
       if (!getSession(req)) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบใหม่ (เซสชันหมดอายุ)' });
-      // ⚠️ ห้ามตอบ 502/503 — client `api()` จะ retry 4 รอบ (คิดว่า server กำลัง restart) ⇒ ใช้ 424 (Failed Dependency)
-      if (!kpiToken()) return res.status(424).json({ error: 'ยังไม่ได้ตั้ง KPI_FUEL_LINK_TOKEN ใน .env ของระบบค่าเที่ยว — ยังจิ้มใบ Caltex ไม่ได้ (บันทึกแบบเดิมได้ตามปกติ)' });
       const date = String(req.query.date || '').trim();
       const amount = Number(req.query.amount);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'ต้องระบุวันที่และจำนวนเงินก่อน' });
-      const u = `${KPI_API_URL}/api/fuel-txns/candidates?date=${encodeURIComponent(date)}&amount=${encodeURIComponent(String(amount))}&window=1`;
-      const r = await fetch(u, { headers: { 'x-fuel-link-token': kpiToken() }, signal: AbortSignal.timeout(20000) });
-      const text = await r.text();
-      if (!r.ok) return res.status(424).json({ error: `ระบบ KPI ตอบ ${r.status}: ${text.slice(0, 200)}` });
-      const list = JSON.parse(text) as any[];
+      // ⚠️ ข้อผิดพลาดฝั่ง KPI/ยังไม่ตั้ง token ⇒ 424 (Failed Dependency) — ห้าม 502/503 เพราะ client `api()` retry 4 รอบ
+      const list = await fetchCaltexCandidates(date, amount);
       const db = await getDb();
       // บอกด้วยว่าใบไหนถูกผูกไปแล้ว (กับรายการหักไหน) — จะได้ไม่จิ้มซ้ำ
       const linked = new Map(db.fuelEntries.filter((f) => f.caltexTxnKey).map((f) => [f.caltexTxnKey as string, f]));
@@ -1302,23 +1307,30 @@ async function startServer() {
           return res.status(409).json({ error: `เลขใบสั่งเติมน้ำมัน "${refNo}" ซ้ำ — ใช้อยู่กับ ${dup.plateNo} วันที่ ${dup.date} ${Number(dup.amount).toLocaleString('th-TH')} บาท (งวด ${cyc?.name || '-'}) ห้ามบันทึกซ้ำ` });
         }
       }
-      // 🔒 ใบ Caltex 1 ใบ ผูกได้กับรายการหักเดียว (ข้ามสาขาด้วย) — ไม่งั้นน้ำมันใบเดียวถูกหักจาก 2 คัน
+      // 🔒 ใบ Caltex ที่ผูก: **ตรวจกับ KPI ไม่เชื่อค่าจากเบราว์เซอร์** (Codex P2 ×2: วัน/ยอดที่ client ส่งมาปลอมได้)
+      //    ถาม KPI ด้วยวัน/ยอดของรายการหักนี้ → txnKey ที่จิ้มต้องอยู่ในคำตอบ = วัน ±1 และยอด ±1 ตรงจริง
+      //    แล้ว **เขียนทับฟิลด์ caltex* ทั้งหมดด้วยค่าจาก KPI** (ref/ปั๊ม/เวลา/บัตร/ทะเบียน/ยอด) ไม่ใช่ที่ client ส่งมา
       const ck = String(body.caltexTxnKey || '').trim();
+      let trusted: Partial<FuelEntry> = {};
       if (ck) {
-        // ใบที่ผูกต้องเป็นวัน/ยอดเดียวกับรายการหัก (±1 วัน · ±1 บาท) — client ล้างให้อยู่แล้ว แต่ server ต้องกันเอง
-        const cAt = String(body.caltexAt || '').slice(0, 10);
-        const dayDiff = cAt && body.date ? Math.abs((Date.parse(cAt) - Date.parse(body.date)) / 86400000) : NaN;
-        if (!cAt || !(dayDiff <= 1)) return res.status(422).json({ error: `ใบ Caltex ที่จิ้ม (${cAt || '?'}) ไม่ใช่วันเดียวกับรายการหัก (${body.date}) — กดค้นใบ Caltex ใหม่` });
-        // ยอดต้องตรงด้วย (Codex P2: เช็คแค่วัน ยิงตรง API ด้วยยอดคนละใบยังผ่าน)
-        const cAmt = Number(body.caltexAmount);
-        if (!Number.isFinite(cAmt) || Math.abs(cAmt - Number(body.amount)) > 1) return res.status(422).json({ error: `ยอดบนใบ Caltex (${Number.isFinite(cAmt) ? cAmt.toLocaleString('th-TH') : '?'}) ไม่ตรงกับยอดที่หัก (${Number(body.amount).toLocaleString('th-TH')}) — กดค้นใบ Caltex ใหม่` });
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.date || '')) || !(Number(body.amount) > 0)) return res.status(422).json({ error: 'ผูกใบ Caltex ต้องมีวันที่และยอดเงินที่ถูกต้องก่อน' });
+        let cands: CaltexCand[];
+        try { cands = await fetchCaltexCandidates(String(body.date), Number(body.amount)); }
+        catch (e: any) { return res.status(424).json({ error: `ตรวจใบ Caltex กับระบบ KPI ไม่ได้: ${e.message}` }); }
+        const hit = cands.find((c) => c.txnKey === ck);
+        if (!hit) return res.status(422).json({ error: `ใบ Caltex ที่จิ้มไม่ตรงกับวันที่ ${body.date} / ยอด ${Number(body.amount).toLocaleString('th-TH')} บาท ตามข้อมูลจริงในระบบ KPI — กดค้นใบ Caltex ใหม่` });
+        trusted = { caltexTxnKey: hit.txnKey, caltexRefNo: hit.refNo, caltexCard: hit.cardLast6, caltexPlate: hit.plate, caltexStation: hit.station, caltexAt: hit.at, caltexAmount: hit.amount };
+        // ใบ Caltex 1 ใบ ผูกได้กับรายการหักเดียว (ข้ามสาขาด้วย) — ไม่งั้นน้ำมันใบเดียวถูกหักจาก 2 คัน
         const dupC = db.fuelEntries.find((f) => (f.caltexTxnKey || '') === ck);
         if (dupC) {
           const cyc = db.cycles.find((c) => c.id === dupC.cycleId);
-          return res.status(409).json({ error: `ใบ Caltex เลข ${body.caltexRefNo || ck} ถูกผูกไว้แล้วกับ ${dupC.plateNo} วันที่ ${dupC.date} ${Number(dupC.amount).toLocaleString('th-TH')} บาท (งวด ${cyc?.name || '-'}) — ใบเดียวหักได้คันเดียว` });
+          return res.status(409).json({ error: `ใบ Caltex เลข ${hit.refNo} ถูกผูกไว้แล้วกับ ${dupC.plateNo} วันที่ ${dupC.date} ${Number(dupC.amount).toLocaleString('th-TH')} บาท (งวด ${cyc?.name || '-'}) — ใบเดียวหักได้คันเดียว` });
         }
       }
-      const item = { ...body, id: generateId('fuel') } as FuelEntry;
+      // ฟิลด์ caltex* จาก client ทิ้งทั้งหมด (ใช้เฉพาะ `trusted` ที่ตรวจกับ KPI แล้ว) — ห้ามใส่ undefined ลง record (Firebase ไม่รับ)
+      const clean: Record<string, unknown> = { ...body };
+      for (const k of ['caltexTxnKey', 'caltexRefNo', 'caltexCard', 'caltexPlate', 'caltexStation', 'caltexAt', 'caltexAmount']) delete clean[k];
+      const item = { ...clean, ...trusted, id: generateId('fuel') } as FuelEntry;
       db.fuelEntries.push(item);
       await saveRecord('fuelEntries', item);
       res.status(201).json(item);
