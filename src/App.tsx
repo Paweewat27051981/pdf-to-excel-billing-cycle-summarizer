@@ -2330,7 +2330,7 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
     // server บอกเองว่าเลขนั้นใช้กับรถคันไหน/วันไหน/งวดไหน (client เห็นแค่งวดที่เลือก หาข้ามงวดเองไม่ได้)
     // ใบ Caltex ที่จิ้มไว้ต้องยอดตรงกับที่กรอก (กันเปลี่ยนยอดหลังจิ้มแล้วลืมค้นใหม่)
     if (cxPick && Math.abs(cxPick.amount - fForm.amount) > 1) return showToast('warning', `ใบ Caltex ที่จิ้มไว้ยอด ${money(cxPick.amount)} บาท ไม่ตรงกับที่กรอก ${money(fForm.amount)} — กดค้นใบ Caltex ใหม่`);
-    const cx = cxPick ? { caltexTxnKey: cxPick.txnKey, caltexRefNo: cxPick.refNo, caltexCard: cxPick.cardLast6, caltexPlate: cxPick.plate, caltexStation: cxPick.station, caltexAt: cxPick.at } : {};
+    const cx = cxPick ? { caltexTxnKey: cxPick.txnKey, caltexRefNo: cxPick.refNo, caltexCard: cxPick.cardLast6, caltexPlate: cxPick.plate, caltexStation: cxPick.station, caltexAt: cxPick.at, caltexAmount: cxPick.amount } : {};
     try {
       await api('/api/fuel', 'POST', { ...fForm, ...cx, cycleId: cycle.id, branchId });
     } catch (e: any) {

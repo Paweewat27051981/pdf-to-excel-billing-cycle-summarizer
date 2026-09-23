@@ -322,6 +322,7 @@ export interface FuelEntry {
   caltexPlate?: string;    // ทะเบียน/ชื่อบัตรที่รูด ("VIP 02" = บัตรประจำปั๊ม) — ต่างจาก plateNo = สัญญาณรูดบัตรผิด
   caltexStation?: string;  // ชื่อปั๊ม (ตามไฟล์ Caltex)
   caltexAt?: string;       // เวลาเติม ISO YYYY-MM-DDTHH:mm
+  caltexAmount?: number;   // ยอดบนใบ Caltex — server ใช้เช็คว่าตรงกับ amount ที่หัก (±1 บาท)
 }
 
 // ---------------------------------------------------------------------------

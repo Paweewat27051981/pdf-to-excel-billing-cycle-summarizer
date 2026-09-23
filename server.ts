@@ -1309,6 +1309,9 @@ async function startServer() {
         const cAt = String(body.caltexAt || '').slice(0, 10);
         const dayDiff = cAt && body.date ? Math.abs((Date.parse(cAt) - Date.parse(body.date)) / 86400000) : NaN;
         if (!cAt || !(dayDiff <= 1)) return res.status(422).json({ error: `ใบ Caltex ที่จิ้ม (${cAt || '?'}) ไม่ใช่วันเดียวกับรายการหัก (${body.date}) — กดค้นใบ Caltex ใหม่` });
+        // ยอดต้องตรงด้วย (Codex P2: เช็คแค่วัน ยิงตรง API ด้วยยอดคนละใบยังผ่าน)
+        const cAmt = Number(body.caltexAmount);
+        if (!Number.isFinite(cAmt) || Math.abs(cAmt - Number(body.amount)) > 1) return res.status(422).json({ error: `ยอดบนใบ Caltex (${Number.isFinite(cAmt) ? cAmt.toLocaleString('th-TH') : '?'}) ไม่ตรงกับยอดที่หัก (${Number(body.amount).toLocaleString('th-TH')}) — กดค้นใบ Caltex ใหม่` });
         const dupC = db.fuelEntries.find((f) => (f.caltexTxnKey || '') === ck);
         if (dupC) {
           const cyc = db.cycles.find((c) => c.id === dupC.cycleId);
