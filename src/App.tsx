@@ -2410,8 +2410,9 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
             {branchVehicles.map((v) => <option key={v.id} value={v.plateNo}>{v.plateNo}{v.driverName ? ` · ${v.driverName}` : ''}</option>)}
           </select>
           <input aria-label="เลขใบสั่งเติม" placeholder="เลขใบสั่งเติม" value={fForm.refNo} onChange={(e) => setFForm({ ...fForm, refNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-32" />
-          <input type="date" aria-label="วันที่เติมน้ำมัน" value={fForm.date} onChange={(e) => setFForm({ ...fForm, date: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
-          <input type="number" aria-label="จำนวนเงินค่าน้ำมัน" placeholder="จำนวนเงิน" value={fForm.amount || ''} onChange={(e) => setFForm({ ...fForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
+          {/* เปลี่ยนวันที่/ยอด = ใบ Caltex ที่ค้น/จิ้มไว้ใช้ไม่ได้แล้ว ต้องล้าง (Codex P2: ไม่งั้นบันทึกใบของวันเก่าติดไปกับวันใหม่) */}
+          <input type="date" aria-label="วันที่เติมน้ำมัน" value={fForm.date} onChange={(e) => { setFForm({ ...fForm, date: e.target.value }); setCxPick(null); setCxList(null); }} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
+          <input type="number" aria-label="จำนวนเงินค่าน้ำมัน" placeholder="จำนวนเงิน" value={fForm.amount || ''} onChange={(e) => { setFForm({ ...fForm, amount: +e.target.value }); setCxPick(null); setCxList(null); }} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
           {!cxOff && (
             <button type="button" onClick={findCaltex} disabled={cxBusy} title="ดึงใบเติมจริงจากบัตร Caltex ของวัน/ยอดนี้มาให้เลือก — ไม่ต้องพิมพ์เลขอ้างอิง"
               className="bg-white border border-sky-400 text-sky-700 disabled:opacity-50 rounded-lg px-2.5 py-1.5 text-sm font-semibold">

@@ -1263,6 +1263,8 @@ async function startServer() {
   const kpiToken = () => (process.env.KPI_FUEL_LINK_TOKEN || '').trim();
   app.get('/api/fuel/caltex-candidates', async (req, res) => {
     try {
+      // 🔒 ต้องมีเซสชันสาขา — ไม่งั้นใครก็ยิงมาไล่ดูรายการเติมน้ำมัน Caltex ผ่าน token ของ server ได้ (Codex P1)
+      if (!getSession(req)) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบใหม่ (เซสชันหมดอายุ)' });
       // ⚠️ ห้ามตอบ 502/503 — client `api()` จะ retry 4 รอบ (คิดว่า server กำลัง restart) ⇒ ใช้ 424 (Failed Dependency)
       if (!kpiToken()) return res.status(424).json({ error: 'ยังไม่ได้ตั้ง KPI_FUEL_LINK_TOKEN ใน .env ของระบบค่าเที่ยว — ยังจิ้มใบ Caltex ไม่ได้ (บันทึกแบบเดิมได้ตามปกติ)' });
       const date = String(req.query.date || '').trim();
@@ -1303,6 +1305,10 @@ async function startServer() {
       // 🔒 ใบ Caltex 1 ใบ ผูกได้กับรายการหักเดียว (ข้ามสาขาด้วย) — ไม่งั้นน้ำมันใบเดียวถูกหักจาก 2 คัน
       const ck = String(body.caltexTxnKey || '').trim();
       if (ck) {
+        // ใบที่ผูกต้องเป็นวัน/ยอดเดียวกับรายการหัก (±1 วัน · ±1 บาท) — client ล้างให้อยู่แล้ว แต่ server ต้องกันเอง
+        const cAt = String(body.caltexAt || '').slice(0, 10);
+        const dayDiff = cAt && body.date ? Math.abs((Date.parse(cAt) - Date.parse(body.date)) / 86400000) : NaN;
+        if (!cAt || !(dayDiff <= 1)) return res.status(422).json({ error: `ใบ Caltex ที่จิ้ม (${cAt || '?'}) ไม่ใช่วันเดียวกับรายการหัก (${body.date}) — กดค้นใบ Caltex ใหม่` });
         const dupC = db.fuelEntries.find((f) => (f.caltexTxnKey || '') === ck);
         if (dupC) {
           const cyc = db.cycles.find((c) => c.id === dupC.cycleId);
