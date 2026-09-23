@@ -1254,6 +1254,38 @@ async function startServer() {
     });
   }
 
+  // ===================== ผูกใบ Caltex (ระบบ KPI) กับรายการหักน้ำมัน =====================
+  // เจ้าของเคาะ 23 ก.ย.69 (ทาง B): "พิมพ์เลขไม่ไหว คนพิมพ์ผิด" ⇒ ให้ระบบดึงใบ Caltex ของวัน/ยอดนั้นมาให้จิ้ม
+  //   server ตัวนี้เป็นคนคุยกับ KPI (token อยู่ฝั่ง server เท่านั้น เบราว์เซอร์สาขาไม่เห็น)
+  //   ตั้งใน .env:  KPI_API_URL (default https://neosiam.dscloud.biz:8443) · KPI_FUEL_LINK_TOKEN (ค่าเดียวกับ FUEL_LINK_TOKEN ฝั่ง KPI)
+  //   ยังไม่ตั้ง = ตอบ 503 บอกเหตุผล หน้าเว็บซ่อนปุ่มเอง (ระบบเดิมใช้ต่อได้ปกติ)
+  const KPI_API_URL = (process.env.KPI_API_URL || 'https://neosiam.dscloud.biz:8443').replace(/\/+$/, '');
+  const kpiToken = () => (process.env.KPI_FUEL_LINK_TOKEN || '').trim();
+  app.get('/api/fuel/caltex-candidates', async (req, res) => {
+    try {
+      // ⚠️ ห้ามตอบ 502/503 — client `api()` จะ retry 4 รอบ (คิดว่า server กำลัง restart) ⇒ ใช้ 424 (Failed Dependency)
+      if (!kpiToken()) return res.status(424).json({ error: 'ยังไม่ได้ตั้ง KPI_FUEL_LINK_TOKEN ใน .env ของระบบค่าเที่ยว — ยังจิ้มใบ Caltex ไม่ได้ (บันทึกแบบเดิมได้ตามปกติ)' });
+      const date = String(req.query.date || '').trim();
+      const amount = Number(req.query.amount);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'ต้องระบุวันที่และจำนวนเงินก่อน' });
+      const u = `${KPI_API_URL}/api/fuel-txns/candidates?date=${encodeURIComponent(date)}&amount=${encodeURIComponent(String(amount))}&window=1`;
+      const r = await fetch(u, { headers: { 'x-fuel-link-token': kpiToken() }, signal: AbortSignal.timeout(20000) });
+      const text = await r.text();
+      if (!r.ok) return res.status(424).json({ error: `ระบบ KPI ตอบ ${r.status}: ${text.slice(0, 200)}` });
+      const list = JSON.parse(text) as any[];
+      const db = await getDb();
+      // บอกด้วยว่าใบไหนถูกผูกไปแล้ว (กับรายการหักไหน) — จะได้ไม่จิ้มซ้ำ
+      const linked = new Map(db.fuelEntries.filter((f) => f.caltexTxnKey).map((f) => [f.caltexTxnKey as string, f]));
+      res.json(list.map((c) => {
+        const lf = linked.get(c.txnKey);
+        return { ...c, linkedTo: lf ? `${lf.plateNo} ${lf.date} (ใบสั่งเติม ${lf.refNo || '-'})` : '' };
+      }));
+    } catch (err: any) {
+      const msg = /timeout|abort/i.test(String(err?.message)) ? 'ต่อระบบ KPI ไม่ทัน (timeout) — ลองใหม่' : err.message;
+      res.status(424).json({ error: msg });
+    }
+  });
+
   // 🔒 ค่าน้ำมัน: เลขใบสั่งเติมห้ามซ้ำในสาขา (ลงทะเบียน POST ก่อน masterRoutes เพื่อ override)
   app.post('/api/fuel', async (req, res) => {
     try {
@@ -1266,6 +1298,15 @@ async function startServer() {
         if (dup) {
           const cyc = db.cycles.find((c) => c.id === dup.cycleId);
           return res.status(409).json({ error: `เลขใบสั่งเติมน้ำมัน "${refNo}" ซ้ำ — ใช้อยู่กับ ${dup.plateNo} วันที่ ${dup.date} ${Number(dup.amount).toLocaleString('th-TH')} บาท (งวด ${cyc?.name || '-'}) ห้ามบันทึกซ้ำ` });
+        }
+      }
+      // 🔒 ใบ Caltex 1 ใบ ผูกได้กับรายการหักเดียว (ข้ามสาขาด้วย) — ไม่งั้นน้ำมันใบเดียวถูกหักจาก 2 คัน
+      const ck = String(body.caltexTxnKey || '').trim();
+      if (ck) {
+        const dupC = db.fuelEntries.find((f) => (f.caltexTxnKey || '') === ck);
+        if (dupC) {
+          const cyc = db.cycles.find((c) => c.id === dupC.cycleId);
+          return res.status(409).json({ error: `ใบ Caltex เลข ${body.caltexRefNo || ck} ถูกผูกไว้แล้วกับ ${dupC.plateNo} วันที่ ${dupC.date} ${Number(dupC.amount).toLocaleString('th-TH')} บาท (งวด ${cyc?.name || '-'}) — ใบเดียวหักได้คันเดียว` });
         }
       }
       const item = { ...body, id: generateId('fuel') } as FuelEntry;

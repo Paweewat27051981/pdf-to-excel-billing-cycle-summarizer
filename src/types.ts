@@ -307,10 +307,21 @@ export interface FuelEntry {
   branchId: string;
   cycleId: string;
   plateNo: string;
-  refNo: string;        // เลขใบสั่งเติม
+  refNo: string;        // เลขใบสั่งเติม (เลขของสาขา — ไม่ใช่เลขอ้างอิง Caltex)
   date: string;         // YYYY-MM-DD
   amount: number;       // ค่าน้ำมัน
   note?: string;
+  // ---- ผูกกับใบเติมจริงในระบบบัตร Caltex (ระบบ KPI) — เจ้าของเคาะ 23 ก.ย.69 ----
+  // ทำไม: refNo ข้างบนคือเลขใบสั่งเติมของสาขา ไม่ตรงกับ Reference # ของ Caltex ⇒ 2 ระบบเชื่อมกันไม่ได้
+  //   "พิมพ์เลขไม่ไหว คนพิมพ์ผิด" ⇒ ให้ระบบเสนอใบ Caltex ของวัน/ยอดนั้นมาให้จิ้ม แล้วเก็บกุญแจไว้ที่นี่
+  //   ⇒ KPI เทียบ "บัตรที่รูด" กับ "คันที่ถูกหัก" ได้เป๊ะ (รูดบัตรผิด = 2 อย่างนี้ไม่ตรงกัน)
+  // ⚠️ ใบ Caltex 1 ใบ ผูกได้กับรายการหักเดียว (server กัน 409)
+  caltexTxnKey?: string;   // กุญแจใบเติมฝั่ง KPI (`เวลา|ref|ปั๊ม`) — ใช้ join
+  caltexRefNo?: string;    // Reference # ของ Caltex (6 หลัก) — ไว้ให้คนอ่าน
+  caltexCard?: string;     // เลขบัตร 6 ตัวท้าย
+  caltexPlate?: string;    // ทะเบียน/ชื่อบัตรที่รูด ("VIP 02" = บัตรประจำปั๊ม) — ต่างจาก plateNo = สัญญาณรูดบัตรผิด
+  caltexStation?: string;  // ชื่อปั๊ม (ตามไฟล์ Caltex)
+  caltexAt?: string;       // เวลาเติม ISO YYYY-MM-DDTHH:mm
 }
 
 // ---------------------------------------------------------------------------

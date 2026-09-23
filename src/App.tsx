@@ -2279,6 +2279,28 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
   const fuelFileRef = useRef<HTMLInputElement>(null);
   const [impFuel, setImpFuel] = useState(false);
   const [fPlate, setFPlate] = useState('');
+  // ---- จิ้มใบ Caltex (เจ้าของเคาะ 23 ก.ย.69): ระบบเสนอใบเติมจริงของวัน/ยอดนั้น ไม่ต้องพิมพ์เลข ----
+  type CxCand = { txnKey: string; refNo: string; station: string; at: string; amount: number; cardLast6: string; plate: string; sameDay: boolean; linkedTo: string };
+  const [cxList, setCxList] = useState<CxCand[] | null>(null);   // null = ยังไม่ค้น
+  const [cxBusy, setCxBusy] = useState(false);
+  const [cxPick, setCxPick] = useState<CxCand | null>(null);
+  const [cxOff, setCxOff] = useState('');                          // ข้อความเมื่อระบบยังไม่ได้ตั้งค่า (503)
+  const findCaltex = async () => {
+    if (!fForm.date || !fForm.amount) return showToast('warning', 'ใส่วันที่และจำนวนเงินก่อน แล้วค่อยค้นใบ Caltex');
+    setCxBusy(true); setCxPick(null);
+    try {
+      const list = await api(`/api/fuel/caltex-candidates?date=${fForm.date}&amount=${fForm.amount}`, 'GET');
+      setCxList(list); setCxOff('');
+      if (!list.length) showToast('info', `ไม่พบใบ Caltex ยอด ${money(fForm.amount)} บาท วันที่ ${fForm.date} (±1 วัน) — อาจไม่ได้เติมผ่านบัตร หรือข้อมูลยังไม่เข้า NAS`);
+    } catch (e: any) {
+      setCxList(null);
+      // 503 = ยังไม่ตั้ง token ⇒ ซ่อนฟีเจอร์ ไม่ใช่ error ของคนใช้
+      if (/KPI_FUEL_LINK_TOKEN/.test(e.message)) setCxOff(e.message); else showToast('error', e.message);
+    } finally { setCxBusy(false); }
+  };
+  const cxLabel = (c: CxCand) => `${c.at.slice(11, 16)} น. · ${c.station} · ${money(c.amount)} บาท · ${c.plate ? `บัตรของ ${c.plate}` : `บัตร …${c.cardLast6}`}`;
+  // สัญญาณรูดบัตรผิด: บัตรที่รูดผูกกับรถอีกคัน (ไม่ใช่ VIP ประจำปั๊ม และไม่ใช่คันที่กำลังหัก)
+  const cxMismatch = (c: CxCand | null) => !!c && !!c.plate && !/^VIP/i.test(c.plate) && normPlate(c.plate) !== normPlate(fForm.plateNo || '');
 
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
@@ -2306,13 +2328,16 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
     // server ปฏิเสธ (เช่น เลขใบสั่งเติมซ้ำ 409) ต้องบอกคนกด — เดิมเงียบ ปุ่มเหมือนไม่ทำงาน
     // (เคสจริง 19 ก.ย.69 กำแพงเพชร: 46737 ถูกใช้กับ บว-1406 ไปแล้ว ทีมกดเพิ่ม บว-9334 ไม่ได้และไม่รู้ว่าทำไม)
     // server บอกเองว่าเลขนั้นใช้กับรถคันไหน/วันไหน/งวดไหน (client เห็นแค่งวดที่เลือก หาข้ามงวดเองไม่ได้)
+    // ใบ Caltex ที่จิ้มไว้ต้องยอดตรงกับที่กรอก (กันเปลี่ยนยอดหลังจิ้มแล้วลืมค้นใหม่)
+    if (cxPick && Math.abs(cxPick.amount - fForm.amount) > 1) return showToast('warning', `ใบ Caltex ที่จิ้มไว้ยอด ${money(cxPick.amount)} บาท ไม่ตรงกับที่กรอก ${money(fForm.amount)} — กดค้นใบ Caltex ใหม่`);
+    const cx = cxPick ? { caltexTxnKey: cxPick.txnKey, caltexRefNo: cxPick.refNo, caltexCard: cxPick.cardLast6, caltexPlate: cxPick.plate, caltexStation: cxPick.station, caltexAt: cxPick.at } : {};
     try {
-      await api('/api/fuel', 'POST', { ...fForm, cycleId: cycle.id, branchId });
+      await api('/api/fuel', 'POST', { ...fForm, ...cx, cycleId: cycle.id, branchId });
     } catch (e: any) {
       return showToast('error', e.message);
     }
-    showToast('success', 'เพิ่มค่าน้ำมันแล้ว');
-    setFForm({ plateNo: '', refNo: '', date: cycle.startDate, amount: 0 }); reload();
+    showToast('success', cxPick ? `เพิ่มค่าน้ำมันแล้ว · ผูกใบ Caltex ${cxPick.refNo}` : 'เพิ่มค่าน้ำมันแล้ว');
+    setFForm({ plateNo: '', refNo: '', date: cycle.startDate, amount: 0 }); setCxPick(null); setCxList(null); reload();
   };
   const dlFuelTemplate = () => {
     const vs = (db.vehicles as Vehicle[]).filter((v) => v.status === 'active').map((v) => ({ plateNo: v.plateNo, driverName: v.driverName }));
@@ -2387,10 +2412,50 @@ function FuelDeductionTab({ db, cycle, api, branchId, reload, showToast, isAdmin
           <input aria-label="เลขใบสั่งเติม" placeholder="เลขใบสั่งเติม" value={fForm.refNo} onChange={(e) => setFForm({ ...fForm, refNo: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-32" />
           <input type="date" aria-label="วันที่เติมน้ำมัน" value={fForm.date} onChange={(e) => setFForm({ ...fForm, date: e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm" />
           <input type="number" aria-label="จำนวนเงินค่าน้ำมัน" placeholder="จำนวนเงิน" value={fForm.amount || ''} onChange={(e) => setFForm({ ...fForm, amount: +e.target.value })} className="border border-natural-border rounded-lg px-2 py-1.5 text-sm w-28" />
+          {!cxOff && (
+            <button type="button" onClick={findCaltex} disabled={cxBusy} title="ดึงใบเติมจริงจากบัตร Caltex ของวัน/ยอดนี้มาให้เลือก — ไม่ต้องพิมพ์เลขอ้างอิง"
+              className="bg-white border border-sky-400 text-sky-700 disabled:opacity-50 rounded-lg px-2.5 py-1.5 text-sm font-semibold">
+              {cxBusy ? 'กำลังค้น…' : '🔍 ค้นใบ Caltex'}
+            </button>
+          )}
           <button onClick={addFuel} className="bg-brand-red text-white rounded-lg px-3 text-sm font-semibold">เพิ่ม</button>
         </div>
-        <SimpleTable rows={fuelF.map((f: FuelEntry) => [f.plateNo, f.refNo, f.date, money(f.amount)])} cols={['ทะเบียน', 'ใบสั่งเติม', 'วันที่', 'จำนวน']}
-          footer={[`รวม ${fuelF.length} รายการ`, '', '', `฿${money(fuelSum)}`]}
+        {/* รายการใบ Caltex ให้จิ้ม — โชว์หลังกดค้น · จิ้มแล้วขึ้นสรุป + เตือนทันทีถ้าบัตรเป็นของรถอีกคัน */}
+        {cxList && !cxPick && (
+          <div className="mb-3 border border-sky-200 bg-sky-50 rounded-xl p-2 text-sm">
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-semibold text-sky-900">ใบ Caltex ยอด {money(fForm.amount)} บาท วันที่ {fForm.date} (±1 วัน) — {cxList.length} ใบ</span>
+              <button type="button" onClick={() => setCxList(null)} className="text-xs text-natural-muted underline">ปิด</button>
+            </div>
+            {cxList.length === 0 && <div className="text-natural-muted text-xs">ไม่พบ — บันทึกแบบไม่ผูกได้ตามปกติ</div>}
+            <div className="flex flex-col gap-1 max-h-48 overflow-auto">
+              {cxList.map((c) => (
+                <button key={c.txnKey} type="button" disabled={!!c.linkedTo} onClick={() => setCxPick(c)}
+                  className={`text-left rounded-lg px-2 py-1 border ${c.linkedTo ? 'border-natural-border bg-natural-bg text-natural-muted cursor-not-allowed' : c.sameDay ? 'border-sky-300 bg-white hover:bg-sky-100' : 'border-amber-300 bg-amber-50 hover:bg-amber-100'}`}>
+                  <span className="font-mono text-xs mr-2">ref {c.refNo}</span>
+                  {!c.sameDay && <span className="text-xs text-amber-800 mr-1">[{c.at.slice(0, 10)}]</span>}
+                  {cxLabel(c)}
+                  {c.linkedTo && <span className="text-xs ml-2">— ผูกแล้วกับ {c.linkedTo}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {cxPick && (
+          <div className={`mb-3 rounded-xl p-2 text-sm border ${cxMismatch(cxPick) ? 'border-rose-300 bg-rose-50' : 'border-emerald-300 bg-emerald-50'}`}>
+            <div className="flex items-center justify-between">
+              <span><b>ผูกใบ Caltex ref {cxPick.refNo}</b> · {cxLabel(cxPick)}</span>
+              <button type="button" onClick={() => setCxPick(null)} className="text-xs text-natural-muted underline">เอาออก</button>
+            </div>
+            {cxMismatch(cxPick) && (
+              <div className="text-rose-800 text-xs mt-1">
+                🚩 บัตรที่รูดเป็นของ <b>{cxPick.plate}</b> แต่กำลังหักจาก <b>{fForm.plateNo}</b> — ถ้าถูกต้องให้บันทึกได้ (ระบบจะจำไว้ว่ารูดบัตรผิดคัน) ถ้าไม่ใช่ให้กด "เอาออก" แล้วเลือกใบอื่น
+              </div>
+            )}
+          </div>
+        )}
+        <SimpleTable rows={fuelF.map((f: FuelEntry) => [f.plateNo, f.refNo, f.date, money(f.amount), f.caltexRefNo ? `${f.caltexRefNo}${f.caltexPlate && !/^VIP/i.test(f.caltexPlate) && normPlate(f.caltexPlate) !== normPlate(f.plateNo) ? ` 🚩${f.caltexPlate}` : ''}` : '—'])} cols={['ทะเบียน', 'ใบสั่งเติม', 'วันที่', 'จำนวน', 'ใบ Caltex']}
+          footer={[`รวม ${fuelF.length} รายการ`, '', '', `฿${money(fuelSum)}`, '']}
           onDelete={async (i: number) => { await api(`/api/fuel/${fuelF[i].id}`, 'DELETE'); reload(); }} />
       </Section>
 
