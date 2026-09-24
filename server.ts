@@ -545,7 +545,25 @@ async function startServer() {
         }
       }
       console.log(`[jastran] รับใบกระจาย ${docs.length} ใบ วันที่ ${date}`);
-      res.json({ success: true, date, count: docs.length });
+      // 🔁 ค่าขนกลับอัตโนมัติ: ใบที่บันทึกไปแล้ว แต่หมายเหตุเพิ่งมา/เพิ่งแก้ในจัสทราน -> บวกให้ตอนดึงรอบนี้
+      //    (ใบที่ยังไม่บันทึก จะถูกบวกตอนกดบันทึกใบ) พลาดไม่ทำให้การรับข้อมูลล้ม
+      let returnFeeAdded = 0;
+      try {
+        const db = await getDb();
+        const autoDocs = new Set(db.deductions.filter((x) => x.kind === 'income' && /บวกอัตโนมัติจากหมายเหตุจัสทราน/.test(x.note || '')).map((x) => (x.docNo || '').trim()));
+        // ทำงานเมื่อมีหมายเหตุค่าขนกลับเข้ามา หรือมีรายการอัตโนมัติเดิมที่อาจต้องถอน (หมายเหตุถูกลบ/แก้)
+        if (autoDocs.size || docs.some((d: any) => /ขนกลับ|เก็บ(ของ|สินค้า)?คืน/.test(String(d?.remark || '')))) {
+          const dayMerged = (await readDay(date)).docs; // รวมทุกแหล่ง (ข้อมูลล่าสุด)
+          for (const t of db.tripDocuments.filter((x) => x.documentDate === date || String(x.fileName || '') === `จัสทราน ${date}`)) {
+            const jd = jastranDocForTrip(dayMerged, t);
+            if (!jd) continue;                                   // ใบไม่อยู่ในไฟล์วันนี้ = ไม่มีข้อมูลตัดสิน ไม่แตะ
+            if (!jd.remark && !autoDocs.has((t.documentNo || '').trim())) continue;
+            const r = await autoAddReturnFee(db, t, String(jd.remark || ''));
+            if (r.added) returnFeeAdded++;
+          }
+        }
+      } catch (e: any) { console.error('[return-fee:auto] ตอนรับข้อมูลจัสทราน ล้มเหลว:', e.message); }
+      res.json({ success: true, date, count: docs.length, returnFeeAdded });
     } catch (err: any) {
       console.error('[jastran/trips] error:', err);
       res.status(500).json({ error: err.message });
@@ -1773,6 +1791,86 @@ async function startServer() {
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  // ===================== บวกค่าขนกลับ "อัตโนมัติ" (เจ้าของเลือกทาง 3 เมื่อ 24 ก.ย.69) =====================
+  // บวกทุกใบที่หมายเหตุจัสทรานระบุค่าขนกลับ ตามตัวเลขในหมายเหตุ (ไม่ต้องกดยืนยัน)
+  // ด่านกันเงินผิดที่ยังคงไว้ (ไม่ขัดกับที่เจ้าของเลือก — เป็นเรื่องกันจ่ายซ้ำ/จ่ายผิดรอบ ไม่ใช่การยืนยันยอด):
+  //   · อ่านยอดไม่ได้เลย (amount = null) -> ข้าม ให้คนกด (ไม่มีตัวเลขจะบวก)
+  //   · ใบนั้นมีค่าขนกลับแล้ว (ชื่อมี "ขนกลับ" + เลขใบตรง) -> ข้าม
+  //   · รถคันเดียวกัน งวดเดียวกัน มีค่าขนกลับยอดเท่ากันอยู่แล้ว (แม้เลขใบต่าง) -> ข้าม
+  //       = น่าจะเป็นรายการที่ทีมกรอกมือแล้วพิมพ์เลขใบผิด (เคสจริง 750.75 ใส่ JB0226015122 แทน JB0226015102)
+  //   · รอบปิดแล้ว -> ข้าม
+  async function autoAddReturnFee(db: DatabaseState, trip: TripDocument, remark: string): Promise<{ added?: DeductionEntry; skip?: string }> {
+    const fee = parseReturnFee(remark);
+    // หมายเหตุล่าสุด "ไม่รองรับ" ยอดเดิมแล้ว (ถูกลบ/ปฏิเสธ/อ่านไม่ได้/ขัดกันเอง) -> รายการที่ระบบเคยบวกเองต้องถอนออก (Codex P2)
+    //   ถอนเฉพาะรายการอัตโนมัติ ในรอบที่ยังเปิด · รายการที่ทีมกรอกมือไม่แตะ
+    const withdrawAuto = async (why: string) => {
+      const dn = (trip.documentNo || '').trim();
+      const auto = db.deductions.find((x) => x.branchId === trip.branchId && x.kind === 'income' && isReturnFeeLabel(x.label)
+        && (x.docNo || '').trim() === dn && /บวกอัตโนมัติจากหมายเหตุจัสทราน/.test(x.note || ''));
+      if (auto && db.cycles.find((c) => c.id === auto.cycleId)?.status !== 'closed') {
+        db.deductions = db.deductions.filter((x) => x.id !== auto.id);
+        await removeRecord('deductions', auto.id);
+        console.log(`[return-fee:auto] ถอน ${dn} ${auto.amount} — ${why}`);
+        return { skip: `${why} (ถอนค่าขนกลับอัตโนมัติ ${auto.amount} ออกแล้ว)` };
+      }
+      return { skip: why };
+    };
+    if (!fee) return withdrawAuto('ไม่มีค่าขนกลับในหมายเหตุ');
+    if (fee.amount == null || !(fee.amount > 0)) return withdrawAuto('อ่านยอดจากหมายเหตุไม่ได้ ต้องกดบวกเอง');
+    // ตัวเลขในหมายเหตุขัดกันเอง (เช่น "=395 750.75" หรือ จำนวน×ราคา ไม่เท่ากับยอดหลัง =) -> ไม่รู้ว่าตัวไหนคือ "ตามหมายเหตุ" ให้คนตัดสิน (Codex P1)
+    if (fee.ambiguous) return withdrawAuto('ตัวเลขในหมายเหตุขัดกันเอง ต้องกดบวกเอง');
+    if (fee.amount > 50000) return withdrawAuto(`ยอด ${fee.amount} มากผิดปกติ ต้องกดบวกเอง`);
+    const cyc = db.cycles.find((c) => c.id === trip.cycleId);
+    if (!cyc || cyc.status === 'closed') return { skip: 'รอบปิดแล้ว' };
+    const docNo = (trip.documentNo || '').trim();
+    const mine = db.deductions.filter((x) => x.branchId === trip.branchId && x.kind === 'income' && isReturnFeeLabel(x.label));
+    const existing = mine.find((x) => (x.docNo || '').trim() === docNo);
+    if (existing) {
+      // รายการที่ "ระบบบวกเอง" ต้องตามใบ/หมายเหตุล่าสุดเสมอ (ทับใบเดิมแล้วย้ายงวด/ทะเบียน หรือทีมแก้ยอดในหมายเหตุ) (Codex P2)
+      //   รายการที่ทีมกรอกมือ = ไม่แตะ · รอบเดิมของรายการปิดแล้ว = ไม่แตะ (เงินที่ปิดงวดแล้ว)
+      const isAuto = /บวกอัตโนมัติจากหมายเหตุจัสทราน/.test(existing.note || '');
+      const oldCyc = db.cycles.find((c) => c.id === existing.cycleId);
+      const changed = existing.cycleId !== trip.cycleId || normPlate(existing.plateNo) !== normPlate(trip.plateNo) || Math.abs(Number(existing.amount) - fee.amount) >= 0.005;
+      if (isAuto && changed && oldCyc?.status !== 'closed') {
+        existing.cycleId = trip.cycleId; existing.plateNo = trip.plateNo; existing.amount = fee.amount;
+        existing.note = `${fee.text} (บวกอัตโนมัติจากหมายเหตุจัสทราน)`;
+        await saveRecord('deductions', existing);
+        console.log(`[return-fee:auto] อัปเดต ${trip.documentNo} ${trip.plateNo} = ${fee.amount}`);
+        return { added: existing };
+      }
+      return { skip: 'บวกแล้ว' };
+    }
+    // เฉพาะรายการที่เลขใบ "ไม่ตรงกับใบจริงใบไหนเลย" (น่าจะพิมพ์ผิด) — ถ้าเลขตรงกับใบอื่นที่มีจริง = ค่าขนกลับของใบนั้น ไม่ใช่ของใบนี้ (Codex P2)
+    const realDocs = new Set(db.tripDocuments.filter((t) => t.branchId === trip.branchId).map((t) => (t.documentNo || '').trim()));
+    const sameAmt = mine.find((x) => x.cycleId === trip.cycleId && normPlate(x.plateNo) === normPlate(trip.plateNo) && Math.abs(Number(x.amount) - fee.amount!) < 0.005
+      && !realDocs.has((x.docNo || '').trim()));
+    if (sameAmt) return { skip: `รถคันนี้มีค่าขนกลับ ${fee.amount} ในงวดนี้แล้ว (เลขใบ ${sameAmt.docNo || '-'}) — ไม่บวกซ้ำ` };
+    let cat = db.moneyCategories.find((c) => c.branchId === trip.branchId && c.kind === 'income' && c.name === RETURN_FEE_LABEL)
+      || db.moneyCategories.find((c) => c.branchId === trip.branchId && c.kind === 'income' && c.status === 'active' && isReturnFeeLabel(c.name));
+    if (!cat) {
+      cat = { id: generateId('cat'), branchId: trip.branchId, name: RETURN_FEE_LABEL, kind: 'income', status: 'active', builtin: true };
+      db.moneyCategories.push(cat);
+      await saveRecord('moneyCategories', cat);
+    } else if (cat.status !== 'active') { cat.status = 'active'; await saveRecord('moneyCategories', cat); }
+    const entry: DeductionEntry = {
+      id: generateId('ded'), branchId: trip.branchId, cycleId: trip.cycleId, plateNo: trip.plateNo, categoryId: cat.id, kind: 'income',
+      label: cat.name, amount: fee.amount, docNo: trip.documentNo, note: `${fee.text} (บวกอัตโนมัติจากหมายเหตุจัสทราน)`,
+    };
+    db.deductions.push(entry);
+    await saveRecord('deductions', entry);
+    console.log(`[return-fee:auto] ${trip.branchId} ${trip.documentNo} ${trip.plateNo} +${fee.amount}`);
+    return { added: entry };
+  }
+  // หาใบจัสทรานที่ตรงกับใบที่บันทึก: เลขใบตรงตัวก่อน ไม่งั้นใช้เลขใบรับ (กรณีคนแก้เลขใบตอนตรวจ) ต้องชี้ใบเดียว
+  function jastranDocForTrip(docs: any[], trip: TripDocument): any | null {
+    const dn = (trip.documentNo || '').trim();
+    const exact = docs.find((d) => String(d?.documentNo || '').trim() === dn);
+    if (exact) return exact;
+    const mineRcp = new Set((trip.receipts || []).map((r) => String(r.receiptNo || '').trim()).filter(Boolean));
+    const hits = docs.filter((d) => (d?.receipts || []).some((r: any) => mineRcp.has(String(r?.receiptNo || '').trim())));
+    return hits.length === 1 ? hits[0] : null;
+  }
+
   // 🔒 แถวหักที่มาจากสัญญา: ห้ามลบ/แก้ตรงๆ (ลงทะเบียนก่อน masterRoutes เพื่อดักก่อน)
   //    สาขาเห็นแถวนี้ในหน้ารายการหัก ถ้าลบได้ ยอดหักจะหายเงียบๆ และสัญญานับงวดผิด -> ต้อง "พักงวด" ผ่านสัญญาแทน
   const blockPlanRow = (msg: string) => async (req: any, res: any, next: any) => {
@@ -2543,7 +2641,26 @@ async function startServer() {
       await saveRecord('tripDocuments', trip);           // เขียนใบใหม่ก่อน
       for (const id of removedDupIds) if (id !== trip.id) await removeRecord('tripDocuments', id); // แล้วลบเก่า
       if (resolved.created) await flushCollection('cycles'); // รอบใหม่ -> เขียน cycles (เล็ก)
-      res.status(201).json({ ...trip, _cycle: cycle, _cycleCreated: resolved.created, _overwritten: removedDupIds.length });
+      // 🔁 ค่าขนกลับอัตโนมัติ: ใบนี้มีหมายเหตุ "มีค่าขนกลับ" ในจัสทรานไหม (อ่านไฟล์ของวันในใบ) -> บวกให้เลย
+      //    พลาดไม่ทำให้การบันทึกใบล้ม (ใบบันทึกไปแล้ว) — ยังกดบวกเองที่หน้าดึงจัสทรานได้
+      let _returnFee: any = null;
+      try {
+        // อ่านทั้ง "วันของไฟล์จัสทรานที่ดึงมา" (fileName = "จัสทราน YYYY-MM-DD") และวันที่ในใบ — 2 วันนี้ต่างกันได้ (Codex P2)
+        const srcDate = (/^จัสทราน (\d{4}-\d{2}-\d{2})$/.exec(String(trip.fileName || '')) || [])[1];
+        let jd: any = null;
+        for (const dt of [...new Set([srcDate, trip.documentDate].filter(Boolean))] as string[]) {
+          const day = await readDay(dt);
+          jd = day.docs.length ? jastranDocForTrip(day.docs, trip) : null;
+          if (jd) break;
+        }
+        // มีใบในจัสทราน -> ตัดสินตามหมายเหตุล่าสุดเสมอ (ว่าง = ถอนรายการอัตโนมัติเดิมถ้ามี เช่นตอนทับใบเดิม)
+        if (jd) {
+          const r = await autoAddReturnFee(db, trip, String(jd.remark || ''));
+          if (r.added) _returnFee = { added: r.added.amount };
+          else if (parseReturnFee(String(jd.remark))) _returnFee = { skip: r.skip };
+        }
+      } catch (e: any) { console.error('[return-fee:auto] ตอนบันทึกใบ ล้มเหลว:', e.message); }
+      res.status(201).json({ ...trip, _cycle: cycle, _cycleCreated: resolved.created, _overwritten: removedDupIds.length, _returnFee });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

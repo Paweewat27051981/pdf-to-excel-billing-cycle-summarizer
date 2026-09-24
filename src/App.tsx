@@ -1112,7 +1112,11 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
       const cy = saved?._cycle;
       const msg = saved?._overwritten ? `ทับใบเดิม + บันทึกเข้ารอบ "${cy?.name}" แล้ว`
         : saved?._cycleCreated ? `เปิดรอบ "${cy?.name}" อัตโนมัติ + บันทึกแล้ว` : `บันทึกเข้ารอบ "${cy?.name}" แล้ว`;
-      showToast('success', msg);
+      // 🔁 server บวกค่าขนกลับจากหมายเหตุจัสทรานให้อัตโนมัติ -> บอกคนกดว่าบวกแล้วเท่าไร / หรือทำไมไม่บวก
+      const rf = saved?._returnFee;
+      if (rf?.added) showToast('success', `${msg} · บวกค่าขนกลับ ฿${money(rf.added)} ตามหมายเหตุจัสทรานให้อัตโนมัติ`);
+      else if (rf?.skip && rf.skip !== 'บวกแล้ว') showToast('warning', `${msg} · ค่าขนกลับยังไม่ถูกบวก: ${rf.skip}`);
+      else showToast('success', msg);
       // ⚠️ ต้องใช้เลขใบ "ตอนดึงมา" ไม่ใช่ pending.extracted.documentNo
       //    เพราะคนแก้เลขใบตอนตรวจได้ -> ถ้าใช้เลขที่แก้แล้ว จะไปติ๊กถูกผิดแถว
       //    (แถวที่บันทึกจริงยังโชว์ให้กดซ้ำ ส่วนแถวที่ยังไม่ทำกลับถูกซ่อน)
