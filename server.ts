@@ -268,6 +268,36 @@ async function startServer() {
   //    (ใครก็โหลด /api/uploads/jastran/jb-2026-08-18.json ได้ = ข้อมูลรั่ว แม้ POST จะมี token)
   //    ใช้โฟลเดอร์แยกที่ mount บน NAS เหมือนกันแต่ไม่ถูกเสิร์ฟ
   const JASTRAN_DIR = path.join(process.cwd(), 'jastran-data');
+
+  // ===================== ค่าขนกลับ (จากหมายเหตุใบกระจายในจัสทราน) =====================
+  // ชื่อประเภทรายได้เพิ่มที่ระบบสร้าง/ใช้ — ใบไหนบวกแล้วดูจาก deductions(kind=income, label นี้, docNo)
+  const RETURN_FEE_LABEL = 'ค่าขนกลับ';
+  type ReturnFee = { text: string; qty: number | null; unitPrice: number | null; amount: number | null; ambiguous: boolean; halfPiece?: number; halfMatch?: boolean };
+  // อ่าน "มีค่าขนกลับ ... 57 ลัง*7.35=418.95 บาท" -> {qty:57, unitPrice:7.35, amount:418.95}
+  //   ยอมรับรูปแบบที่ทีมเขียนจริง (ตรวจ 8 ใบ 24 ก.ย.69): "N ลัง*P=A", "N*P=A", "N ลัง*P บาท" (ไม่มี =), "N กระสอบ*P=A"
+  //   ambiguous = อ่านได้หลายค่าขัดกัน (เช่น "195*3.85=395 750.75") หรืออ่านยอดไม่ได้เลย -> คนต้องกรอกเอง
+  function parseReturnFee(remark: string): ReturnFee | null {
+    const text = String(remark || '').replace(/\s+/g, ' ').trim();
+    if (!text || !/ขนกลับ|เก็บ(ของ|สินค้า)?คืน/.test(text)) return null;
+    // ปฏิเสธ เช่น "ไม่มีค่าขนกลับ" / "ไม่คิดเก็บคืน" = หมายเหตุธรรมดา ไม่ใช่ค่าขนกลับ (Codex P3)
+    //   รวม "ไม่เก็บค่าขนกลับ" / "ไม่ต้องคิดค่าขนกลับ" / "ไม่ได้ขนกลับ" (Codex P2)
+    if (/ไม่\s*(มี|คิด|ต้อง|ได้|เก็บ|จ่าย)?\s*(คิด|เก็บ|จ่าย)?\s*(ค่า)?\s*(ขนกลับ|เก็บ(ของ|สินค้า)?คืน)/.test(text)) return null;
+    const num = (s: string) => Number(String(s).replace(/,/g, ''));
+    // N [หน่วย] * P
+    const mul = /(\d[\d,]*(?:\.\d+)?)\s*(?:ลัง|กล่อง|กระสอบ|ชิ้น|ถุง|แพ็ค|หีบ)?\s*[*xX×]\s*(\d[\d,]*(?:\.\d+)?)/.exec(text);
+    const qty = mul ? num(mul[1]) : null;
+    const unitPrice = mul ? num(mul[2]) : null;
+    // ทุกตัวเลขหลัง "=" (อาจมีหลายตัวถ้าเขียนแก้ทับ เช่น "=395 750.75")
+    const eqNums = [...text.matchAll(/=\s*([\d,]+(?:\.\d+)?)(?:\s+([\d,]+(?:\.\d+)?))?/g)]
+      .flatMap((m) => [m[1], m[2]].filter(Boolean).map(num)).filter((n) => Number.isFinite(n) && n > 0);
+    const calc = qty != null && unitPrice != null ? round2(qty * unitPrice) : null;
+    let amount: number | null = null, ambiguous = false;
+    if (eqNums.length === 1) { amount = round2(eqNums[0]); ambiguous = calc != null && Math.abs(calc - amount) > 0.05; }
+    else if (eqNums.length > 1) { amount = calc != null && eqNums.some((n) => Math.abs(n - calc) < 0.05) ? calc : null; ambiguous = true; }
+    else if (calc != null) { amount = calc; }             // ไม่มี "=" แต่มี N*P -> คำนวณให้ (คนยืนยันอีกที)
+    else ambiguous = true;                                 // อ่านไม่ออกเลย
+    return { text, qty, unitPrice, amount, ambiguous };
+  }
   fs.mkdirSync(JASTRAN_DIR, { recursive: true });
 
   // ไฟล์แยกตามแหล่ง: jb-<date>.json (แหล่งหลัก) · jb-<date>__<source>.json (แหล่งอื่น)
@@ -747,16 +777,72 @@ async function startServer() {
         };
       };
 
+      // 🔁 ค่าขนกลับจาก "หมายเหตุใบกระจาย" ในจัสทราน (agent ส่งมาเป็น d.remark ตั้งแต่ 24 ก.ย.69)
+      //   กติกาเจ้าของ: ค่าเที่ยว = ค่าขนส่งปกติ + ค่าขนกลับที่ทีมเขียนในหมายเหตุ (ของถูกปฏิเสธหน้าร้าน ต้องขนกลับ)
+      //   ระบบ "ไม่บวกให้เอง" — แสดงป้าย + ตัวเลขที่อ่านได้ ให้คนกดยืนยัน (ข้อความอิสระ อ่านผิดได้)
+      //   "_returnFeeDone" = มีรายได้เพิ่ม "ค่าขนกลับ" ของใบนั้นแล้ว (กันบวกซ้ำ + ใช้เตือนใบที่ยังไม่ได้บวก)
+      const returnFeeDone = new Set(
+        // ขอบเขตเดียวกับ mineTrips/_alreadySaved (หน้าทะเบียนไม่รู้จัก = ข้ามสาขา) ไม่งั้นสาขาอื่นเห็น "ยังไม่ได้บวก" ค้างตลอด (Codex P2)
+        db.deductions.filter((x) => x.kind === 'income' && x.label === RETURN_FEE_LABEL && (unknownOnly || !branchId || x.branchId === branchId) && x.docNo)
+          .map((x) => (x.docNo || '').trim()) // trim ตรงตัว ไม่ใช้ normDoc (Codex P2 — เลขใบต่างแค่เครื่องหมายคือคนละใบ)
+      );
+      // ตรวจทานครึ่งราคาชิ้นเฉพาะสาขาที่เปิดกฎนั้น (สาย3/นครสวรรค์) — สาขาอื่นอาจมีราคาเก็บคืนของตัวเอง
+      //   ถ้าเช็คทุกสาขาจะเตือนแดงผิด ๆ แล้วคนแก้ยอดที่ถูกทิ้ง (Codex P2)
+      const halfOn = !!db.branches.find((b) => b.id === branchId)?.collectBackHalfPiece;
+      const ratesForHalf = branchId && halfOn ? db.rateMasters.filter((r) => r.branchId === branchId) : [];
+      // ใช้ "ราคาที่คิดจริง" ตรวจทาน (Codex P3): ราคาเฉพาะรอบของงวดนั้น + กรองกลุ่มรถของทะเบียน
+      //   ไม่งั้นใบที่งวดมี override หรือรถอยู่กลุ่ม 2 จะโดนเตือน "ไม่ตรงครึ่งราคาชิ้น" ทั้งที่ถูก -> คนแก้ยอดผิด
+      const ovCache = new Map<string, Map<string, { price: number; pieceThreshold: number | null }>>();
+      const ovFor = (cycleId: string) => {
+        if (!ovCache.has(cycleId)) ovCache.set(cycleId, new Map(db.rateOverrides.filter((o) => o.cycleId === cycleId && (!branchId || o.branchId === branchId)).map((o) => [o.rateMasterId, { price: Number(o.price), pieceThreshold: o.pieceThreshold ?? null }])));
+        return ovCache.get(cycleId)!;
+      };
+      const cycleOfDoc = (d: any) => cycQ || db.cycles.find((c) => isDateInCycle(String(d?.documentDate || ''), c)) || null;
+      const ratesForDoc = (d: any) => {
+        const v = db.vehicles.find((x) => x.branchId === branchId && x.status === 'active' && normPlate(x.plateNo) === normPlate(String(d?.plateNo || '')));
+        const group = v?.rateGroup || '';
+        return ratesForHalf.filter((r) => !r.rateGroup || r.rateGroup === group);
+      };
+      // ใบที่คนแก้เลขใบตอนตรวจ (UI รองรับ) จะหาด้วยเลขจัสทรานไม่เจอ -> ใช้ "เลขใบรับ" ชี้ไปใบที่บันทึกจริง (Codex P2)
+      //   เลขใบรับไม่ใช่ช่องที่คนแก้ตามปกติ (แพทเทิร์นเดียวกับการเช็คใบยกเลิกด้านล่าง) · ต้องชี้ไปใบเดียวเท่านั้น
+      const rcpToSaved = new Map<string, string>();
+      const rcpAmbiguous = new Set<string>(); // เลขใบรับอยู่หลายใบ = ชี้ไม่ได้ ห้ามเดา (Codex P2)
+      for (const t of mineTrips) for (const r of (t.receipts || [])) {
+        const rn = String(r.receiptNo || '').trim(); const no = (t.documentNo || '').trim();
+        if (!rn) continue;
+        if (rcpToSaved.has(rn) && rcpToSaved.get(rn) !== no) rcpAmbiguous.add(rn); else rcpToSaved.set(rn, no);
+      }
+      for (const rn of rcpAmbiguous) rcpToSaved.delete(rn);
+      const savedDocNoOf = (d: any): string => {
+        const dn = String(d?.documentNo || '').trim();
+        if (dn && savedByNo.has(dn)) return dn;
+        const hits = new Set((d?.receipts || []).map((r: any) => rcpToSaved.get(String(r?.receiptNo || '').trim())).filter(Boolean));
+        return hits.size === 1 ? [...hits][0] as string : '';
+      };
       const withFlag = visible.map((d) => {
         const dn = String(d.documentNo || '').trim();
         // คำนวณ "ยังไม่ส่งเสร็จ" จากตัวเลขเสมอ ไม่พึ่ง flag จาก agent อย่างเดียว
         // (agent เก่า/ข้อมูลเก่าไม่มี _notDelivered -> ถ้าเชื่อ flag อย่างเดียวจะปล่อยใบ 0/N ผ่าน)
         const saved = dn ? savedByBranch.has(dn) : false;
+        const fee = parseReturnFee(String(d.remark || ''));
+        const savedNo = fee ? savedDocNoOf(d) : '';
+        // ตรวจทาน: ราคาต่อลังในหมายเหตุ ควร = ครึ่งราคาชิ้นของปลายทางหัวใบ (กฎครึ่งราคาชิ้นที่เปิดให้สาย3)
+        if (fee && fee.unitPrice != null && ratesForHalf.length) {
+          const cyc = cycleOfDoc(d);
+          const m = matchRate({ provinceRaw: String(d.provinceRaw || ''), districtRaw: String(d.districtRaw || ''), refDate: String(d.documentDate || '') }, ratesForDoc(d), cyc ? ovFor(cyc.id) : undefined, 'normal');
+          if (m.piece?.rateValue != null) {
+            fee.halfPiece = round2(m.piece.rateValue / 2);
+            fee.halfMatch = Math.abs(fee.halfPiece - fee.unitPrice) < 0.01;
+          }
+        }
         return {
           ...d,
           _alreadySaved: saved,
           _notDelivered: isNotDelivered(d),
           _drift: saved ? driftOf(d) : null,
+          _returnFee: fee,
+          _savedDocNo: savedNo || null,   // เลขใบที่บันทึกจริง (อาจต่างจากเลขจัสทรานถ้าคนแก้ตอนตรวจ)
+          _returnFeeDone: savedNo ? returnFeeDone.has(savedNo) : (dn ? returnFeeDone.has(dn) : false),
         };
       });
       // 🚫 ใบที่ "บันทึกแล้ว" แต่หายจากไฟล์จัสทรานของวันเดียวกัน
@@ -1631,6 +1717,55 @@ async function startServer() {
       if (ids.length) await removeRecords('deductions', ids);
       await removeRecord('loanPlans', p.id);
       res.json({ success: true, removedRows: ids.length });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ===================== บวก "ค่าขนกลับ" ให้ใบกระจาย =====================
+  // สร้างรายได้เพิ่มประเภท "ค่าขนกลับ" ผูกเลขใบกระจาย (income + docNo = พิเศษในใบ ตาม income-add-docno-rule)
+  //   ใบต้องบันทึกแล้ว · รอบต้องเปิด · 1 ใบบวกได้ครั้งเดียว (409 ถ้ามีแล้ว) · จำนวนต้อง > 0
+  //   ประเภทถ้ายังไม่มีในสาขา สร้างให้ (builtin ลบไม่ได้) — รายงานต่อทะเบียนรวมเป็นบรรทัด "ค่าขนกลับ"
+  app.post('/api/trips/return-fee', async (req, res) => {
+    try {
+      const sess = getSession(req);
+      if (!sess) return res.status(401).json({ error: 'กรุณาเข้าสู่ระบบก่อน' });
+      const db = await getDb();
+      const me = db.branches.find((b) => b.id === sess.branchId);
+      if (!me || me.status !== 'active') return res.status(403).json({ error: 'บัญชีนี้ถูกปิดใช้งานแล้ว' });
+      const docNo = String(req.body?.docNo || '').trim();
+      const amount = round2(Number(req.body?.amount));
+      const note = String(req.body?.note || '').replace(/\s+/g, ' ').trim();
+      const askedBranch = String(req.body?.branchId || '');
+      // สาขาปกติทำได้เฉพาะสาขาตัวเอง (ไม่เชื่อ branchId จาก client) — HQ/admin ระบุสาขาได้
+      const branchId = (me.isHQ || me.isSystemUser || me.canEditRates) ? askedBranch : me.id;
+      if (!docNo) return res.status(400).json({ error: 'ต้องระบุเลขใบกระจาย' });
+      if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
+      if (!(amount > 0)) return res.status(400).json({ error: 'ค่าขนกลับต้องมากกว่า 0' });
+      if (amount > 50000) return res.status(400).json({ error: `ค่าขนกลับ ${amount} มากผิดปกติ — ตรวจตัวเลขในหมายเหตุอีกครั้ง` });
+      // เทียบเลขใบแบบ trim ตรงตัว (กติกาเดียวกับตอนบันทึกใบ) — ห้ามใช้ normDoc เพราะตัด * / - ทิ้ง
+      // แล้วอาจไปจับใบอื่นที่เลขต่างแค่เครื่องหมาย = เงินไปผิดใบ/ผิดรถ (Codex P2)
+      const trip = db.tripDocuments.find((t) => t.branchId === branchId && (t.documentNo || '').trim() === docNo);
+      if (!trip) return res.status(404).json({ error: `ยังไม่มีใบ ${docNo} ในระบบของสาขานี้ — ต้องบันทึกใบกระจายก่อน แล้วค่อยบวกค่าขนกลับ` });
+      const cyc = db.cycles.find((c) => c.id === trip.cycleId);
+      if (!cyc) return res.status(400).json({ error: 'ไม่พบรอบของใบนี้' });
+      if (cyc.status === 'closed') return res.status(400).json({ error: `รอบ "${cyc.name}" ปิดแล้ว บวกค่าขนกลับไม่ได้ (ให้ HQ เปิดรอบก่อน)` });
+      const dup = db.deductions.find((x) => x.branchId === branchId && x.kind === 'income' && x.label === RETURN_FEE_LABEL && (x.docNo || '').trim() === docNo);
+      if (dup) return res.status(409).json({ error: `ใบ ${docNo} บวกค่าขนกลับไปแล้ว ${Number(dup.amount).toLocaleString('th-TH')} บาท (งวด ${db.cycles.find((c) => c.id === dup.cycleId)?.name || '-'}) — ถ้าจะแก้ ให้ลบรายการเดิมในหน้ารายได้เพิ่มก่อน` });
+      let cat = db.moneyCategories.find((c) => c.branchId === branchId && c.kind === 'income' && c.name === RETURN_FEE_LABEL);
+      if (!cat) {
+        cat = { id: generateId('cat'), branchId, name: RETURN_FEE_LABEL, kind: 'income', status: 'active', builtin: true };
+        db.moneyCategories.push(cat);
+        await saveRecord('moneyCategories', cat);
+      } else if (cat.status !== 'active') {
+        cat.status = 'active'; await saveRecord('moneyCategories', cat);
+      }
+      const entry: DeductionEntry = {
+        id: generateId('ded'), branchId, cycleId: trip.cycleId, plateNo: trip.plateNo, categoryId: cat.id, kind: 'income',
+        label: RETURN_FEE_LABEL, amount, docNo: trip.documentNo, note: note || undefined,
+      };
+      db.deductions.push(entry);
+      await saveRecord('deductions', entry);
+      console.log(`[return-fee] ${branchId} ${trip.documentNo} ${trip.plateNo} +${amount} โดย ${sess.name}`);
+      res.status(201).json({ ...entry, cycleName: cyc.name });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 

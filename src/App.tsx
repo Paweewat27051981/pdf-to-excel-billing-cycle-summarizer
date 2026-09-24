@@ -1032,6 +1032,30 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   };
 
   // เลือกใบ -> เข้า flow เดิม (preview -> ตรวจ -> กดบันทึก) ไม่มีอะไรใหม่
+  // 🔁 บวก "ค่าขนกลับ" จากหมายเหตุใบกระจายในจัสทราน (กติกาเจ้าของ 24 ก.ย.69: ค่าเที่ยว = ค่าขนส่ง + ค่าขนกลับในหมายเหตุ)
+  //   ระบบไม่บวกเอง: แสดงหมายเหตุ + ตัวเลขที่อ่านได้ ให้คนยืนยัน/แก้ก่อน (ข้อความอิสระ อ่านผิดได้)
+  //   ถ้าอ่านกำกวม หรือราคาต่อลังไม่ตรง "ครึ่งราคาชิ้น" ของปลายทาง -> เตือนแดง ให้กรอกยอดเอง
+  const addReturnFee = async (d: any) => {
+    const fee = d._returnFee; if (!fee) return;
+    const half = fee.halfPiece != null ? `ครึ่งราคาชิ้นปลายทาง = ${money(fee.halfPiece)}/หน่วย ${fee.halfMatch ? '✅ ตรงกับหมายเหตุ' : '⚠️ ไม่ตรงกับหมายเหตุ (' + money(fee.unitPrice ?? 0) + ')'}` : '';
+    const warn = fee.ambiguous ? '⚠️ ระบบอ่านยอดจากหมายเหตุไม่ชัด กรอกยอดที่ถูกต้องเอง' : (fee.halfPiece != null && !fee.halfMatch ? '⚠️ ราคาต่อลังไม่ตรงกฎครึ่งราคาชิ้น ตรวจก่อนยืนยัน' : '');
+    const raw = window.prompt(`บวกค่าขนกลับให้ใบ ${d.documentNo} (${d.plateNo})\n\nหมายเหตุจากจัสทราน:\n${fee.text}\n${half ? '\n' + half : ''}${warn ? '\n' + warn : ''}\n\nยอดค่าขนกลับ (บาท):`, fee.amount != null ? String(fee.amount) : '');
+    if (raw == null) return;
+    const amount = Number(String(raw).replace(/,/g, ''));
+    if (!(amount > 0)) return showToast('warning', 'ยอดค่าขนกลับต้องมากกว่า 0');
+    const ok = await confirmAction({ title: 'ยืนยันบวกค่าขนกลับ?', text: `${d.documentNo} ${d.plateNo} +${money(amount)} บาท จะไปโผล่เป็น "รายได้เพิ่ม: ค่าขนกลับ" ของรถคันนี้ในงวดของใบ และรวมในรายงานต่อทะเบียน`, confirmText: 'บวกค่าขนกลับ' });
+    if (!ok) return;
+    try {
+      const r = await api('/api/trips/return-fee', 'POST', { branchId, docNo: d._savedDocNo || d.documentNo, amount, note: fee.text }); // เลขที่บันทึกจริง (กรณีแก้เลขตอนตรวจ)
+      showToast('success', `บวกค่าขนกลับ ${money(amount)} บาท ให้ ${d.documentNo} แล้ว (งวด ${r.cycleName})`);
+      setDocs((prev) => prev.map((x: any) => (x.documentNo === d.documentNo ? { ...x, _returnFeeDone: true } : x)));
+      reload();
+    } catch (e: any) { showToast('error', e.message); }
+  };
+  // ใบที่มีค่าขนกลับในหมายเหตุแต่ยังไม่ได้บวก — ต้องเห็นเสมอแม้ติ๊ก "ซ่อนใบที่บันทึกแล้ว" (กันลืม = เงินขาด)
+  //   หน้า "ทะเบียนไม่รู้จัก" = ดูอย่างเดียว ไม่คิดเงิน -> ไม่เตือน/ไม่มีปุ่มบวก (ป้ายยังโชว์ให้เห็นหมายเหตุ)
+  const returnFeePending = (d: any) => !unknownPlate && !!d._returnFee && !d._returnFeeDone;
+
   const useDoc = async (d: any) => {
     // 🔒 กฎเหล็ก: ใบต้องส่งเสร็จอย่างน้อย 1 จุดถึงคิดค่าเที่ยวได้
     //    ด่านที่ 2 (ปุ่มถูกซ่อนไปแล้ว) กันเผลอเรียกจากทางอื่น = จ่ายก่อนงานเสร็จ
@@ -1145,8 +1169,9 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
   const savedCount = docs.filter((d: any) => d._alreadySaved).length;
   // ใบที่จัสทรานแก้ทีหลัง ต้องเห็นเสมอ แม้ติ๊ก "ซ่อนใบที่บันทึกแล้ว"
   // (ไม่งั้นคนไม่มีทางรู้ว่ามีใบต้องอัปเดต = ยอดเงินผิดเงียบๆ)
-  const shownDocs = onlyPending ? docs.filter((d: any) => !d._alreadySaved || d._drift) : docs;
+  const shownDocs = onlyPending ? docs.filter((d: any) => !d._alreadySaved || d._drift || returnFeePending(d)) : docs;
   const driftDocs = docs.filter((d: any) => d._drift);
+  const returnFeeDocs = docs.filter(returnFeePending);
   // เวลาที่ข้อมูลของ "วันที่เลือกอยู่" ถูกดึงมาจากจัสทราน (ไม่เลือกวัน -> เอาวันล่าสุด)
   const dataAt = (days.find((d: any) => d.date === date) || days[0] || {}).receivedAt || '';
 
@@ -1298,6 +1323,15 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                                 🟠 นอกพื้นที่: {offProv.join(', ')}
                               </span>
                             )}
+                            {/* 🔁 หมายเหตุจัสทรานบอกว่ามีค่าขนกลับ — โชว์ยอดที่อ่านได้ + สถานะบวกแล้ว/ยัง (ทั้งข้อความอยู่ใน title) */}
+                            {d._returnFee && (
+                              <span title={d._returnFee.text}
+                                className={`ml-1.5 text-[10px] font-semibold whitespace-nowrap ${d._returnFeeDone ? 'text-emerald-700' : (d._returnFee.ambiguous || d._returnFee.halfMatch === false) ? 'text-rose-700' : 'text-amber-700'}`}>
+                                🔁 ขนกลับ {d._returnFee.amount != null ? '฿' + money(d._returnFee.amount) : '(อ่านยอดไม่ได้)'}{d._returnFeeDone ? ' ✓ บวกแล้ว' : ''}
+                                {!d._returnFeeDone && d._returnFee.halfMatch === false ? ' ⚠️ไม่ตรงครึ่งราคาชิ้น' : ''}
+                              </span>
+                            )}
+                            {d.remark && !d._returnFee && <span title={d.remark} className="ml-1.5 text-[10px] text-natural-muted whitespace-nowrap">📝 มีหมายเหตุ</span>}
                           </td>
                           <td className="py-1.5 px-2 text-right whitespace-nowrap">
                             {d._delivered != null
@@ -1318,6 +1352,11 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                               // 🔄 จัสทรานแก้ใบนี้ทีหลัง -> ให้กดตรวจเพื่ออัปเดต (แล้วกด "ทับใบเดิม")
                               ? <button onClick={() => useDoc(d)} title={`จัสทรานแก้ใบนี้: ${d._drift.added ? '+' + d._drift.added + ' จุด ' : ''}${d._drift.removed ? '-' + d._drift.removed + ' จุด' : ''}`}
                                   className="bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-3 py-1 text-[11px] font-semibold whitespace-nowrap">🔄 อัปเดตใบนี้</button>
+                              : (d._alreadySaved || d._savedDocNo) && returnFeePending(d) && branchId
+                              // 🔁 ใบบันทึกแล้วแต่ยังไม่ได้บวกค่าขนกลับตามหมายเหตุ -> ปุ่มบวก (คนยืนยันยอดก่อน)
+                              //    ต้องเลือกสาขาอยู่ (HQ โหมดรวมทุกสาขาไม่มี branchId -> endpoint หาใบไม่เจอ) (Codex P2)
+                              ? <button onClick={() => addReturnFee(d)} title={d._returnFee.text}
+                                  className="bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-3 py-1 text-[11px] font-semibold whitespace-nowrap">🔁 บวกค่าขนกลับ</button>
                               : d._alreadySaved
                               ? <span className="text-[10px] text-natural-muted">บันทึกแล้ว</span>
                               : notDelivered(d)
@@ -1339,7 +1378,7 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
               </div>
             )}
             <p className="text-[11px] text-natural-muted mt-2">
-              ⚠️ = ส่งยังไม่ครบทุกจุด (บันทึกได้ ให้ตรวจก่อน) · 🚚 = ยังไม่ส่งเสร็จสักจุด (ดูได้อย่างเดียว) · 🔄 = บันทึกแล้วแต่จัสทรานแก้ทีหลัง (กดอัปเดต)
+              ⚠️ = ส่งยังไม่ครบทุกจุด (บันทึกได้ ให้ตรวจก่อน) · 🚚 = ยังไม่ส่งเสร็จสักจุด (ดูได้อย่างเดียว) · 🔄 = บันทึกแล้วแต่จัสทรานแก้ทีหลัง (กดอัปเดต) · 🔁 = หมายเหตุจัสทรานระบุค่าขนกลับ (บันทึกใบก่อน แล้วกดบวก)
               {/* หน้าทะเบียนไม่รู้จักไม่เตือนนอกพื้นที่ -> ไม่ต้องอธิบายสีส้ม (ดูเหตุผลที่ offAreaDoc) */}
               {!unknownPlate && ' · 🟠 พื้นหลังส้ม = มีจุดในใบอยู่นอกพื้นที่สาขา ป้ายบอกจังหวัดของจุดนั้น (มักเป็นบิลซ้ำ — บันทึกไม่ได้จนกว่าจะแก้)'}
             </p>
@@ -1388,6 +1427,26 @@ function JastranTab({ db, cycle, cycleTrips, api, branchId, reload, gotoCycle, s
                 <div className="mt-1">
                   กด <b>🔄 อัปเดตใบนี้</b> ในตาราง → ตรวจข้อมูลใหม่ → กด <b>ทับใบเดิม</b> (ใบเก่าถูกลบ ยอดคิดใหม่ตามจัสทราน)
                 </div>
+              </div>
+            )}
+            {/* 🔁 ใบที่หมายเหตุจัสทรานระบุค่าขนกลับ แต่ยังไม่ได้บวก — เตือนค้างจนกว่าจะจัดการ (กันลืม = เงินขาด) */}
+            {returnFeeDocs.length > 0 && (
+              <div className="text-[11px] text-amber-900 bg-amber-50 border-2 border-amber-400 rounded-lg px-3 py-2 mt-2">
+                <div className="font-bold text-xs mb-1">
+                  🔁 มี {returnFeeDocs.length} ใบที่จัสทรานระบุ "ค่าขนกลับ" ในหมายเหตุ แต่ยังไม่ได้บวกเข้าค่าเที่ยว
+                </div>
+                <ul className="list-disc ml-5 space-y-0.5">
+                  {returnFeeDocs.slice(0, 8).map((d: any) => (
+                    <li key={d.documentNo}>
+                      <b>{d.documentNo}</b> {d.plateNo} — {d._returnFee.text}
+                      {d._returnFee.amount != null ? <span className="font-semibold"> → ฿{money(d._returnFee.amount)}</span> : <span className="text-rose-700 font-semibold"> → อ่านยอดไม่ได้ ต้องกรอกเอง</span>}
+                      {d._returnFee.halfMatch === false ? <span className="text-rose-700 font-semibold"> (ราคาต่อลังไม่ตรงครึ่งราคาชิ้น {money(d._returnFee.halfPiece)})</span> : null}
+                      {!d._alreadySaved && !d._savedDocNo ? <span className="text-natural-muted"> · ต้องบันทึกใบก่อน</span> : null}
+                    </li>
+                  ))}
+                  {returnFeeDocs.length > 8 && <li>… อีก {returnFeeDocs.length - 8} ใบ</li>}
+                </ul>
+                <div className="mt-1">{branchId ? <>ใบที่บันทึกแล้ว กด <b>🔁 บวกค่าขนกลับ</b> ในตาราง → ตรวจยอด → ยืนยัน (ไปเป็น "รายได้เพิ่ม: ค่าขนกลับ" ของรถคันนั้น)</> : <>เลือกสาขาที่มุมบนขวาก่อน จึงจะกดบวกค่าขนกลับได้</>}</div>
               </div>
             )}
             {/* บอกให้ชัดว่าใบครบแล้ว แค่บางใบยังคิดเงินไม่ได้ — กันผู้ใช้เข้าใจผิดว่าข้อมูลหาย */}
