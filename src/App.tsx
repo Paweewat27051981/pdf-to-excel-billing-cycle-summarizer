@@ -3244,7 +3244,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                           if ((t.breakdown?.collect || 0) > 0) parts.push(<span className="text-emerald-700 font-semibold">🔄 เก็บคืน ฿{money(t.breakdown.collect)}</span>);
                           if ((t.breakdown?.peat || 0) > 0) parts.push(<span className="text-teal-700 font-semibold">🌱 Peat ฿{money(t.breakdown.peat)}</span>);
                           if ((t.breakdown?.addon || 0) > 0) parts.push(<span className="text-amber-700 font-semibold">📌 เหมาเพิ่ม ฿{money(t.breakdown.addon)}{(t.addonByDest || []).length ? ` (${(t.addonByDest || []).map((a) => a.dist || a.prov).filter(Boolean).join(', ')})` : ''}</span>);
-                          docInc.forEach((d: DeductionEntry) => parts.push(<span className="text-emerald-700 font-semibold">➕{d.label} ฿{money(d.amount)}{d.imageFile && <a href={imgUrl(d.imageFile)} target="_blank" rel="noreferrer" className="ml-1"><img src={imgUrl(d.imageFile)} alt="รูป" className="inline w-6 h-6 object-cover rounded border align-middle" /></a>}</span>));
+                          docInc.forEach((d: DeductionEntry) => parts.push(<span className="text-emerald-700 font-semibold" title={d.note || ''}>➕{d.label} ฿{money(d.amount)}{d.imageFile && <a href={imgUrl(d.imageFile)} target="_blank" rel="noreferrer" className="ml-1"><img src={imgUrl(d.imageFile)} alt="รูป" className="inline w-6 h-6 object-cover rounded border align-middle" /></a>}</span>));
                           docDed.forEach((d: DeductionEntry) => parts.push(<span className="text-rose-600 font-semibold">➖{d.label} ฿{money(d.amount)}</span>));
                         }
                         return (
@@ -3268,6 +3268,12 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                   <div className="font-semibold text-brand-navy mb-1">สรุป</div>
                   <div className="flex justify-between"><span>รายได้ค่าเที่ยว</span><b>{money(s.totalTripAmount)}</b></div>
                   {inDocInc.map((l) => <div key={l.label} className="flex justify-between text-emerald-700"><span>+ {l.label} (ในใบ)</span><span>+{money(l.amount)}</span></div>)}
+                  {/* ⚠️ รายได้เพิ่มที่ใส่เลขใบกระจาย แต่เลขนั้นไม่ตรงกับใบไหนของรถคันนี้ในงวดนี้ -> ไม่โผล่ในช่องหมายเหตุของแถวใดเลย
+                      เคสจริง 24 ก.ย.69: ค่าขนกลับ 750.75 ของ 1ฒก-2155 พิมพ์เลขใบ JB0226015122 แทน JB0226015102 */}
+                  {/* เทียบแบบเดียวกับที่ตารางด้านบนใช้แสดงในช่องหมายเหตุ (normDoc) = เตือนเฉพาะรายการที่ 'ไม่โผล่ในแถวไหนเลย' (Codex P3) */}
+                  {vIncome.filter((d: DeductionEntry) => normDoc(d.docNo || '') && !vTrips.some((t: TripDocument) => normDoc(t.documentNo || '') === normDoc(d.docNo || ''))).map((d: DeductionEntry) => (
+                    <div key={d.id} className="text-[11px] text-rose-700 font-semibold">⚠️ {d.label} ฿{money(d.amount)} ใส่เลขใบ {d.docNo} ซึ่งไม่ตรงกับใบไหนของรถคันนี้ในงวดนี้ — ตรวจเลขใบในหน้ารายได้เพิ่ม</div>
+                  ))}
                   {perCycleInc.map((l) => <div key={l.label} className="flex justify-between text-emerald-700"><span>+ {l.label}</span><span>+{money(l.amount)}</span></div>)}
                   <div className="flex justify-between text-rose-700"><span>หัก 1%</span><span>-{money(s.deduction1Percent)}</span></div>
                   <div className="flex justify-between text-rose-700"><span>หักค่าน้ำมัน</span><span>-{money(s.fuelTotal)}</span></div>

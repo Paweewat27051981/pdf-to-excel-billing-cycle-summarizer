@@ -271,7 +271,10 @@ async function startServer() {
 
   // ===================== ค่าขนกลับ (จากหมายเหตุใบกระจายในจัสทราน) =====================
   // ชื่อประเภทรายได้เพิ่มที่ระบบสร้าง/ใช้ — ใบไหนบวกแล้วดูจาก deductions(kind=income, label นี้, docNo)
-  const RETURN_FEE_LABEL = 'ค่าขนกลับ';
+  // ชื่อประเภทที่ทีมใช้อยู่จริงตั้งแต่ ก.ค.69 (12 รายการในสาย3) — ต้องใช้ชื่อเดียวกัน ไม่งั้นระบบมองไม่เห็นของเดิมแล้วบวกซ้ำ
+  const RETURN_FEE_LABEL = 'ค่าขนกลับสินค้า';
+  // รายได้เพิ่มที่นับว่าเป็น 'ค่าขนกลับ' แล้ว = ชื่อมีคำว่า ขนกลับ (ค่าขนกลับ/ค่าขนกลับสินค้า/…) กันจ่ายซ้ำกับที่ทีมกรอกมือ
+  const isReturnFeeLabel = (label?: string) => /ขนกลับ/.test(String(label || ''));
   type ReturnFee = { text: string; qty: number | null; unitPrice: number | null; amount: number | null; ambiguous: boolean; halfPiece?: number; halfMatch?: boolean };
   // อ่าน "มีค่าขนกลับ ... 57 ลัง*7.35=418.95 บาท" -> {qty:57, unitPrice:7.35, amount:418.95}
   //   ยอมรับรูปแบบที่ทีมเขียนจริง (ตรวจ 8 ใบ 24 ก.ย.69): "N ลัง*P=A", "N*P=A", "N ลัง*P บาท" (ไม่มี =), "N กระสอบ*P=A"
@@ -783,7 +786,7 @@ async function startServer() {
       //   "_returnFeeDone" = มีรายได้เพิ่ม "ค่าขนกลับ" ของใบนั้นแล้ว (กันบวกซ้ำ + ใช้เตือนใบที่ยังไม่ได้บวก)
       const returnFeeDone = new Set(
         // ขอบเขตเดียวกับ mineTrips/_alreadySaved (หน้าทะเบียนไม่รู้จัก = ข้ามสาขา) ไม่งั้นสาขาอื่นเห็น "ยังไม่ได้บวก" ค้างตลอด (Codex P2)
-        db.deductions.filter((x) => x.kind === 'income' && x.label === RETURN_FEE_LABEL && (unknownOnly || !branchId || x.branchId === branchId) && x.docNo)
+        db.deductions.filter((x) => x.kind === 'income' && isReturnFeeLabel(x.label) && (unknownOnly || !branchId || x.branchId === branchId) && x.docNo)
           .map((x) => (x.docNo || '').trim()) // trim ตรงตัว ไม่ใช้ normDoc (Codex P2 — เลขใบต่างแค่เครื่องหมายคือคนละใบ)
       );
       // ตรวจทานครึ่งราคาชิ้นเฉพาะสาขาที่เปิดกฎนั้น (สาย3/นครสวรรค์) — สาขาอื่นอาจมีราคาเก็บคืนของตัวเอง
@@ -1748,9 +1751,10 @@ async function startServer() {
       const cyc = db.cycles.find((c) => c.id === trip.cycleId);
       if (!cyc) return res.status(400).json({ error: 'ไม่พบรอบของใบนี้' });
       if (cyc.status === 'closed') return res.status(400).json({ error: `รอบ "${cyc.name}" ปิดแล้ว บวกค่าขนกลับไม่ได้ (ให้ HQ เปิดรอบก่อน)` });
-      const dup = db.deductions.find((x) => x.branchId === branchId && x.kind === 'income' && x.label === RETURN_FEE_LABEL && (x.docNo || '').trim() === docNo);
+      const dup = db.deductions.find((x) => x.branchId === branchId && x.kind === 'income' && isReturnFeeLabel(x.label) && (x.docNo || '').trim() === docNo);
       if (dup) return res.status(409).json({ error: `ใบ ${docNo} บวกค่าขนกลับไปแล้ว ${Number(dup.amount).toLocaleString('th-TH')} บาท (งวด ${db.cycles.find((c) => c.id === dup.cycleId)?.name || '-'}) — ถ้าจะแก้ ให้ลบรายการเดิมในหน้ารายได้เพิ่มก่อน` });
-      let cat = db.moneyCategories.find((c) => c.branchId === branchId && c.kind === 'income' && c.name === RETURN_FEE_LABEL);
+      let cat = db.moneyCategories.find((c) => c.branchId === branchId && c.kind === 'income' && c.name === RETURN_FEE_LABEL)
+        || db.moneyCategories.find((c) => c.branchId === branchId && c.kind === 'income' && c.status === 'active' && isReturnFeeLabel(c.name));
       if (!cat) {
         cat = { id: generateId('cat'), branchId, name: RETURN_FEE_LABEL, kind: 'income', status: 'active', builtin: true };
         db.moneyCategories.push(cat);
@@ -1760,7 +1764,7 @@ async function startServer() {
       }
       const entry: DeductionEntry = {
         id: generateId('ded'), branchId, cycleId: trip.cycleId, plateNo: trip.plateNo, categoryId: cat.id, kind: 'income',
-        label: RETURN_FEE_LABEL, amount, docNo: trip.documentNo, note: note || undefined,
+        label: cat.name, amount, docNo: trip.documentNo, note: note || undefined,
       };
       db.deductions.push(entry);
       await saveRecord('deductions', entry);
