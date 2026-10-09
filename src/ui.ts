@@ -99,6 +99,45 @@ export function alertBox(title: string, text?: string, icon: 'success' | 'error'
   Themed.fire({ title, text, icon, confirmButtonText: 'ตกลง' });
 }
 
+// กล่องกรอก "หมายเหตุพิมพ์มือ" + ชื่อผู้ใส่ (บังคับทั้งคู่) — เจ้าของสั่ง 9 ต.ค.69
+//   withText=false = ใช้ตอนยกเลิกหมายเหตุ (ขอแค่ชื่อ) · จำชื่อล่าสุดไว้ในเครื่อง (แก้ได้ทุกครั้ง)
+//   ใส่ค่าใน input ผ่าน DOM (ไม่ต่อ string ลง html) กันอักขระพิเศษในชื่อ/ข้อความทำ html พัง
+const NOTE_NAME_KEY = 'neosiam.noteAuthor';
+export async function promptNote(opts: { title: string; subtitle?: string; withText?: boolean; confirmText?: string; danger?: boolean }): Promise<{ text: string; by: string } | null> {
+  const withText = opts.withText !== false;
+  let remembered = '';
+  try { remembered = localStorage.getItem(NOTE_NAME_KEY) || ''; } catch { /* บางเบราว์เซอร์ปิด storage */ }
+  const inputCss = 'width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:10px;padding:8px 10px;font-size:14px;font-family:inherit;margin-top:4px';
+  const res = await Themed.fire({
+    title: opts.title,
+    html: `<div style="text-align:left;font-size:13px">
+      ${opts.subtitle ? `<div style="color:#64748b;margin-bottom:8px">${escapeHtml(opts.subtitle)}</div>` : ''}
+      ${withText ? `<label for="nt-text" style="font-weight:600">หมายเหตุ <span style="color:#C00000">*</span></label>
+      <textarea id="nt-text" rows="3" maxlength="300" placeholder="เช่น รถเสียกลางทาง เปลี่ยนคันส่งต่อ" style="${inputCss};resize:vertical"></textarea>` : ''}
+      <label for="nt-by" style="font-weight:600;display:block;margin-top:10px">ชื่อผู้${withText ? 'ใส่หมายเหตุ' : 'ยกเลิก'} <span style="color:#C00000">*</span></label>
+      <input id="nt-by" maxlength="60" placeholder="พิมพ์ชื่อของคุณ" autocomplete="off" style="${inputCss}" />
+      <div style="color:#94a3b8;font-size:11px;margin-top:6px">ระบบบันทึกชื่อ วันเวลา และบัญชีที่ล็อกอินอยู่ ${withText ? 'แก้ข้อความทีหลังไม่ได้ ทำได้แค่ยกเลิก' : 'หมายเหตุที่ยกเลิกยังอยู่ในประวัติ'}</div>
+    </div>`,
+    showCancelButton: true, confirmButtonText: opts.confirmText || 'บันทึก', cancelButtonText: 'ปิด',
+    confirmButtonColor: opts.danger ? RED : NAVY, focusConfirm: false,
+    didOpen: (el) => {
+      const by = el.querySelector<HTMLInputElement>('#nt-by'); if (by) by.value = remembered;
+      (el.querySelector<HTMLElement>(withText ? '#nt-text' : '#nt-by'))?.focus();
+    },
+    preConfirm: () => {
+      const el = Swal.getPopup()!;
+      const text = withText ? (el.querySelector<HTMLTextAreaElement>('#nt-text')?.value || '').replace(/\s+/g, ' ').trim() : '';
+      const by = (el.querySelector<HTMLInputElement>('#nt-by')?.value || '').replace(/\s+/g, ' ').trim();
+      if (withText && !text) { Swal.showValidationMessage('พิมพ์ข้อความหมายเหตุก่อน'); return false; }
+      if (by.length < 2) { Swal.showValidationMessage('ต้องใส่ชื่อ (อย่างน้อย 2 ตัวอักษร)'); return false; }
+      return { text, by };
+    },
+  });
+  if (!res.isConfirmed || !res.value) return null;
+  try { localStorage.setItem(NOTE_NAME_KEY, res.value.by); } catch { /* ไม่เป็นไร */ }
+  return res.value as { text: string; by: string };
+}
+
 // กล่องรายงานแบบมีระดับ (ok/info/warn/error) — ใช้กับสรุปการนำเข้า
 //   เดิม alertBox ยัดทุกอย่างเป็นข้อความก้อนเดียว อ่านไม่ออกเมื่อมี 45 รายการ (เจ้าของสั่งจัดรูปแบบ 19 ก.ย.69)
 //   แต่ละหัวข้อเป็นการ์ดสีตามระดับ รายการย่อยเป็น bullet เลื่อนดูได้ ไอคอนใหญ่เลือกตามระดับที่แย่ที่สุด

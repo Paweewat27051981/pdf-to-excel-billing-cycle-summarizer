@@ -8,11 +8,11 @@ import FuelTripTab from './experimental/FuelTripTab'; // [ทดลอง] แ�
 import { parseServiceAreas, inServiceArea, suspectDupReceipts } from './serviceArea'; // พื้นที่ให้บริการสาขา (แชร์ backend)
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
-  ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride,
+  ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride, TripNote,
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas, exportRatesToExcel } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc, makeCollectBackCheck } from './calc';
-import { confirmDelete, confirmAction, confirmPassword, notify, alertBox, reportBox } from './ui';
+import { confirmDelete, confirmAction, confirmPassword, notify, alertBox, reportBox, promptNote } from './ui';
 
 // base path เมื่อรันใต้ subpath (เช่น /neosiam บน NAS) — vite ตั้ง import.meta.env.BASE_URL ให้ตอน build
 // root (Render) = '' ; NAS build (VITE_BASE_PATH=/neosiam/) = '/neosiam'
@@ -64,6 +64,7 @@ const qtyFmt = (n: number) => String(Math.floor(((n ?? 0) + 1e-9) * 100) / 100);
 
 export default function App() {
   const [db, setDb] = useState<DatabaseState>(EMPTY);
+  PRINT_NOTES = db.tripNotes || []; // ใบพิมพ์ทุกเส้นทางใช้หมายเหตุชุดล่าสุด (ดูคำอธิบายที่ PRINT_NOTES)
   const [loading, setLoading] = useState(true);
   const [booted, setBooted] = useState(false); // โหลดสำเร็จครั้งแรกแล้ว — reload หลังจากนี้ไม่ขึ้นสปินเนอร์เต็มจอ (กันแท็บ remount/รีเซ็ตสถานะ)
   const [selectedCycleId, setSelectedCycleId] = useState('');
@@ -133,7 +134,9 @@ export default function App() {
       let data: (DatabaseState & { _tripsCycleId?: string }) | null = null;
       for (let attempt = 1; attempt <= 4; attempt++) {
         try {
-          const res = await fetch(API_PREFIX + url);
+          // แนบ token (ถ้ามี) — server ส่งหมายเหตุพิมพ์มือให้เฉพาะคนที่ล็อกอินแล้ว (state เองไม่บังคับล็อกอิน)
+          const tk = getToken();
+          const res = await fetch(API_PREFIX + url, tk ? { headers: { Authorization: `Bearer ${tk}` } } : undefined);
           if ((res.status === 502 || res.status === 503) && attempt < 4) { await new Promise((r) => setTimeout(r, attempt * 1500)); continue; }
           if (!res.ok) throw new Error('โหลดไม่สำเร็จ');
           data = await res.json();
@@ -343,7 +346,7 @@ export default function App() {
             {tab === 'dashboard' && <DashboardTab db={db} cycle={cycle} branchId={effBranchId} isHQ={isHQLike} />}
             {tab === 'driverkpi' && <DriverKpiTab db={db} cycle={cycle} />}
             {tab === 'costarea' && <CostAreaTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
-            {tab === 'reports' && <ReportsTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} />}
+            {tab === 'reports' && <ReportsTab db={db} cycle={cycle} branchId={effBranchId} showToast={showToast} api={api} reload={() => fetchState(selectedCycleId)} />}
             {tab === 'rates' && <RatesTab db={db} api={api} branchId={effBranchId} cycle={cycle} reload={() => fetchState(selectedCycleId)} showToast={showToast} canEdit={!!auth.canEditRates} />}
             {tab === 'rules' && <RulesTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
             {tab === 'destfix' && <DestFixTab db={db} api={api} branchId={effBranchId} reload={() => fetchState(selectedCycleId)} showToast={showToast} />}
@@ -1943,7 +1946,30 @@ const _esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp
 const _fmtPD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
 
 // สร้าง HTML 1 ใบ (1 หน้า A4) — รูปแบบ "สรุปการจัดส่ง" (ตารางมีเส้นกรอบ, 1 ใบรับ=1 แถว)
+// ---- หมายเหตุพิมพ์มือต่อใบกระจาย (TripNote) ----
+// เวลาไทย "9/10/69 14:20" — คำนวณเองไม่พึ่ง timezone ของเครื่อง (ใบพิมพ์/รายงานต้องตรงกันทุกเครื่อง)
+function fmtNoteAt(iso: string): string {
+  const d = new Date(new Date(iso).getTime() + 7 * 3600e3);
+  if (isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCDate()}/${d.getUTCMonth() + 1}/${String((d.getUTCFullYear() + 543) % 100).padStart(2, '0')} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+// หมายเหตุที่ยังใช้อยู่ของใบหนึ่ง (เลขใบ trim ตรงตัว + สาขาเดียวกัน) เรียงเก่า -> ใหม่
+function notesOfTrip(notes: TripNote[] | undefined, t: { branchId?: string; documentNo?: string }): TripNote[] {
+  const dn = (t.documentNo || '').trim();
+  if (!dn) return [];
+  return (notes || []).filter((n) => !n.cancelledAt && n.documentNo === dn && (!t.branchId || n.branchId === t.branchId))
+    .sort((a, b) => String(a.at).localeCompare(String(b.at)));
+}
+// ใบพิมพ์ถูกเรียกจากหลายที่ (การ์ดใบ/รายงานต่อทะเบียน/พิมพ์ทั้งสาขา) ที่ไม่ได้ถือ db ทุกจุด
+// -> App อัปเดตตัวแปรนี้ทุกครั้งที่ db เปลี่ยน ทุกเส้นทางพิมพ์จึงได้หมายเหตุชุดล่าสุดเหมือนกัน
+let PRINT_NOTES: TripNote[] = [];
+
 function tripDocSection(trip: TripDocument): string {
+  const myNotes = notesOfTrip(PRINT_NOTES, trip);
+  const notesHtml = myNotes.length
+    ? `<div style="margin-top:6px;border:1px solid #999;padding:4px 6px;font-size:11px"><b>หมายเหตุ (พิมพ์มือ)</b>${myNotes.map((n) => `<div>• ${_esc(n.text)} — <i>${_esc(n.by)} ${fmtNoteAt(n.at)}</i></div>`).join('')}</div>`
+    : '';
   const t = new Date(); const pad = (n: number) => String(n).padStart(2, '0');
   const printDate = `${t.getDate()}/${t.getMonth() + 1}/${t.getFullYear()}  ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
   const groups = new Map<string, { prov: string; dist: string; receipts: TripReceipt[] }>();
@@ -1984,6 +2010,7 @@ function tripDocSection(trip: TripDocument): string {
     <table class="grid"><thead><tr>
       <th style="width:32px">ลำดับ</th><th style="width:20%">ผู้รับสินค้า</th><th style="width:20%">ผู้ส่งสินค้า</th><th style="width:48px">จำนวน</th><th style="width:42px">หน่วย</th><th style="width:22%">รายการ</th><th>เลขที่ใบรับสินค้า</th>
     </tr></thead><tbody>${body}</tbody></table>
+    ${notesHtml}
     <div class="footer">
       <div class="signbox"><div class="signline"></div>ผู้ออกเอกสาร</div>
       <div class="totals"><div><span class="lbl">ยอดรวมสินค้า</span> &nbsp; <b>${qtyFmt(grandQty)}</b> &nbsp; ชิ้น</div><div class="lbl" style="margin-top:3px">X - ยังไม่บันทึกส่งเสร็จ</div></div>
@@ -3163,7 +3190,21 @@ function DestFixTab({ db, api, branchId, reload, showToast }: any) {
 // ===========================================================================
 const fmtD = (s: string) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? `${+m[3]}/${+m[2]}/${m[1]}` : (s || ''); };
 
-function ReportsTab({ db, cycle, branchId, showToast }: any) {
+function ReportsTab({ db, cycle, branchId, showToast, api, reload }: any) {
+  // 📝 หมายเหตุพิมพ์มือต่อใบ: บังคับชื่อผู้ใส่ · แก้ไม่ได้ ยกเลิกได้ (ต้องใส่ชื่อ) · ไม่กระทบเงิน · งวดปิดก็ใส่ได้
+  const tripNotes: TripNote[] = db.tripNotes || [];
+  const addNote = async (t: TripDocument) => {
+    const v = await promptNote({ title: `เพิ่มหมายเหตุ ใบ ${t.documentNo}`, subtitle: `${t.plateNo} · ${t.documentDate}` });
+    if (!v) return;
+    try { await api('/api/trip-notes', 'POST', { branchId: t.branchId, documentNo: t.documentNo, text: v.text, by: v.by }); showToast('success', 'บันทึกหมายเหตุแล้ว'); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+  const cancelNote = async (n: TripNote) => {
+    const v = await promptNote({ title: 'ยกเลิกหมายเหตุนี้?', subtitle: `"${n.text}" — ${n.by} ${fmtNoteAt(n.at)}`, withText: false, confirmText: 'ยกเลิกหมายเหตุ', danger: true });
+    if (!v) return;
+    try { await api(`/api/trip-notes/${n.id}/cancel`, 'POST', { by: v.by }); showToast('success', 'ยกเลิกหมายเหตุแล้ว'); reload(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
   const [selPlate, setSelPlate] = useState('');
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
   if (!cycle) return <EmptyHint text="กรุณาเลือกรอบก่อน" />;
@@ -3173,7 +3214,7 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
   const shownSums = selPlate ? sums.filter((s: any) => s.plateNo === selPlate) : sums;
   const exp = async () => {
     if (!cycleTrips.length) return showToast('warning', 'ยังไม่มีใบกระจายในรอบนี้');
-    try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles, `${API_PREFIX}/api/uploads/`); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
+    try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles, `${API_PREFIX}/api/uploads/`, db.tripNotes || []); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
     catch (e: any) { showToast('error', e.message); }
   };
   const TH = ({ children, r }: any) => <th className={`px-2 py-1.5 font-semibold ${r ? 'text-right' : 'text-left'}`}>{children}</th>;
@@ -3250,6 +3291,11 @@ function ReportsTab({ db, cycle, branchId, showToast }: any) {
                           if ((t.breakdown?.addon || 0) > 0) parts.push(<span className="text-amber-700 font-semibold">📌 เหมาเพิ่ม ฿{money(t.breakdown.addon)}{(t.addonByDest || []).length ? ` (${(t.addonByDest || []).map((a) => a.dist || a.prov).filter(Boolean).join(', ')})` : ''}</span>);
                           docInc.forEach((d: DeductionEntry) => parts.push(<span className="text-emerald-700 font-semibold" title={d.note || ''}>➕{d.label} ฿{money(d.amount)}{d.imageFile && <a href={imgUrl(d.imageFile)} target="_blank" rel="noreferrer" className="ml-1"><img src={imgUrl(d.imageFile)} alt="รูป" className="inline w-6 h-6 object-cover rounded border align-middle" /></a>}</span>));
                           docDed.forEach((d: DeductionEntry) => parts.push(<span className="text-rose-600 font-semibold">➖{d.label} ฿{money(d.amount)}</span>));
+                          // 📝 หมายเหตุพิมพ์มือ (คนละสีกับหมายเหตุของระบบ) + ปุ่มยกเลิก · ปุ่มเพิ่มอยู่ท้ายสุด
+                          notesOfTrip(tripNotes, t).forEach((n) => parts.push(
+                            <span className="text-indigo-700" title={`ใส่โดย ${n.by} · ${fmtNoteAt(n.at)} · บัญชี ${n.account}`}>📝 {n.text} <span className="text-natural-muted">— {n.by} {fmtNoteAt(n.at)}</span>
+                              <button type="button" aria-label="ยกเลิกหมายเหตุ" title="ยกเลิกหมายเหตุนี้ (ต้องใส่ชื่อ)" onClick={() => cancelNote(n)} className="ml-1 text-natural-muted hover:text-rose-600">✕</button></span>));
+                          parts.push(<button type="button" onClick={() => addNote(t)} title="เพิ่มหมายเหตุพิมพ์มือ (ต้องใส่ชื่อผู้ใส่)" className="text-[11px] text-natural-muted hover:text-indigo-700 underline decoration-dotted whitespace-nowrap">✎ เพิ่มหมายเหตุ</button>);
                         }
                         return (
                           <tr key={t.id + '-' + i} className={(t.breakdown?.collect || 0) > 0 && sub.first ? 'bg-emerald-50' : (t.breakdown?.addon || 0) > 0 && sub.first ? 'bg-amber-50' : sub.hasDiv ? 'bg-[#FFF2CC]' : ''}>

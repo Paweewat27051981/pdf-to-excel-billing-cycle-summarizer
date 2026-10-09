@@ -24,6 +24,7 @@ import {
   FuelEntry,
   DeductionEntry,
   LoanPlan,
+  TripNote,
   ExtractedTripDocument,
 } from './src/types.js';
 import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck, matchRate } from './src/calc.js';
@@ -1103,6 +1104,15 @@ async function startServer() {
         destinationOverrides: inBranch(db.destinationOverrides),
         moneyCategories: inBranch(db.moneyCategories),
         tripDistances: inBranch(db.tripDistances || []),
+        // หมายเหตุพิมพ์มือ = ข้อความอิสระ + ชื่อคน -> ส่งให้เฉพาะคนที่ล็อกอินแล้ว (endpoint นี้ไม่มีด่านสิทธิ์) (Codex P2)
+        //   สาขาปกติได้เฉพาะของสาขาตัวเอง (ไม่เชื่อ branchId จาก query) · admin/HQ ได้ตามสาขาที่ขอ
+        tripNotes: (() => {
+          const sess = getSession(req);
+          const me = sess ? db.branches.find((b) => b.id === sess.branchId && b.status === 'active') : null;
+          if (!me) return [];
+          if (me.isHQ || me.isSystemUser || me.canEditRates) return inBranch(db.tripNotes || []);
+          return (db.tripNotes || []).filter((n) => n.branchId === me.id);
+        })(),
         // สัญญาผ่อนหัก "ไม่ส่งออก" ทาง state (endpoint นี้ไม่มีด่านสิทธิ์) — admin/HQ ดูผ่าน /api/loan-plans
         loanPlans: [],
       };
@@ -1788,6 +1798,58 @@ async function startServer() {
       await saveRecord('deductions', entry);
       console.log(`[return-fee] ${branchId} ${trip.documentNo} ${trip.plateNo} +${amount} โดย ${sess.name}`);
       res.status(201).json({ ...entry, cycleName: cyc.name });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ===================== หมายเหตุพิมพ์มือต่อใบกระจาย (เจ้าของสั่ง 9 ต.ค.69) =====================
+  // กติกาที่เจ้าของเคาะ: ชื่อผู้ใส่ "พิมพ์อิสระ" แต่บังคับ · สาขาใส่ได้เฉพาะใบของสาขาตัวเอง admin/HQ ใส่ได้ทุกสาขา
+  //   · งวดปิดแล้วก็ใส่ได้ (ไม่กระทบเงิน) · แก้ข้อความไม่ได้ ยกเลิกได้ (ต้องใส่ชื่อ) ร่องรอยยังอยู่ · ไม่มี endpoint ลบ
+  const noteBranchFor = async (req: any, res: any, askedBranch: string) => {
+    const sess = getSession(req);
+    if (!sess) { res.status(401).json({ error: 'กรุณาเข้าสู่ระบบก่อน' }); return null; }
+    const db = await getDb();
+    const me = db.branches.find((b) => b.id === sess.branchId);
+    if (!me || me.status !== 'active') { res.status(403).json({ error: 'บัญชีนี้ถูกปิดใช้งานแล้ว' }); return null; }
+    const wide = !!(me.isHQ || me.isSystemUser || me.canEditRates);
+    return { db, sess, branchId: wide ? askedBranch : me.id, wide };
+  };
+  const cleanLine = (v: any, max: number) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+  app.post('/api/trip-notes', async (req, res) => {
+    try {
+      const ctx = await noteBranchFor(req, res, String(req.body?.branchId || ''));
+      if (!ctx) return;
+      const { db, sess, branchId } = ctx;
+      const documentNo = String(req.body?.documentNo || '').trim();
+      const text = cleanLine(req.body?.text, 300), by = cleanLine(req.body?.by, 60);
+      if (!branchId) return res.status(400).json({ error: 'ต้องระบุสาขา' });
+      if (!documentNo) return res.status(400).json({ error: 'ต้องระบุเลขใบกระจาย' });
+      if (!text) return res.status(400).json({ error: 'ต้องพิมพ์ข้อความหมายเหตุ' });
+      if (by.length < 2) return res.status(400).json({ error: 'ต้องใส่ชื่อผู้ใส่หมายเหตุ (อย่างน้อย 2 ตัวอักษร)' });
+      const trip = db.tripDocuments.find((t) => t.branchId === branchId && (t.documentNo || '').trim() === documentNo);
+      if (!trip) return res.status(404).json({ error: `ไม่พบใบ ${documentNo} ในสาขานี้` });
+      const active = (db.tripNotes || []).filter((n) => n.branchId === branchId && n.documentNo === documentNo && !n.cancelledAt);
+      if (active.length >= 20) return res.status(400).json({ error: 'ใบนี้มีหมายเหตุครบ 20 รายการแล้ว' });
+      const note: TripNote = { id: generateId('note'), branchId, documentNo, text, by, at: new Date().toISOString(), account: sess.name };
+      if (!db.tripNotes) db.tripNotes = [];
+      db.tripNotes.push(note);
+      await saveRecord('tripNotes', note);
+      res.status(201).json(note);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+  app.post('/api/trip-notes/:id/cancel', async (req, res) => {
+    try {
+      const pre = await getDb();
+      const target = (pre.tripNotes || []).find((n) => n.id === req.params.id);
+      if (!target) return res.status(404).json({ error: 'ไม่พบหมายเหตุ' });
+      const ctx = await noteBranchFor(req, res, target.branchId);
+      if (!ctx) return;
+      if (ctx.branchId !== target.branchId) return res.status(403).json({ error: 'ยกเลิกได้เฉพาะหมายเหตุของสาขาตัวเอง' });
+      if (target.cancelledAt) return res.status(400).json({ error: 'หมายเหตุนี้ถูกยกเลิกไปแล้ว' });
+      const by = cleanLine(req.body?.by, 60);
+      if (by.length < 2) return res.status(400).json({ error: 'ต้องใส่ชื่อผู้ยกเลิก (อย่างน้อย 2 ตัวอักษร)' });
+      target.cancelledBy = by; target.cancelledAt = new Date().toISOString(); target.cancelledAccount = ctx.sess.name;
+      await saveRecord('tripNotes', target);
+      res.json(target);
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 

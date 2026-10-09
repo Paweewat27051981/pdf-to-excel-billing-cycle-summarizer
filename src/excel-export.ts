@@ -12,6 +12,7 @@ import {
   DeductionEntry,
   Vehicle,
   RateMaster,
+  TripNote,
 } from './types';
 import { summarizeByVehicle, normPlate, normDoc, round2 } from './calc';
 
@@ -369,7 +370,8 @@ export async function exportPerVehicleReport(
   fuel: FuelEntry[],
   deductions: DeductionEntry[],
   vehicles: Vehicle[],
-  imgBase?: string // URL prefix ของรูปแนบ เช่น "/neosiam/api/uploads/" (ถ้าไม่ส่ง = ไม่ฝังรูป)
+  imgBase?: string, // URL prefix ของรูปแนบ เช่น "/neosiam/api/uploads/" (ถ้าไม่ส่ง = ไม่ฝังรูป)
+  tripNotes: TripNote[] = [] // หมายเหตุพิมพ์มือต่อใบ (แสดงในคอลัมน์หมายเหตุ แถวแรกของใบ)
 ) {
   const wb = await newWorkbook();
   wb.creator = 'ระบบค่าเที่ยว+ค่าน้ำมันรถร่วม';
@@ -517,6 +519,10 @@ export async function exportPerVehicleReport(
           for (const r of destNoted) parts.push({ text: `⚠️โน้ต ${r.destNote}`, color: 'FFB7791F' });
           for (const d of docInc) parts.push({ text: `➕${d.label} ฿${fmtB(d.amount)}`, color: 'FF0E9F6E' });
           for (const d of docDed) parts.push({ text: `➖${d.label} ฿${fmtB(d.amount)}`, color: 'FFE10026' });
+          // 📝 หมายเหตุพิมพ์มือ (ที่ยังไม่ถูกยกเลิก) — เลขใบ trim ตรงตัว + สาขาเดียวกัน
+          const dn = (t.documentNo || '').trim();
+          for (const n of tripNotes.filter((x) => !x.cancelledAt && x.documentNo === dn && x.branchId === t.branchId).sort((a, b) => String(a.at).localeCompare(String(b.at))))
+            parts.push({ text: `📝${n.text} (${n.by})`, color: 'FF4338CA' });
         }
         const r = ws.addRow([
           fmtDate(sub.date), sub.dest, sub.docNo, sub.qty,

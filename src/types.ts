@@ -448,6 +448,7 @@ export interface DatabaseState {
   tripDocuments: TripDocument[];
   fuelEntries: FuelEntry[];
   deductions: DeductionEntry[];
+  tripNotes?: TripNote[]; // หมายเหตุพิมพ์มือต่อใบกระจาย
   loanPlans?: LoanPlan[]; // สัญญาผ่อนหัก (optional กัน DB เก่า) — ไม่ส่งออกทาง /api/state (admin/HQ ดูผ่าน /api/loan-plans)
   oilPrices?: OilPriceRecord[]; // [ทดลอง] ราคาน้ำมัน OR ที่บันทึกถาวร (optional กัน DB เก่า)
   tripDistances?: TripDistanceRecord[]; // [ทดลอง] cache ระยะลูปต่อใบ (คิดจาก DOH ครั้งเดียว เก็บไว้)
@@ -480,6 +481,22 @@ export interface MountainRouteRecord {
 }
 
 // [ทดลอง] cache ระยะทางลูปของ 1 ใบกระจาย (คิดจาก DOH RouteService ครั้งเดียว) — กันยิง API ซ้ำ
+// หมายเหตุพิมพ์มือต่อใบกระจาย (เจ้าของสั่ง 9 ต.ค.69) — บังคับชื่อผู้ใส่ · แก้ข้อความไม่ได้ ยกเลิกได้โดยร่องรอยยังอยู่
+//   เก็บแยกจาก TripDocument (ผูกด้วย branchId + documentNo) เพื่อให้รอดจาก 'ทับใบเดิม'/คำนวณใหม่/กู้คืนใบ
+//   ไม่มีผลกับเงิน และระบบไม่อ่านไปคิดค่าขนกลับ
+export interface TripNote {
+  id: string;
+  branchId: string;
+  documentNo: string;
+  text: string;
+  by: string;             // ชื่อที่ผู้ใส่พิมพ์เอง (ระบบพิสูจน์ตัวตนไม่ได้ — ล็อกอินเป็นบัญชีสาขา)
+  at: string;             // ISO เวลา server
+  account: string;        // ชื่อบัญชีที่ล็อกอินอยู่ตอนใส่ (สาขา/admin/HQ)
+  cancelledBy?: string;
+  cancelledAt?: string;
+  cancelledAccount?: string;
+}
+
 export interface TripDistanceRecord {
   id: string;
   tripId: string;        // อ้างอิง trip.id (immutable — ลบ+อัปโหลดซ้ำ documentNo เดิม จะได้ id ใหม่ ไม่ใช้ cache เก่า)
