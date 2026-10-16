@@ -27,7 +27,7 @@ import {
   TripNote,
   ExtractedTripDocument,
 } from './src/types.js';
-import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck, matchRate } from './src/calc.js';
+import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck, matchRate, rateImportNameWarnings } from './src/calc.js';
 import { suspectDupReceipts } from './src/serviceArea.js'; // จับบิลซ้ำจากจัสทราน (ใช้ตัวเดียวกับ frontend)
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
@@ -2177,6 +2177,13 @@ async function startServer() {
       const missing = mine
         .filter((r) => !seenKeys.has(keyOf(r)) && !ambiguous.has(keyOf(r)))
         .map((r) => ({ label: label(r), price: r.price }));
+      // ด่านเตือนชื่ออำเภอ (เตือนเท่านั้น) — ชื่อที่ใบจริงไม่เคยมี (สะกดผิด) + แถวซ้อนกับแถวเดิมที่เขียนต่างกันเล็กน้อย
+      const seenDest: { provinceRaw: string; districtRaw: string }[] = [];
+      for (const t of db.tripDocuments) {
+        if (t.branchId !== branchId) continue;
+        for (const rc of t.receipts || []) seenDest.push({ provinceRaw: rc.provinceRaw || t.provinceRaw || '', districtRaw: rc.districtRaw || t.districtRaw || '' });
+      }
+      const nameWarn = rateImportNameWarnings(rates as any, mine, seenDest);
 
       const preview = {
         branchId,
@@ -2190,8 +2197,14 @@ async function startServer() {
         ambiguousCount: ambiguousRows.length,
         ambiguous: ambiguousRows.slice(0, 50),
         expiredCount,
+        unknownNameCount: nameWarn.unknownName.length,
+        unknownNames: nameWarn.unknownName.slice(0, 50),
+        nearDuplicateCount: nameWarn.nearDuplicate.length,
+        nearDuplicates: nameWarn.nearDuplicate.slice(0, 50),
         summary: [
           ...summary,
+          ...(nameWarn.unknownName.length ? [`⚠️ ชื่ออำเภอที่ไม่เคยพบในใบจริง ${nameWarn.unknownName.length} รายการ — อาจสะกดผิด ใบจริงจะไม่ได้ราคานี้: ${nameWarn.unknownName.slice(0, 5).join(' · ')}${nameWarn.unknownName.length > 5 ? ' ...' : ''}`] : []),
+          ...(nameWarn.nearDuplicate.length ? [`⚠️ แถวซ้อนกับแถวเดิมที่ชื่อเขียนต่างกันเล็กน้อย ${nameWarn.nearDuplicate.length} รายการ — ระบบอาจหยิบแถวเก่า: ${nameWarn.nearDuplicate.slice(0, 5).join(' · ')}${nameWarn.nearDuplicate.length > 5 ? ' ...' : ''}`] : []),
           ...(dupInFile.length ? [`⚠️ ในไฟล์มีแถวซ้ำกันเอง ${dupInFile.length} แถว — ใช้แถวแรก`] : []),
           ...(ambiguousRows.length ? [`⚠️ ข้าม ${ambiguousRows.length} แถว: ในระบบมีราคาเงื่อนไขเหมือนกันหลายรายการ แยกไม่ออกว่าจะอัปเดตตัวไหน — แก้ในหน้า Master โดยตรง (${ambiguousRows.slice(0, 3).join(', ')}${ambiguousRows.length > 3 ? ' ...' : ''})`] : []),
           ...(expiredCount ? [`ℹ️ ไม่นับราคาที่หมดอายุ/ปิดใช้แล้ว ${expiredCount} รายการ — คงไว้เป็นประวัติ`] : []),

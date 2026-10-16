@@ -315,6 +315,155 @@ export function matchRate(
   return { flat: pick('flat'), piece: pick('piece') };
 }
 
+// ---------------------------------------------------------------------------
+// ด่านเตือนตอนนำเข้าราคา (เจ้าของสั่ง 16 ต.ค.69) — เตือนเท่านั้น ไม่บล็อก
+//
+// เจอจริงงวด ต.ค.69:
+//   1) ไฟล์ทีมพิมพ์ "ตะพานพิน" (จริง ตะพานหิน) -> นำเข้าเป็นแถวใหม่ที่ใบจริงไม่เคยจับได้
+//      ใบตะพานหินยังได้ราคาแถวเก่า 1500 แทน 1511 (และงวด ก.ย.16-31 จ่ายเกิน) โดยไม่มีใครรู้
+//   2) แถว "เมืองพิจิตร" (เก่า) กับ "เมือง" (ไฟล์ใหม่) อยู่คู่กัน — matchRate ให้คะแนนเท่ากัน
+//      เสมอกัน = หยิบแถวที่เจอก่อน -> แถวเก่าชนะ ใบนครสวรรค์ 102 ใบค้างราคาเก่า (+6,162.02)
+// ---------------------------------------------------------------------------
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (Math.abs(a.length - b.length) > 2) return 99; // ต่างกันเกิน 2 ตัวอักษร ไม่ใช่สะกดผิด
+  const dp = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0]; dp[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = dp[j];
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return dp[b.length];
+}
+
+type ImportRateRow = Pick<RateMaster, 'provinceName' | 'districtName' | 'priceType'> &
+  Partial<Pick<RateMaster, 'productCategory' | 'rateGroup' | 'receiverKeyword' | 'senderKeyword' | 'productKeyword' | 'minQty' | 'maxQty'>>;
+
+export function rateImportNameWarnings(
+  rows: ImportRateRow[],
+  existing: RateMaster[],                                // ราคาของสาขาที่ใช้งานอยู่ ณ วันอ้างอิง
+  seen: { provinceRaw: string; districtRaw: string }[],  // ปลายทางที่เคยมีในใบจริงของสาขานี้
+): { unknownName: string[]; nearDuplicate: string[] } {
+  const parts = (d: string) => (d || '').split('+').map((s) => normDistrict(stripParen(s))).filter(Boolean);
+  // ปลายทางในใบจริง แยกตามจังหวัด (normalize แล้ว)
+  const seenByProv = new Map<string, Set<string>>();
+  for (const s of seen) {
+    const p = normProvince(s.provinceRaw), d = normDistrict(stripParen(s.districtRaw));
+    if (!p || !d) continue;
+    if (!seenByProv.has(p)) seenByProv.set(p, new Set());
+    seenByProv.get(p)!.add(d);
+  }
+  const provSeen = (prov: string): Set<string> | null => {
+    const rp = normProvince(prov);
+    if (!rp) return null;
+    const out = new Set<string>();
+    for (const [p, ds] of seenByProv) if (p.includes(rp) || rp.includes(p)) ds.forEach((d) => out.add(d));
+    return out.size ? out : null;
+  };
+  // "จับได้" ใช้เกณฑ์เดียวกับ matchRate (substring สองทาง)
+  const caught = (d: string, ds: Set<string>) => [...ds].some((x) => x.includes(d) || d.includes(x));
+  // ชื่อเดียวกันต่างแค่การเขียน: อ. นำหน้า / เมือง vs เมือง+จังหวัด / สะกดต่าง 1-2 ตัว
+  const sameName = (a: string, b: string, prov: string) => {
+    const x = parts(a).join('+'), y = parts(b).join('+');
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const p = normProvince(prov);
+    if (x === y + p || y === x + p) return true;
+    // ต่าง 1 ตัวอักษรเท่านั้น — ทดสอบกับข้อมูลจริง: 2 ตัวจับอำเภอจริงคนละอำเภอ (แม่ออน/แม่อาย, แม่วาง/แม่แตง)
+    return Math.min(x.length, y.length) >= 4 && editDistance(x, y) <= 1;
+  };
+  // เงื่อนไขที่ต้องเหมือนกันถึงจะ "แข่งกัน" ใน matchRate — ไม่รวมกลุ่มรถ เพราะแถวไม่ระบุกลุ่มใช้กับทุกกลุ่ม
+  // (server เลือกราคา: !r.rateGroup || r.rateGroup === กลุ่มรถ) -> เทียบกลุ่มแยกด้วย groupOverlap (Codex P2)
+  const cond = (r: ImportRateRow) => [r.productCategory || 'normal', r.priceType,
+    norm(r.receiverKeyword || ''), norm(r.senderKeyword || ''), norm(r.productKeyword || ''), r.minQty ?? '', r.maxQty ?? ''].join('|');
+  const groupOverlap = (a: ImportRateRow, b: ImportRateRow) => {
+    const x = norm(a.rateGroup || ''), y = norm(b.rateGroup || '');
+    return !x || !y || x === y;
+  };
+  const label = (r: ImportRateRow) => `${r.districtName} จ.${r.provinceName} (${r.priceType === 'flat' ? 'เหมา' : 'ชิ้น'})`;
+
+  // ---- ดัชนีค้น "ชื่อใกล้เคียง" แทนการเทียบทุกคู่ (Codex P2: ไฟล์ 5,000 แถวเคยใช้ 40 วินาที บล็อก server) ----
+  // canon: ชื่อมาตรฐาน — ตัด อ./วงเล็บ แล้ว "เมือง"+ชื่อจังหวัด = "เมือง" (ชื่อเท่ากันหลัง canon = ชื่อเดียวกัน)
+  // คีย์ = canon + ทุกแบบที่ลบ 1 ตัวอักษร -> สองชื่อที่ต่างกัน ≤1 ตัว (แทน/เพิ่ม/ลบ) จะมีคีย์ร่วมกันเสมอ
+  const canon = (d: string, prov: string) => {
+    const x = parts(d).join('+'), p = normProvince(prov);
+    return p && x === 'เมือง' + p ? 'เมือง' : x;
+  };
+  const nearKeys = (x: string): string[] => {
+    if (!x) return [];
+    if (x.length < 4) return [x];             // ชื่อสั้น: นับเฉพาะตรงกันหลัง canon (ตรงกับ sameName)
+    const out = new Set<string>([x]);
+    for (let i = 0; i < x.length; i++) out.add(x.slice(0, i) + x.slice(i + 1));
+    return [...out];
+  };
+  const addIdx = <T,>(idx: Map<string, T[]>, k: string, v: T) => { if (!idx.has(k)) idx.set(k, []); idx.get(k)!.push(v); };
+  const lookup = <T,>(idx: Map<string, T[]>, prefix: string, x: string): T[] => {
+    const out = new Set<T>();
+    for (const nk of nearKeys(x)) for (const v of idx.get(prefix + nk) || []) out.add(v);
+    return [...out];
+  };
+
+  // ชื่อในใบจริงต่อจังหวัด -> ดัชนีชื่อใกล้เคียง (ใช้แนะนำ "หมายถึง ... หรือเปล่า?")
+  const seenIdx = new Map<string, Map<string, string[]>>();
+  const seenIdxFor = (prov: string, ds: Set<string>) => {
+    const key = normProvince(prov);
+    if (!seenIdx.has(key)) {
+      const idx = new Map<string, string[]>();
+      for (const d of ds) for (const nk of nearKeys(d)) addIdx(idx, nk, d);
+      seenIdx.set(key, idx);
+    }
+    return seenIdx.get(key)!;
+  };
+
+  const unknownName: string[] = [], nearDuplicate: string[] = [];
+  const doneUnknown = new Set<string>();
+  const bucketKey = (r: ImportRateRow) => `${normProvince(r.provinceName)}|${cond(r)}|`;
+  const exIdx = new Map<string, RateMaster[]>();
+  for (const ex of existing) for (const nk of nearKeys(canon(ex.districtName, ex.provinceName))) addIdx(exIdx, bucketKey(ex) + nk, ex);
+  const fileIdx = new Map<string, ImportRateRow[]>(); // แถวในไฟล์ที่ผ่านมาแล้ว
+  const MAX_WARN = 200; // เพดานคำเตือน (หน้าจอแสดงแค่ 50 + จำนวนรวม)
+  rows.forEach((r) => {
+    if (!String(r.districtName || '').trim()) return;
+    const ds = provSeen(r.provinceName);
+    // จังหวัดที่สาขายังไม่เคยวิ่ง = เส้นทางใหม่ ตัดสินไม่ได้ว่าสะกดผิด -> ไม่เตือน
+    if (ds && unknownName.length < MAX_WARN) {
+      for (const p of parts(r.districtName)) {
+        const k = `${normProvince(r.provinceName)}|${p}`;
+        if (doneUnknown.has(k) || caught(p, ds)) continue;
+        doneUnknown.add(k);
+        // เตือนเฉพาะที่ "ใกล้ชื่อในใบจริง 1 ตัวอักษร" = น่าจะพิมพ์ผิด
+        // ชื่อที่แค่ยังไม่เคยวิ่ง (อำเภอจริงแต่นาน ๆ ไป) ไม่เตือน — ทดสอบกับไฟล์ ต.ค.69 เตือนเกิน 29 ชื่อ
+        const near = p.length < 4 ? [] : lookup(seenIdxFor(r.provinceName, ds), '', p)
+          .filter((x) => x.length >= 4 && editDistance(x, p) <= 1);
+        if (!near.length) continue;
+        unknownName.push(`"${p}" จ.${r.provinceName} — ไม่เคยพบในใบจริงของสาขานี้ หมายถึง "${near[0]}" หรือเปล่า?`);
+      }
+    }
+    // แถวที่จังหวัด+เงื่อนไขเดียวกัน แต่ชื่ออำเภอเขียนต่างกันเล็กน้อย = จะมี 2 แถวแข่งกันใน matchRate
+    const competes = (o: ImportRateRow) =>
+      groupOverlap(o, r) &&
+      norm(o.districtName) !== norm(r.districtName) &&                // ชื่อเดียวกันเป๊ะ = แถวเดียวกัน (จะถูกอัปเดต)
+      sameName(o.districtName, r.districtName, r.provinceName);
+    const bk = bucketKey(r), cn = canon(r.districtName, r.provinceName);
+    if (nearDuplicate.length < MAX_WARN) {
+      for (const ex of lookup(exIdx, bk, cn)) {
+        if (nearDuplicate.length >= MAX_WARN || !competes(ex)) continue;
+        nearDuplicate.push(`${label(r)} ซ้อนกับแถวเดิม "${ex.districtName}" ราคา ${ex.price} — ระบบอาจหยิบแถวเดิมแทน ควรปิดแถวที่ไม่ใช้`);
+      }
+      // แถวในไฟล์เดียวกันก็ซ้อนกันได้ (เช่น ไฟล์ใหม่มีทั้ง "เมืองพิจิตร" และ "เมือง") — Codex P2
+      for (const o of lookup(fileIdx, bk, cn)) {
+        if (nearDuplicate.length >= MAX_WARN || !competes(o)) continue;
+        nearDuplicate.push(`${label(r)} ซ้อนกับแถวในไฟล์เดียวกัน "${o.districtName}" — ระบบจะมี 2 แถวแข่งกัน ควรเหลือชื่อเดียว`);
+      }
+    }
+    for (const nk of nearKeys(cn)) addIdx(fileIdx, bk + nk, r);
+  });
+  return { unknownName, nearDuplicate };
+}
+
 // ราคาชุดอำเภอ (เช่น "เมือง+คีรีมาศ" = 1400): จับเมื่อใบส่งหลายอำเภอตรงชุดพอดี
 // คืนราคาเหมาของชุด ถ้าไม่เจอ = null (ไปใช้ราคาเหมาสูงสุดต่อจุดแทน)
 export function matchCombinedFlat(

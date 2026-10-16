@@ -3410,6 +3410,10 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
       return alertBox('ไม่มีอะไรต้องเปลี่ยน', [
         `ราคาในไฟล์ตรงกับระบบทั้งหมด (${prev.sameCount} รายการ)`,
         ...(prev.missingCount ? [`มีในระบบแต่ไม่มีในไฟล์ ${prev.missingCount} รายการ — คงไว้ตามเดิม`] : []),
+        ...(prev.unknownNames || []).map((x: string) => `⚠️ ${x}`),
+        ...((prev.unknownNameCount ?? 0) > (prev.unknownNames?.length ?? 0) ? [`⚠️ ...และชื่อที่ไม่เคยพบอีก ${prev.unknownNameCount - prev.unknownNames.length} รายการ`] : []),
+        ...(prev.nearDuplicates || []).map((x: string) => `⚠️ ${x}`),
+        ...((prev.nearDuplicateCount ?? 0) > (prev.nearDuplicates?.length ?? 0) ? [`⚠️ ...และแถวซ้อนอีก ${prev.nearDuplicateCount - prev.nearDuplicates.length} รายการ`] : []),
       ].join('\n'));
     }
     // แสดงตัวอย่างรายการที่จะเปลี่ยน ให้เห็นราคาเก่า -> ใหม่ ก่อนตัดสินใจ
@@ -3422,6 +3426,16 @@ function RatesTab({ db, api, branchId, cycle, reload, showToast, canEdit = false
       importCycleId
         ? `<div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:6px 10px;margin-bottom:8px">🔑 ลง <b>ราคาเฉพาะรอบ "${esc(cycle?.name || '')}"</b> — ราคาเดิมของรอบก่อนหน้าไม่เปลี่ยน<div style="color:#047857;font-size:12px">รอบถัดไปที่เปิดใหม่จะสืบทอดราคานี้ไปเอง จนกว่าจะนำเข้าไฟล์ใหม่${prev.createdCount ? ` · ปลายทางใหม่ ${prev.createdCount} รายการจะถูกเพิ่มเข้าราคาหลักด้วย โดยเริ่มมีผล ${esc(cycle?.startDate || '')}` : ''}</div></div>`
         : `<div style="background:#FEF3C7;border:1px solid #FCD34D;border-radius:8px;padding:6px 10px;margin-bottom:8px">⚠️ ลง <b>ราคาหลัก (ทุกรอบ)</b> — มีผลกับทุกงวดที่ไม่มีราคาเฉพาะรอบ<div style="color:#92400E;font-size:12px">ถ้าต้องการให้มีผลเฉพาะงวดเดียว ให้กดแท็บ "ราคาเฉพาะรอบ" ก่อนนำเข้า</div></div>`,
+      // ด่านเตือนชื่ออำเภอ (16 ต.ค.69: "ตะพานพิน" สะกดผิด + แถว "เมืองX" ซ้อน "เมือง" ทำใบค้างราคาเก่า) — แสดงก่อนให้กดยืนยัน
+      (prev.unknownNames?.length || prev.nearDuplicates?.length)
+        ? `<div style="background:#FEF2F2;border:1px solid #FCA5A5;border-radius:8px;padding:6px 10px;margin-bottom:8px">` +
+          `<b style="color:#B91C1C">⚠️ ตรวจชื่ออำเภอก่อนนำเข้า</b>` +
+          (prev.unknownNames?.length ? `<div style="margin-top:4px"><b>ไม่เคยพบในใบจริง (อาจสะกดผิด — ใบจริงจะไม่ได้ราคานี้) ${prev.unknownNameCount ?? prev.unknownNames.length}</b></div>` +
+            rows(prev.unknownNames, prev.unknownNameCount ?? prev.unknownNames.length, 10, (x: any) => `<div>• ${esc(x)}</div>`) : '') +
+          (prev.nearDuplicates?.length ? `<div style="margin-top:4px"><b>ซ้อนกับแถวเดิมที่ชื่อเขียนต่างกันเล็กน้อย (ระบบอาจหยิบแถวเก่า) ${prev.nearDuplicateCount ?? prev.nearDuplicates.length}</b></div>` +
+            rows(prev.nearDuplicates, prev.nearDuplicateCount ?? prev.nearDuplicates.length, 10, (x: any) => `<div>• ${esc(x)}</div>`) : '') +
+          `<div style="color:#991B1B;font-size:12px;margin-top:4px">แก้ชื่อในไฟล์ให้ตรงกับใบจัสทราน หรือปิดแถวเก่าในหน้า Master ก่อน แล้วค่อยนำเข้า</div></div>`
+        : '',
       `<div><b>🆕 เพิ่มใหม่ ${prev.createdCount}</b> · <b>🔄 อัปเดตราคา ${prev.updatedCount}</b> · ${importCycleId ? `<b>🔒 ล็อกราคาเดิมไว้กับรอบ ${prev.sameCount}</b>` : `⏸️ เท่าเดิม ${prev.sameCount}`}</div>`,
       prev.missingCount ? `<div style="color:#64748b">ℹ️ มีในระบบแต่ไม่มีในไฟล์ ${prev.missingCount} รายการ — คงไว้ตามเดิม (ไม่ลบ)</div>` : '',
       prev.updated?.length ? `<div style="margin-top:10px"><b>🔄 ราคาที่จะเปลี่ยน</b></div>` +
