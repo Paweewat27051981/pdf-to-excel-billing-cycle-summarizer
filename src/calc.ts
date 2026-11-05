@@ -216,6 +216,13 @@ export interface RateMatch {
   threshold?: number | null;
 }
 
+// ชื่อสินค้าที่นับเป็น "งานเก็บคืน" — ใช้ทั้งตอนคิดเงิน (isCollect) และด่านนอกพื้นที่ (makeCollectBackCheck)
+// ต้องเป็นตัวเดียวกันเสมอ ไม่งั้นด่านกับการคิดเงินตัดสินคนละแบบ
+// รับ "เก็บของคืน" ด้วย (เจ้าของสั่ง 5 พ.ย.69): บิลคืนเพนส์ของนครสวรรค์พิมพ์แบบนี้ เดิมไม่ถูกจับ
+//   -> ถูกคิดเป็นงานปกติที่ปลายทาง กทม. แล้วโดนด่านนอกพื้นที่บล็อกทั้งใบ (JB0326109668/9791/9864)
+//   ตรงกับ parseReturnFee ใน server.ts ที่รับ เก็บ(ของ|สินค้า)?คืน อยู่แล้ว
+export const COLLECT_BACK_RE = /เก็บ(ของ|สินค้า)?คืน/;
+
 // ตัวตัดสิน "จุดนี้คิดเป็นงานเก็บคืนได้จริงไหม" — ใช้ร่วมกับด่านตรวจปลายทางนอกพื้นที่
 //
 // ทำไมต้องอยู่ที่นี่: เกณฑ์ต้องตรงกับ isCollect ใน recompute เป๊ะ ๆ
@@ -229,7 +236,7 @@ export function makeCollectBackCheck(
   opts: { refDate: string; collectBackHalfPiece?: boolean },
 ): (r: { provinceRaw?: string; districtRaw?: string; senderName?: string; receiverName?: string;
         productName?: string; items?: { productName?: string }[] }) => boolean {
-  const RE = /เก็บ(สินค้า)?คืน/;
+  const RE = COLLECT_BACK_RE;
   // ⚠️ ต้องเป็น "เก็บคืนล้วนทั้งใบรับ" เท่านั้น ห้ามใช้ some() (Codex P2 รอบ 3)
   //   computeTripDocument แยกเฉพาะ "รายการ" ที่เป็นเก็บคืน ส่วนที่เหลือยังคิดเป็นสินค้าปกติ
   //   ถ้ายกเว้นทั้งใบรับเพราะเจอเก็บคืนแค่รายการเดียว -> บิลซ้ำที่มีสินค้าปกติปนอยู่จะหลุดด่าน
@@ -637,11 +644,11 @@ export function computeReceipt(
     : (matchRate(rateParams, ctx.rates, undefined, 'collect_back').flat?.rateValue ?? null);
   const peatPrice = matchRate(rateParams, ctx.rates, undefined, 'peat_mass').piece?.rateValue ?? null;
 
-  // แยกประเภทสินค้า จับได้ทั้ง "เก็บสินค้าคืน" และ "สินค้าเก็บคืน"
+  // แยกประเภทสินค้า จับได้ทั้ง "เก็บสินค้าคืน" "เก็บของคืน" และ "สินค้าเก็บคืน"
   //  - นครสวรรค์ (half): จับด้วยชื่อเสมอ แม้ไม่มีราคาชิ้น (เพื่อเตือน+บล็อกบันทึก ไม่ปล่อยเป็นงานปกติ)
   //  - สาขาอื่น: ต้องมีราคา collect_back ก่อน ไม่งั้นถือเป็นงานปกติ (พฤติกรรมเดิม)
   const isCollect = (it: ExtractedReceiptItem) =>
-    /เก็บ(สินค้า)?คืน/.test(it.productName) && (ctx.collectBackHalfPiece || collectPrice != null);
+    COLLECT_BACK_RE.test(it.productName) && (ctx.collectBackHalfPiece || collectPrice != null);
   // Peat: ครอบ "Peat mass" + "Peat Ash" (ขาว-ฟ้า) — ใช้ราคา/เส้นทางเดียวกัน (เฉพาะปลายทางที่มีราคา peat_mass)
   const isPeat = (it: ExtractedReceiptItem) => peatPrice != null && /peat\s*(mass|ash)/i.test(it.productName || '');
   const normalItems = extracted.items.filter((it) => !isCollect(it) && !isPeat(it));
