@@ -471,72 +471,73 @@ export function rateImportNameWarnings(
   return { unknownName, nearDuplicate };
 }
 
-// ราคาชุดอำเภอ (เช่น "เมือง+คีรีมาศ" = 1400): จับเมื่อใบส่งหลายอำเภอตรงชุดพอดี
-// คืนราคาเหมาของชุด ถ้าไม่เจอ = null (ไปใช้ราคาเหมาสูงสุดต่อจุดแทน)
-export function matchCombinedFlat(
-  province: string,
-  docDistricts: string[],
+// ราคาชุดอำเภอ (เช่น "เมือง+คีรีมาศ" = 1400 / "เมือง+น้ำปาด" = 2350) — เทียบ "รายจังหวัด"
+// คืน 2 ค่า:
+//   exact = ใบส่งตรงชุดพอดี (ทุกจุดอยู่ในจังหวัดของชุด + อำเภอครบเท่ากัน) -> บังคับคิดเหมาราคาชุด
+//           เจอหลายชุด เลือกถูกสุด (ชุดที่ตั้งใจให้ถูกกว่าเหมาแยก เช่น เมือง+คีรีมาศ)
+//   floor = ใบวิ่งครบทุกอำเภอในชุด + มีจุดอื่นเพิ่ม (อำเภออื่นในจังหวัดเดียวกัน หรือจุดต่างจังหวัด)
+//           -> ราคาชุดเป็น "พื้น" (caller ใช้ max กับเหมาสูงสุดต่อจุด) เจอหลายชุด เลือกสูงสุด
+//           เช่น ชุด เมือง+น้ำปาด ใบวิ่ง เมือง+น้ำปาด+ท่าปลา -> ได้อย่างน้อยราคาชุด (เจ้าของยืนยัน ส.ค.69)
+//
+// ⚠️ ทำไมต้องเทียบรายจังหวัด (บั๊กจริง 19 พ.ย.69 JB0626078701 สาขาพิษณุโลก):
+//   เดิมใช้ "จังหวัดของจุดแรก" ตัดสินทั้งใบ — ใบนี้จุดแรก พรหมพิราม จ.พิษณุโลก
+//   ตามด้วย เมือง+น้ำปาด จ.อุตรดิตถ์ -> ชุด อุตรดิตถ์ ถูกข้ามทั้งที่วิ่งครบชุด
+//   = ได้ 2,184 (เหมาน้ำปาด) แทน 2,555 (ราคาชุด) — จ่ายขาด
+//   และเดิมรวมอำเภอข้ามจังหวัดเป็นรายการเดียว ("เมือง" ของ 2 จังหวัดนับเป็นจุดเดียว / จับชุดผิดจังหวัด)
+// จุดที่ไม่มีชื่อจังหวัด: caller ต้องเติมจังหวัดหลักของใบให้ก่อน (ห้ามส่งค่าว่าง — ค่าว่างไม่ match ชุดไหนเลย)
+// จับคู่ 1:1 — ทุกตัวใน need ต้องได้คู่ใน have คนละตัวกัน (bipartite matching แบบ augmenting path)
+// ขนาดเล็กมาก (ชุดอำเภอ 2-4 ชื่อ × จุดในใบไม่กี่อำเภอ) จึงไม่มีปัญหาเรื่องความเร็ว
+function coverDistinct(need: string[], have: string[], match: (h: string, n: string) => boolean): boolean {
+  const owner: number[] = new Array(have.length).fill(-1); // have[j] ถูกจับโดย need[owner[j]]
+  const tryAssign = (i: number, seen: boolean[]): boolean => {
+    for (let j = 0; j < have.length; j++) {
+      if (seen[j] || !match(have[j], need[i])) continue;
+      seen[j] = true;
+      if (owner[j] < 0 || tryAssign(owner[j], seen)) { owner[j] = i; return true; }
+    }
+    return false;
+  };
+  return need.every((_, i) => tryAssign(i, new Array(have.length).fill(false)));
+}
+
+export function matchCombinedFlatDests(
+  dests: { province: string; district: string }[],
   rates: RateMaster[],
   refDate: string,
   overrides?: Map<string, { price: number; pieceThreshold: number | null }>
-): number | null {
+): { exact: number | null; floor: number | null } {
   const dm = (a: string, b: string) => textContains(a, b) || textContains(b, a);
-  let best: number | null = null;
+  const provOk = (prov: string, r: RateMaster) =>
+    textContains(prov, r.provinceName) || textContains(prov, r.provinceShort) || textContains(r.provinceName, prov);
+  let exact: number | null = null, floor: number | null = null;
   for (const r of rates) {
     if (r.status !== 'active' || r.priceType !== 'flat') continue;
     if ((r.productCategory || 'normal') !== 'normal') continue;
     if (!(r.districtName || '').includes('+')) continue;
     if (!isEffective(refDate, r.effectiveFrom, r.effectiveTo)) continue;
-    const provOk =
-      textContains(province, r.provinceName) ||
-      textContains(province, r.provinceShort) ||
-      textContains(r.provinceName, province);
-    if (!provOk) continue;
+    // แยกจุดในใบ: อยู่ในจังหวัดของชุด / อยู่จังหวัดอื่น (นับไม่ซ้ำ)
+    const inDistricts = new Set<string>(), outKeys = new Set<string>();
+    const inRaw: string[] = [];
+    for (const d of dests) {
+      if (provOk(d.province, r)) {
+        const k = normDistrict(d.district);
+        if (!inDistricts.has(k)) { inDistricts.add(k); inRaw.push(d.district); }
+      } else outKeys.add(normProvince(d.province) + '|' + normDistrict(d.district));
+    }
+    if (!inRaw.length) continue;
     const rDistricts = r.districtName.split('+').map((s) => stripParen(s)).filter(Boolean);
-    if (rDistricts.length !== docDistricts.length) continue;
-    // ทุกอำเภอในชุดต้องจับกับอำเภอในใบได้ครบ (และจำนวนเท่ากัน)
-    const ok = rDistricts.every((rd) => docDistricts.some((dd) => dm(dd, rd)));
+    // ทุกอำเภอในชุดต้องจับกับอำเภอในใบ (ในจังหวัดเดียวกับชุด) "คนละจุดกัน" ได้ครบ
+    // dm เป็น substring -> "เมืองปาน" ในใบจับได้ทั้ง "เมือง" และ "เมืองปาน" ของชุด "เมือง+เมืองปาน"
+    // ถ้าแค่เช็คว่าทุกชื่อมีคู่ ใบที่ไม่ได้ไป อ.เมือง จะได้ราคาชุด (Codex P2) -> บังคับจับคู่ 1:1
+    if (rDistricts.length > inRaw.length || !coverDistinct(rDistricts, inRaw, dm)) continue;
     // ราคาเฉพาะรอบ (ถ้ามี) ทับราคาหลัก — เหมือน matchRate/matchTieredFlat
     const ov = overrides?.get(r.id);
     const eff = ov ? ov.price : r.price;
-    if (ok && (best === null || eff < best)) best = eff; // เจอหลายชุด เลือกถูกสุด
+    if (outKeys.size === 0 && rDistricts.length === inRaw.length) {
+      if (exact === null || eff < exact) exact = eff;      // ตรงชุดพอดี
+    } else if (floor === null || eff > floor) floor = eff;  // ครบชุด + มีจุดอื่นเพิ่ม (ในหรือนอกจังหวัด)
   }
-  return best;
-}
-
-// ราคาชุดแบบ "ชุดเป็นส่วนหนึ่งของใบ" (subset): ใบวิ่งครบทุกอำเภอในชุด + มีอำเภออื่นเพิ่ม
-// เช่น ชุด "เมือง+น้ำปาด"=2350 ใบวิ่ง เมือง+น้ำปาด+ท่าปลา -> ควรได้อย่างน้อยราคาชุด
-// (เดิมชุดต้องตรงเป๊ะเท่านั้น -> ใบที่วิ่ง "มากกว่า" ชุดกลับได้เหมาสูงสุดต่อจุดซึ่งอาจ "น้อยกว่า" ชุด)
-// คืนราคาชุดสูงสุดที่ใบวิ่งครบ (caller ใช้เป็น "พื้น" เทียบ max กับเหมาสูงสุดต่อจุด) — null ถ้าไม่มี
-export function matchCombinedFlatSubset(
-  province: string,
-  docDistricts: string[],
-  rates: RateMaster[],
-  refDate: string,
-  overrides?: Map<string, { price: number; pieceThreshold: number | null }>
-): number | null {
-  const dm = (a: string, b: string) => textContains(a, b) || textContains(b, a);
-  let best: number | null = null;
-  for (const r of rates) {
-    if (r.status !== 'active' || r.priceType !== 'flat') continue;
-    if ((r.productCategory || 'normal') !== 'normal') continue;
-    if (!(r.districtName || '').includes('+')) continue;
-    if (!isEffective(refDate, r.effectiveFrom, r.effectiveTo)) continue;
-    const provOk =
-      textContains(province, r.provinceName) ||
-      textContains(province, r.provinceShort) ||
-      textContains(r.provinceName, province);
-    if (!provOk) continue;
-    const rDistricts = r.districtName.split('+').map((s) => stripParen(s)).filter(Boolean);
-    // ชุดต้องเล็กกว่าใบ (subset แท้ — เคสตรงเป๊ะให้ matchCombinedFlat เดิมจัดการ ราคา/พฤติกรรมเดิม)
-    if (rDistricts.length >= docDistricts.length) continue;
-    const ok = rDistricts.every((rd) => docDistricts.some((dd) => dm(dd, rd)));
-    if (!ok) continue;
-    const ov = overrides?.get(r.id);
-    const eff = ov ? ov.price : r.price;
-    if (best === null || eff > best) best = eff; // ใบครอบหลายชุด -> พื้นสูงสุด
-  }
-  return best;
+  return { exact, floor };
 }
 
 // ราคาเหมาแบบมีเงื่อนไขพิเศษ: จำนวนกล่อง(ขั้นบันได) + ชื่อผู้รับ/ผู้ส่ง/สินค้า
@@ -838,20 +839,26 @@ export function computeTripDocument(
     r.piecePrice != null ? r.piecePrice : (r.flatPrice != null && docPiecePrice > 0 ? docPiecePrice : null);
 
   // ราคาชุดอำเภอ: ถ้าใบส่งหลายอำเภอ (งานปกติ) ตรงชุดที่ตั้งไว้ ใช้ราคาเหมาของชุดแทนเหมาสูงสุด
-  const docDistricts = [...new Set(
-    receipts.filter((r) => r.normalQty > 0).map((r) => (r.districtRaw || '').trim()).filter(Boolean)
-  )];
+  // จุดปลายทาง = (จังหวัด, อำเภอ) ของทุกจุดงานปกติ — เทียบชุดรายจังหวัด (ดู matchCombinedFlatDests)
   const docProvince = receipts.find((r) => r.normalQty > 0)?.provinceRaw || extracted.provinceRaw;
-  let combinedFlat = docDistricts.length >= 2
-    ? matchCombinedFlat(docProvince, docDistricts, ctx.rates, refDate, ctx.rateOverrides)
-    : null;
-  // ไม่ตรงชุดพอดี -> ลองแบบ "ชุดเป็นส่วนหนึ่งของใบ": ใบวิ่งครบชุด + มีจุดอื่นเพิ่ม
+  // จุดที่ไม่มีชื่อจังหวัด -> ใช้จังหวัดหลักของใบ (จุดงานปกติแรกที่มีจังหวัด / หัวใบ) ไม่งั้นค่าว่างไม่ match ชุดไหน
+  const fallbackProv = receipts.find((r) => r.normalQty > 0 && (r.provinceRaw || '').trim())?.provinceRaw || extracted.provinceRaw || '';
+  const docDests = receipts
+    .filter((r) => r.normalQty > 0 && (r.districtRaw || '').trim())
+    .map((r) => ({ province: (r.provinceRaw || '').trim() || fallbackProv, district: (r.districtRaw || '').trim() }));
+  // ข้ามเมื่อใบมีปลายทางเดียว (นับไม่ซ้ำ จังหวัด|อำเภอ) — ชุดต้องมี ≥2 อำเภอ จับไม่ได้อยู่แล้ว
+  const docDestCount = new Set(docDests.map((d) => d.province.replace(/\s/g, '') + '|' + d.district.replace(/\s/g, ''))).size;
+  const combo = docDestCount >= 2
+    ? matchCombinedFlatDests(docDests, ctx.rates, refDate, ctx.rateOverrides)
+    : { exact: null, floor: null };
+  let combinedFlat: number | null = combo.exact;
+  // ไม่ตรงชุดพอดี -> ลองแบบ "ชุดเป็นส่วนหนึ่งของใบ": ใบวิ่งครบชุด + มีจุดอื่นเพิ่ม (รวมจุดต่างจังหวัด)
   // ราคาชุด = "พื้น" (floor): ใบวิ่งครบชุดต้องไม่ได้น้อยกว่าราคาชุด และไม่น้อยกว่าเหมาสูงสุดต่อจุด
   // -> flatTotal = max(เหมาสูงสุดทุกจุด, ราคาชุดสูงสุดที่ครบ) — ถูกทุก combination แม้ใบครอบหลายชุด
   // (Codex P2: เลือกชุดก่อนแล้วค่อยคิดจุดนอกชุด อาจแพ้ combination อื่น — ใช้ max รวมตัดปัญหา)
   let combinedIsSubsetFloor = false; // subset = แค่ยกพื้นราคาเหมา ไม่บังคับทั้งใบเป็นเหมา (ชิ้นยังแข่งได้)
-  if (combinedFlat == null && docDistricts.length >= 2) {
-    const subFloor = matchCombinedFlatSubset(docProvince, docDistricts, ctx.rates, refDate, ctx.rateOverrides);
+  if (combinedFlat == null) {
+    const subFloor = combo.floor;
     if (subFloor != null) {
       const maxFlatAll = Math.max(0, ...receipts.filter((r) => r.flatPrice != null).map((r) => r.flatPrice as number));
       combinedFlat = Math.max(subFloor, maxFlatAll);
