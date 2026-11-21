@@ -50,6 +50,16 @@ function norm(s: string): string {
   return (s || '').toString().toLowerCase().replace(/\s+/g, '').trim();
 }
 
+// norm สำหรับ "ข้อความ/ชื่อพื้นที่" — รวมตัวอักษรหน้าตาเหมือนที่คีย์สลับกันบ่อย
+// ฎ (ชฎา) กับ ฏ (ปฏัก): เคสจริง 21 พ.ย.69 JB0226015659 สาย3 จัสทรานสะกด "เขาคิชฌกูฎ"
+//   แต่ราคาในระบบ "เขาคิชฌกูฏ" (สะกดถูก) -> ไม่เจอราคาทั้งเหมาและชิ้น
+//   (ใบที่บันทึกแล้ว 3 จุดใน 2 ใบโดนแบบเดียวกัน ก.ย.–ต.ค.)
+// ⚠️ ห้ามใช้กับทะเบียนรถ (normPlate ใช้ norm ตัวบน) — ทะเบียนจริงมีทั้ง ฎ และ ฏ เป็นหมวดอักษรคนละหมวด
+//    (เช่น 3ฒฎ-745) ถ้ารวมกัน รถ 2 คันจะถูกมองเป็นคันเดียว -> ได้กลุ่มราคา/สาขาผิด
+function normText(s: string): string {
+  return norm(s).replace(/ฎ/g, 'ฏ');
+}
+
 // ตัด "(...)" ท้าย/กลางชื่ออำเภอออกก่อนจับคู่ราคา — วงเล็บเป็นโน้ตเส้นทาง ไม่ใช่ชื่ออำเภอจริง
 // เช่น "เขาคิชฌกูฏ(จากอำเภอเมือง)" -> "เขาคิชฌกูฏ" (รองรับวงเล็บไทย （）ด้วย)
 function stripParen(s: string): string {
@@ -58,10 +68,10 @@ function stripParen(s: string): string {
 
 // normalize ชื่ออำเภอ/จังหวัดสำหรับเทียบตรงเป๊ะ: ตัด "อ./อำเภอ/จ./จังหวัด" นำหน้า + ช่องว่าง + lower
 function normDistrict(s: string): string {
-  return norm((s || '').replace(/^\s*(อำเภอ|อ\.?)\s*/, ''));
+  return normText((s || '').replace(/^\s*(อำเภอ|อ\.?)\s*/, ''));
 }
 function normProvince(s: string): string {
-  return norm((s || '').replace(/^\s*(จังหวัด|จ\.?)\s*/, ''));
+  return normText((s || '').replace(/^\s*(จังหวัด|จ\.?)\s*/, ''));
 }
 
 // เทียบทะเบียนรถแบบยืดหยุ่น: ตัดคำว่า "ตู้" (ชนิดรถ) และช่องว่างออกก่อนเทียบ
@@ -73,6 +83,13 @@ export function normPlate(s: string): string {
 export function textContains(haystack: string, needle: string): boolean {
   if (!needle) return false;
   return norm(haystack).includes(norm(needle));
+}
+
+// เทียบ "ชื่อจังหวัด/อำเภอ" — เหมือน textContains แต่รวม ฎ/ฏ (ดู normText)
+// ใช้กับชื่อพื้นที่เท่านั้น (Codex P2): ชื่อผู้รับ/ผู้ส่ง/สินค้า/คีย์เวิร์ดกฎ ใช้ textContains ตามเดิม
+export function placeContains(haystack: string, needle: string): boolean {
+  if (!needle) return false;
+  return normText(haystack).includes(normText(needle));
 }
 
 // normalize เลขใบกระจาย/ใบสั่ง สำหรับจับคู่ — ตัดอักขระแปลกปลอม (ไทยหลง/เว้นวรรค) + ตัวใหญ่
@@ -283,15 +300,15 @@ export function matchRate(
     if (category === 'normal' && (r.minQty != null || r.maxQty != null || r.receiverKeyword || r.senderKeyword || r.productKeyword)) return false;
     if (!isEffective(params.refDate, r.effectiveFrom, r.effectiveTo)) return false;
     const provOk =
-      textContains(params.provinceRaw, r.provinceName) ||
-      textContains(params.provinceRaw, r.provinceShort) ||
-      textContains(r.provinceName, params.provinceRaw);
+      placeContains(params.provinceRaw, r.provinceName) ||
+      placeContains(params.provinceRaw, r.provinceShort) ||
+      placeContains(r.provinceName, params.provinceRaw);
     // ตัดวงเล็บออกจากชื่ออำเภอ master ก่อนเทียบ -> ทนทานต่อ "อ." นำหน้า/จังหวัดต่อท้ายในใบ
     const rDist = stripParen(r.districtName || '');
     const distOk =
       !rDist ||
-      textContains(params.districtRaw, rDist) ||
-      textContains(rDist, params.districtRaw);
+      placeContains(params.districtRaw, rDist) ||
+      placeContains(rDist, params.districtRaw);
     return provOk && distOk;
   });
 
@@ -506,9 +523,9 @@ export function matchCombinedFlatDests(
   refDate: string,
   overrides?: Map<string, { price: number; pieceThreshold: number | null }>
 ): { exact: number | null; floor: number | null } {
-  const dm = (a: string, b: string) => textContains(a, b) || textContains(b, a);
+  const dm = (a: string, b: string) => placeContains(a, b) || placeContains(b, a);
   const provOk = (prov: string, r: RateMaster) =>
-    textContains(prov, r.provinceName) || textContains(prov, r.provinceShort) || textContains(r.provinceName, prov);
+    placeContains(prov, r.provinceName) || placeContains(prov, r.provinceShort) || placeContains(r.provinceName, prov);
   let exact: number | null = null, floor: number | null = null;
   for (const r of rates) {
     if (r.status !== 'active' || r.priceType !== 'flat') continue;
@@ -557,9 +574,9 @@ export function matchTieredFlat(
     if (r.minQty == null && r.maxQty == null && !r.receiverKeyword && !r.senderKeyword && !r.productKeyword) continue;
     if (!isEffective(refDate, r.effectiveFrom, r.effectiveTo)) continue;
     const provOk =
-      textContains(ctx.province, r.provinceName) ||
-      textContains(ctx.province, r.provinceShort) ||
-      textContains(r.provinceName, ctx.province);
+      placeContains(ctx.province, r.provinceName) ||
+      placeContains(ctx.province, r.provinceShort) ||
+      placeContains(r.provinceName, ctx.province);
     if (!provOk) continue;
     if (r.receiverKeyword && !anyContains(ctx.receiverNames, r.receiverKeyword)) continue;
     if (r.senderKeyword && !anyContains(ctx.senderNames, r.senderKeyword)) continue;
