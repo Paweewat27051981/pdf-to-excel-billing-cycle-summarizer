@@ -76,13 +76,17 @@ export interface BankImportRow extends BankSheetRow {
   status: BankImportStatus; error?: string; warnings: string[]; digits: string; oldAccount: string; systemDriver: string; newNote: string;
 }
 
+const FILE_NAME_NOTE = 'ชื่อในใบปะ: ';
+
 export function planBankImport(
   rows: BankSheetRow[], vehicles: Vehicle[], accounts: BankAccount[], branchId: string,
 ): { rows: BankImportRow[]; blocked: string } {
   const digitsByPlate = new Map<string, Set<string>>();
+  const namesByPlate = new Map<string, Set<string>>();
   for (const r of rows) {
     const k = normPlate(r.plate); if (!k) continue;
     const set = digitsByPlate.get(k) || new Set<string>(); set.add(bankDigits(r.account)); digitsByPlate.set(k, set);
+    const names = namesByPlate.get(k) || new Set<string>(); names.add(normDriver(r.driver)); namesByPlate.set(k, names);
   }
   const out: BankImportRow[] = [];
   const seen = new Set<string>();
@@ -101,24 +105,39 @@ export function planBankImport(
     const c = checkAccountNo(r.account);
     if (c.ok === false) { out.push({ ...base, error: c.error }); continue; }
     if (r.numeric) base.warnings.push('เซลล์เก็บเป็นตัวเลข เลข 0 นำหน้าอาจหาย — ตรวจอีกครั้ง');
-    // ชื่อในไฟล์ต้องตรงกับคนขับในระบบ ("ยศพล สวนม่วง (พิไลพร)" = คนขับ ยศพล โอนเข้าชื่อ พิไลพร)
-    //   ไม่ตรง = ไฟล์อาจเก่ากว่าการเปลี่ยนคนขับ -> บล็อก ให้ HQ/admin แก้ทีละคัน (เงินห้ามโอนผิดคน)
+    // เจ้าของเคาะ 25 พ.ย.69: บัญชีไม่ต้องเป็นชื่อเดียวกับคนขับ -> ชื่อไม่ตรง = เตือนแต่บันทึกได้ (จดชื่อในไฟล์ไว้เป็นหมายเหตุ)
+    //   "ยศพล สวนม่วง (พิไลพร)" = คนขับ ยศพล โอนเข้าชื่อ พิไลพร
     const fileDriver = (r.driver || '').replace(/\s+/g, ' ').trim();
     const paren = /[(（]([^)）]*)[)）]/.exec(fileDriver)?.[1]?.trim() || '';
     const bare = fileDriver.replace(/[(（][^)）]*[)）]/g, '').trim();
-    if (!bare) { out.push({ ...base, error: 'ไม่มีชื่อคนขับในไฟล์ให้เทียบ — กดแก้ทีละคัน' }); continue; }
-    if (normDriver(bare) !== normDriver(v.driverName)) {
-      out.push({ ...base, error: `ชื่อในไฟล์ "${fileDriver}" ไม่ตรงกับคนขับในระบบ "${v.driverName || '-'}" — กดแก้ทีละคัน` }); continue;
+    const nameDiff = !!bare && normDriver(bare) !== normDriver(v.driverName);
+    // ข้อยกเว้นเดียวที่ยังกัน: เคยผูกเลขแล้ว คนขับในระบบเปลี่ยนทีหลัง และไฟล์ไม่ได้เป็นชื่อคนใหม่
+    //   ไฟล์อาจเก่า (รวมเลขที่ HQ ลบ/แก้ไปแล้ว) ถ้าปล่อยผ่าน = ยืนยันเลขคนเก่าให้คนใหม่โดยไม่มีใครตรวจ
+    if (cur && normDriver(cur.driverName) !== normDriver(v.driverName) && (nameDiff || !bare)) {
+      out.push({ ...base, error: `คนขับในระบบเปลี่ยนจาก "${cur.driverName || '-'}" เป็น "${v.driverName || '-'}" หลังผูกเลขบัญชี เงินอาจเข้าคนเก่า — กด ✎ "แก้เลขบัญชี" ในคอลัมน์เลขบัญชี ตรวจแล้วบันทึกยืนยัน` }); continue;
     }
-    // หมายเหตุจากไฟล์มาก่อน · ชื่อในวงเล็บ = ชื่อผู้รับโอน · คงของเดิมเฉพาะเมื่อเลขและคนขับไม่เปลี่ยน
-    //   (เลขใหม่ห้ามติดหมายเหตุผู้รับโอนของเลขเก่า)
+    if (nameDiff) base.warnings.push(`ชื่อในไฟล์ "${fileDriver}" ไม่ตรงกับคนขับในระบบ "${v.driverName || '-'}"`);
+    if (!bare) base.warnings.push('ไม่มีชื่อคนขับในไฟล์ให้เทียบ');
+    if ((namesByPlate.get(k)?.size || 0) > 1) base.warnings.push('ทะเบียนนี้อยู่หลายแถวในไฟล์และชื่อไม่เหมือนกัน — ใช้แถวแรก');
+    if (cur && !cur.accountNo) base.warnings.push('เคยมีคนลบเลขบัญชีของคันนี้ออก — ตรวจก่อนบันทึก');
+    // หมายเหตุ = ข้อความคนพิมพ์ + ชื่อที่ระบบจดเอง
+    //   · ข้อความจากไฟล์มาก่อน · คงของเดิมเฉพาะเมื่อเลขและคนขับไม่เปลี่ยน (เลขใหม่ห้ามติดหมายเหตุเลขเก่า)
+    //   · ส่วนที่ระบบจดเอง ("ชื่อในใบปะ: ...") คิดใหม่จากไฟล์ทุกครั้ง ไม่ค้างชื่อเก่า
     const unchanged = !!cur && cur.accountNo === c.digits && normDriver(cur.driverName) === normDriver(v.driverName);
-    const note = (r.note || (unchanged && cur!.note) || (paren ? `โอนเข้าชื่อ ${paren}` : '')).slice(0, 200);
+    const human = (t: string) => t.split(' · ').filter((x) => x && !x.startsWith(FILE_NAME_NOTE)).join(' · ');
+    const carried = !unchanged && !!cur?.note && r.note === cur.note; // ใบปะที่ export ไปแล้วแก้แต่เลข = หมายเหตุของเลขเก่า
+    const auto = nameDiff ? FILE_NAME_NOTE + fileDriver : paren ? `โอนเข้าชื่อ ${paren}` : '';
+    const text = r.note && !carried ? (nameDiff ? human(r.note) : r.note) : unchanged ? human(cur!.note || '') : '';
+    const note = [text, auto && !text.includes(auto) ? auto : ''].filter(Boolean).join(' · ').slice(0, 200);
     const same = unchanged && (cur!.note || '') === note;
     out.push({ ...base, digits: c.digits, newNote: note, status: same ? 'same' : cur?.accountNo ? 'changed' : 'new' });
   }
   const miss = out.filter((r) => r.error === 'ไม่มีทะเบียนนี้ในสาขา').length;
+  // ชื่อไม่ตรงรายคันอนุโลม แต่ถ้าไม่ตรงเกินครึ่งไฟล์ (4 แถวขึ้นไป) = น่าจะเรียง/เลื่อนแถวผิด ทุกคันจะโอนสลับคน
+  const diff = out.filter((r) => r.systemDriver && r.warnings.some((w) => w.startsWith('ชื่อในไฟล์'))).length;
   const blocked = out.length && miss * 2 > out.length
-    ? `ทะเบียนในไฟล์ไม่อยู่ในสาขานี้ ${miss}/${out.length} แถว — น่าจะเป็นไฟล์ของสาขาอื่น ไม่นำเข้าทั้งไฟล์` : '';
+    ? `ทะเบียนในไฟล์ไม่อยู่ในสาขานี้ ${miss}/${out.length} แถว — น่าจะเป็นไฟล์ของสาขาอื่น ไม่นำเข้าทั้งไฟล์`
+    : diff >= 4 && diff * 2 > out.length
+      ? `ชื่อคนขับไม่ตรงระบบ ${diff}/${out.length} แถว — ไฟล์น่าจะเรียงแถวสลับกัน ตรวจว่าทะเบียน/ชื่อ/เลขบัญชีอยู่แถวเดียวกัน ไม่นำเข้าทั้งไฟล์` : '';
   return { rows: out, blocked };
 }

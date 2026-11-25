@@ -4317,11 +4317,11 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
       const by = (st: string) => rows.filter((r) => r.status === st);
       const line = (r: BankImportRow) => `${r.plate} · ${r.systemDriver || r.driver} · ${r.status === 'changed' && r.oldAccount !== r.digits ? `${fmtAccountNo(r.oldAccount)} → ` : ''}${fmtAccountNo(r.digits)}${r.newNote ? ` · ${r.newNote}` : ''}`;
       const todo = [...by('new'), ...by('changed')];
-      const warn = todo.filter((r) => r.warnings.length);
+      const warn = rows.filter((r) => r.status !== 'error' && r.warnings.length);
       await reportBox(`ตรวจไฟล์ก่อนบันทึก — ${file.name}`, [
         ...(pv.blocked ? [{ level: 'error' as const, title: pv.blocked }] : []),
         ...(by('error').length ? [{ level: 'error' as const, title: 'อ่านไม่ผ่าน (จะไม่บันทึกแถวนี้)', items: by('error').map((r) => `${r.sheet} แถว ${r.row} · ${r.plate} · ${r.error}`) }] : []),
-        ...(warn.length ? [{ level: 'warn' as const, title: 'บันทึกได้ แต่ควรตรวจ', items: warn.map((r) => `${r.plate} · ${r.warnings.join(' · ')}`) }] : []),
+        ...(warn.length ? [{ level: 'warn' as const, title: 'บันทึกได้ แต่ควรตรวจ', items: warn.map((r) => `${r.plate} · ${r.warnings.join(' · ')}${r.status === 'same' ? ' (มีในระบบแล้ว ไม่บันทึกซ้ำ)' : ''}`) }] : []),
         ...(by('changed').length ? [{ level: 'warn' as const, title: 'เปลี่ยนจากของเดิม', items: by('changed').map(line) }] : []),
         ...(by('new').length ? [{ level: 'info' as const, title: 'เพิ่มใหม่', items: by('new').map(line) }] : []),
         ...(by('same').length ? [{ level: 'ok' as const, title: 'ตรงกับในระบบอยู่แล้ว', items: by('same').map((r) => r.plate) }] : []),
