@@ -8,11 +8,12 @@ import FuelTripTab from './experimental/FuelTripTab'; // [ทดลอง] แ�
 import { parseServiceAreas, inServiceArea, suspectDupReceipts } from './serviceArea'; // พื้นที่ให้บริการสาขา (แชร์ backend)
 import {
   DatabaseState, BillingCycle, Branch, Vehicle, RateMaster, RateOverride, ReceiverGroup, ReceiverGroupAlias,
-  ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride, TripNote,
+  ProductConversionRule, TripDocument, TripReceipt, FuelEntry, DeductionEntry, ExtractedTripDocument, MoneyCategory, ManualBoxSender, DestinationOverride, TripNote, BankAccount,
 } from './types';
 import { exportCycleToExcel, exportPerVehicleReport, downloadRateTemplate, downloadFuelTemplate, exportBranchSummary, tripSubRows, exportDriverKpi, exportCostAreas, exportRatesToExcel } from './excel-export';
 import { summarizeByVehicle, isUnspecifiedName, normPlate, normDoc, makeCollectBackCheck } from './calc';
-import { confirmDelete, confirmAction, confirmPassword, notify, alertBox, reportBox, promptNote } from './ui';
+import { confirmDelete, confirmAction, confirmPassword, notify, alertBox, reportBox, promptNote, promptBank } from './ui';
+import { fmtAccountNo, normDriver, checkAccountNo, type BankImportRow } from './bankAccounts'; // เลขบัญชีคนขับ (ใบปะ)
 
 // base path เมื่อรันใต้ subpath (เช่น /neosiam บน NAS) — vite ตั้ง import.meta.env.BASE_URL ให้ตอน build
 // root (Render) = '' ; NAS build (VITE_BASE_PATH=/neosiam/) = '/neosiam'
@@ -420,7 +421,8 @@ function BranchesTab({ db, api, reload, showToast }: any) {
   const [form, setForm] = useState(blank);
   const [areaEdit, setAreaEdit] = useState<string | null>(null);
   const [areaText, setAreaText] = useState('');
-  const openArea = (b: Branch) => { setAreaEdit(b.id); setAreaText(b.serviceAreaText || ''); };
+  const [splitText, setSplitText] = useState('');
+  const openArea = (b: Branch) => { setAreaEdit(b.id); setAreaText(b.serviceAreaText || ''); setSplitText(b.splitZoneText || ''); };
   const autoArea = (b: Branch) => {
     const provMap = new Map<string, Set<string>>();
     for (const r of (db.rateMasters as RateMaster[]).filter((x) => x.branchId === b.id && x.status === 'active')) {
@@ -432,7 +434,7 @@ function BranchesTab({ db, api, reload, showToast }: any) {
     setAreaText([...provMap.entries()].map(([p, ds]) => ds.size ? `${p}: ${[...ds].join(', ')}` : p).join('\n'));
   };
   const saveArea = async (b: Branch) => {
-    await api(`/api/branches/${b.id}`, 'PUT', { serviceAreaText: areaText });
+    await api(`/api/branches/${b.id}`, 'PUT', { serviceAreaText: areaText, splitZoneText: splitText.trim() });
     showToast('success', `บันทึกพื้นที่สาขา ${b.name} แล้ว`); setAreaEdit(null); reload();
   };
   // สลับโหมด "เก็บสินค้าคืน = ครึ่งราคาชิ้นปกติ" (เช่น นครสวรรค์)
@@ -537,6 +539,9 @@ function BranchesTab({ db, api, reload, showToast }: any) {
                   <div className="text-xs font-semibold text-brand-navy mb-1">📍 พื้นที่ให้บริการของสาขา {b.name} (ตรวจตอนบันทึกใบกระจาย)</div>
                   <p className="text-[11px] text-natural-muted mb-2">บรรทัดละ 1 จังหวัด · ใส่ทั้งจังหวัด เช่น <b>พิจิตร</b> หรือเจาะอำเภอ เช่น <b>เพชรบูรณ์: ชนแดน, เมือง</b> (นครสวรรค์/พิษณุโลกมีเพชรบูรณ์เหมือนกัน ใส่อำเภอแยก) · เว้นว่าง = ไม่ตรวจ</p>
                   <textarea value={areaText} onChange={(e) => setAreaText(e.target.value)} rows={6} placeholder={'นครสวรรค์\nพิจิตร\nเพชรบูรณ์: ชนแดน, เมือง'} className="w-full border border-natural-border rounded-lg px-2 py-1.5 text-sm font-mono" />
+                  <div className="text-xs font-semibold text-brand-navy mt-3 mb-1">📑 แยกตารางในรายงานสรุปรวมต่อทะเบียน (Excel)</div>
+                  <p className="text-[11px] text-natural-muted mb-2">เที่ยวที่มีจุดส่งในพื้นที่นี้จะแยกเป็นตารางที่ 2 พร้อมหมายเหตุท้ายแถว · บรรทัดละ 1 พื้นที่ เช่น <b>แม่ฮ่องสอน</b> หรือ <b>ตาก: แม่สอด</b> · เว้นว่าง = ไม่แยก</p>
+                  <textarea aria-label="พื้นที่แยกตาราง" value={splitText} onChange={(e) => setSplitText(e.target.value)} rows={2} placeholder={'แม่ฮ่องสอน'} className="w-full border border-natural-border rounded-lg px-2 py-1.5 text-sm font-mono" />
                   <div className="flex gap-2 mt-2">
                     <button type="button" onClick={() => autoArea(b)} className="text-xs border border-emerald-500 text-emerald-700 rounded-lg px-3 py-1.5 font-semibold">⚡ สร้างจากราคาที่มี ({db.rateMasters.filter((r: RateMaster) => r.branchId === b.id).length})</button>
                     <button type="button" onClick={() => saveArea(b)} className="text-xs bg-brand-red text-white rounded-lg px-4 py-1.5 font-bold">บันทึก</button>
@@ -3214,7 +3219,18 @@ function ReportsTab({ db, cycle, branchId, showToast, api, reload }: any) {
   const shownSums = selPlate ? sums.filter((s: any) => s.plateNo === selPlate) : sums;
   const exp = async () => {
     if (!cycleTrips.length) return showToast('warning', 'ยังไม่มีใบกระจายในรอบนี้');
-    try { await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles, `${API_PREFIX}/api/uploads/`, db.tripNotes || []); showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว'); }
+    try {
+      // เลขบัญชีสำหรับชีต "ใบปะ" ต้องล็อกอิน — ดึงไม่ได้ก็ยัง export ส่วนอื่นได้ แต่ต้องบอก ไม่หายเงียบ
+      let bank: BankAccount[] | null = null; let bankErr = '';
+      try { bank = (await api(`/api/bank-accounts?branchId=${encodeURIComponent(branchId)}`, 'GET')).accounts || []; }
+      catch (e: any) { bankErr = e.message || 'ดึงเลขบัญชีไม่สำเร็จ'; }
+      const br = (db.branches as Branch[]).find((b) => b.id === branchId);
+      await exportPerVehicleReport(cycle, branchName, db.tripDocuments, db.fuelEntries, db.deductions, db.vehicles, `${API_PREFIX}/api/uploads/`, db.tripNotes || [], {
+        splitZoneText: br?.splitZoneText, logoUrl: `${API_PREFIX}/logo-neosiam.png`, bankAccounts: bank, branchId,
+      });
+      if (bankErr) showToast('warning', `Export แล้ว แต่ไม่มีชีต "ใบปะ" — ${bankErr}`);
+      else showToast('success', 'Export สำเร็จ — ดาวน์โหลดแล้ว');
+    }
     catch (e: any) { showToast('error', e.message); }
   };
   const TH = ({ children, r }: any) => <th className={`px-2 py-1.5 font-semibold ${r ? 'text-right' : 'text-left'}`}>{children}</th>;
@@ -4263,6 +4279,60 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
   const cancelEdit = () => { setForm(blankV); setEditId(null); };
+  // ----- เลขบัญชีคนขับ (ใบปะ) — ดึงแยกจาก state ต้องล็อกอิน · แก้ได้เฉพาะ HQ/admin (server ตัดสิน) -----
+  const [bank, setBank] = useState<{ branchId: string; accounts: BankAccount[]; canEdit: boolean; error: string }>({ branchId: '', accounts: [], canEdit: false, error: '' });
+  const bankReq = useRef(0);
+  const loadBank = async () => {
+    const my = ++bankReq.current; // สลับสาขาเร็ว ๆ -> คำตอบเก่าห้ามทับสาขาใหม่
+    if (!branchId) return;
+    try {
+      const r = await api(`/api/bank-accounts?branchId=${encodeURIComponent(branchId)}`, 'GET');
+      if (my === bankReq.current) setBank({ branchId, accounts: r.accounts || [], canEdit: !!r.canEdit, error: '' });
+    } catch (e: any) { if (my === bankReq.current) setBank({ branchId, accounts: [], canEdit: false, error: e.message }); }
+  };
+  useEffect(() => { loadBank(); }, [branchId]);
+  const bankOk = bank.branchId === branchId;
+  const bankOf = (v: Vehicle) => (bankOk ? bank.accounts.find((a) => normPlate(a.plateNo) === normPlate(v.plateNo)) : undefined);
+  const canEditBank = bankOk && bank.canEdit;
+  const editBank = async (v: Vehicle) => {
+    const cur = bankOf(v);
+    const r = await promptBank({
+      title: `เลขบัญชี ${v.plateNo}`, subtitle: `คนขับ ${v.driverName || '-'}`, accountNo: cur?.accountNo ? fmtAccountNo(cur.accountNo) : '', note: cur?.note || '',
+      validate: (s) => { if (!s.trim()) return cur?.accountNo ? '' : 'ใส่เลขบัญชี'; const c = checkAccountNo(s); return c.ok === false ? c.error : ''; },
+      history: (cur?.history || []).slice().reverse().slice(0, 10).map((h) => `${fmtNoteAt(h.at)} · ${h.by} (${h.account}) · ${h.oldAccountNo ? fmtAccountNo(h.oldAccountNo) : 'ว่าง'} → ${h.newAccountNo ? fmtAccountNo(h.newAccountNo) : 'ลบ'}`),
+    });
+    if (!r) return;
+    if (!r.accountNo.trim() && !(await confirmAction({ title: `ลบเลขบัญชีของ ${v.plateNo}?`, text: 'ใบปะจะแสดงคันนี้ในกลุ่ม "ยังไม่โอน" (ประวัติเลขเดิมยังอยู่)', confirmText: 'ลบเลขบัญชี', danger: true }))) return;
+    try { await api('/api/bank-accounts', 'PUT', { branchId, plateNo: v.plateNo, seenDriver: v.driverName || '', seenAccount: cur?.accountNo || '', ...r }); showToast('success', `บันทึกเลขบัญชี ${v.plateNo} แล้ว`); loadBank(); }
+    catch (e: any) { showToast('error', e.message); }
+  };
+  const bankFile = useRef<HTMLInputElement>(null);
+  const importBank = async (file?: File) => {
+    if (bankFile.current) bankFile.current.value = '';
+    if (!file) return;
+    const b64 = await new Promise<string>((resolve) => { const r = new FileReader(); r.onload = () => resolve((r.result as string).split(',')[1]); r.readAsDataURL(file); });
+    try {
+      const pv = await api('/api/bank-accounts/import', 'POST', { branchId, fileBase64: b64, dryRun: true });
+      const rows: BankImportRow[] = pv.rows;
+      const by = (st: string) => rows.filter((r) => r.status === st);
+      const line = (r: BankImportRow) => `${r.plate} · ${r.systemDriver || r.driver} · ${r.status === 'changed' && r.oldAccount !== r.digits ? `${fmtAccountNo(r.oldAccount)} → ` : ''}${fmtAccountNo(r.digits)}${r.newNote ? ` · ${r.newNote}` : ''}`;
+      const todo = [...by('new'), ...by('changed')];
+      const warn = todo.filter((r) => r.warnings.length);
+      await reportBox(`ตรวจไฟล์ก่อนบันทึก — ${file.name}`, [
+        ...(pv.blocked ? [{ level: 'error' as const, title: pv.blocked }] : []),
+        ...(by('error').length ? [{ level: 'error' as const, title: 'อ่านไม่ผ่าน (จะไม่บันทึกแถวนี้)', items: by('error').map((r) => `${r.sheet} แถว ${r.row} · ${r.plate} · ${r.error}`) }] : []),
+        ...(warn.length ? [{ level: 'warn' as const, title: 'บันทึกได้ แต่ควรตรวจ', items: warn.map((r) => `${r.plate} · ${r.warnings.join(' · ')}`) }] : []),
+        ...(by('changed').length ? [{ level: 'warn' as const, title: 'เปลี่ยนจากของเดิม', items: by('changed').map(line) }] : []),
+        ...(by('new').length ? [{ level: 'info' as const, title: 'เพิ่มใหม่', items: by('new').map(line) }] : []),
+        ...(by('same').length ? [{ level: 'ok' as const, title: 'ตรงกับในระบบอยู่แล้ว', items: by('same').map((r) => r.plate) }] : []),
+      ]);
+      if (pv.blocked || !todo.length) return;
+      const r = await promptNote({ title: `บันทึกเลขบัญชี ${todo.length} คัน?`, subtitle: `สาขา ${(db.branches as Branch[]).find((b) => b.id === branchId)?.name || ''}${by('error').length ? ` · ข้ามแถวที่อ่านไม่ผ่าน ${by('error').length} แถว` : ''}`, withText: false, confirmText: 'บันทึก', byLabel: 'ชื่อผู้นำเข้า', hint: 'ระบบบันทึกชื่อ วันเวลา และเลขบัญชีเดิมไว้ในประวัติ' });
+      if (!r) return;
+      const done = await api('/api/bank-accounts/import', 'POST', { branchId, fileBase64: b64, dryRun: false, by: r.by, expect: pv.expect });
+      showToast('success', `บันทึกเลขบัญชีแล้ว ${done.saved} คัน`); loadBank();
+    } catch (e: any) { alertBox('นำเข้าเลขบัญชีไม่สำเร็จ', e.message, 'error'); }
+  };
   const setGroup = async (v: Vehicle, g: string) => { await api(`/api/vehicles/${v.id}`, 'PUT', { rateGroup: g }); showToast('success', `${v.plateNo}: ${g || 'ไม่ระบุกลุ่ม'}`); reload(); };
   if (!branchId) return <EmptyHint text={ALL_BRANCH_HINT} />;
 
@@ -4302,12 +4372,20 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
           </button>
         )}
       </div>
+      <div className="flex flex-wrap items-center gap-2 mb-2 text-xs">
+        <span className="text-natural-muted">🏦 เลขบัญชี (ใบปะ): {bankOk && !bank.error ? `มีแล้ว ${vehicles.filter((v) => bankOf(v)?.accountNo).length}/${vehicles.length} คัน` : bank.error || 'กำลังโหลด…'}</span>
+        {canEditBank && (<>
+          <input ref={bankFile} type="file" accept=".xls,.xlsx" aria-label="ไฟล์ใบปะ" className="hidden" onChange={(e) => importBank(e.target.files?.[0])} />
+          <button type="button" onClick={() => bankFile.current?.click()} className="border border-emerald-500 text-emerald-700 rounded-lg px-2.5 py-1 font-semibold flex items-center gap-1"><UploadCloud className="w-3.5 h-3.5" />นำเข้าเลขบัญชีจากไฟล์ใบปะ</button>
+        </>)}
+        {bankOk && !bank.error && !bank.canEdit && <span className="text-natural-muted">· แก้ได้เฉพาะ HQ/admin</span>}
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="text-natural-muted text-left border-b border-natural-border">
               <th className="w-8 py-1.5 px-1"><input type="checkbox" aria-label="เลือกทั้งหมด" checked={allChecked} onChange={toggleAll} /></th>
-              <th className="py-1.5 px-1">ทะเบียน</th><th className="py-1.5 px-1">คนขับ</th><th className="py-1.5 px-1">ประเภท</th>{branchGroups.length > 0 && <th className="py-1.5 px-1">กลุ่มราคา</th>}<th className="w-8"></th>
+              <th className="py-1.5 px-1">ทะเบียน</th><th className="py-1.5 px-1">คนขับ</th><th className="py-1.5 px-1">เลขบัญชี</th><th className="py-1.5 px-1">ประเภท</th>{branchGroups.length > 0 && <th className="py-1.5 px-1">กลุ่มราคา</th>}<th className="w-8"></th>
             </tr>
           </thead>
           <tbody>
@@ -4316,6 +4394,16 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
                 <td className="py-1.5 px-1"><input type="checkbox" aria-label={`เลือก ${v.plateNo}`} checked={sel.has(v.id)} onChange={() => toggle(v.id)} /></td>
                 <td className="py-1.5 px-1 font-semibold text-brand-navy">{v.plateNo}</td>
                 <td className="py-1.5 px-1">{v.driverName}</td>
+                <td className="py-1.5 px-1 whitespace-nowrap">{(() => {
+                  const a = bankOf(v);
+                  const moved = !!a?.accountNo && normDriver(a.driverName) !== normDriver(v.driverName);
+                  return (<>
+                    {a?.accountNo ? <span className="font-mono">{fmtAccountNo(a.accountNo)}</span> : <span className="text-natural-muted">—</span>}
+                    {a?.note && <span className="text-natural-muted ml-1" title={a.note}>📝</span>}
+                    {moved && <span className="text-rose-600 font-semibold ml-1" title={`ผูกเลขไว้กับ "${a!.driverName || '-'}" ใบปะจะยังไม่โอนคันนี้จนกว่า HQ/admin จะกดแก้เลขบัญชีแล้วบันทึกยืนยัน`}>⚠ คนขับเปลี่ยน</span>}
+                    {canEditBank && <button type="button" title="แก้เลขบัญชี" onClick={() => editBank(v)} className="text-brand-navy hover:text-amber-700 font-semibold ml-1.5">✎</button>}
+                  </>);
+                })()}</td>
                 <td className="py-1.5 px-1">{v.vehicleType}</td>
                 {branchGroups.length > 0 && (
                   <td className="py-1.5 px-1">
@@ -4331,7 +4419,7 @@ function VehiclesTab({ db, api, branchId, reload, showToast }: any) {
                 </td>
               </tr>
             ))}
-            {vehicles.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-natural-muted">ยังไม่มีรถในสาขานี้</td></tr>}
+            {vehicles.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-natural-muted">ยังไม่มีรถในสาขานี้</td></tr>}
           </tbody>
         </table>
       </div>

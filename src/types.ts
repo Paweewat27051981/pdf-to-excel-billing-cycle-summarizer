@@ -43,6 +43,8 @@ export interface Branch {
   // true = "เก็บสินค้าคืน" คิด = ครึ่งของราคาชิ้นปกติของปลายทาง อัตโนมัติ (เช่น นครสวรรค์)
   //        ไม่มีราคาชิ้น -> เตือน+บันทึกไม่ได้. false/ไม่ตั้ง = ใช้ตาราง collect_back แยก (พิษณุโลก/กำแพงเพชร)
   collectBackHalfPiece?: boolean;
+  // แยกตารางในรายงานสรุปรวมต่อทะเบียน (รูปแบบเดียวกับ serviceAreaText) เช่น "แม่ฮ่องสอน" หรือ "ตาก: แม่สอด" — ว่าง = ไม่แยก
+  splitZoneText?: string;
   status: RecordStatus;
 }
 
@@ -422,6 +424,26 @@ export interface VehicleSummary {
 }
 
 // ---------------------------------------------------------------------------
+// เลขบัญชีคนขับ (ใบปะสรุปยอดโอน) — แยกจาก Vehicle โดยตั้งใจ:
+//   vehicles ออกทาง /api/state ที่ไม่มีด่านล็อกอิน และ PUT /api/vehicles ไม่มีด่านสิทธิ์
+// ---------------------------------------------------------------------------
+export interface BankAccountHistory {
+  at: string; by: string; account: string; // ชื่อที่พิมพ์ + บัญชีที่ล็อกอิน
+  oldAccountNo: string; newAccountNo: string; oldNote: string; newNote: string; driverName: string; via: 'manual' | 'import';
+}
+export interface BankAccount {
+  id: string;            // bank-<สาขา>-<ทะเบียน>
+  branchId: string;
+  plateNo: string;
+  accountNo: string;     // ตัวเลขล้วน ('' = ลบเลขออก ประวัติยังอยู่)
+  note: string;          // เช่น "โอนเป็นคุณ ..." (แสดงท้ายแถวใบปะ)
+  driverName: string;    // ชื่อคนขับตอนผูกเลข — คนขับเปลี่ยน = ใบปะกันไว้ให้ยืนยันก่อน
+  updatedAt: string;
+  updatedBy: string;
+  history: BankAccountHistory[];
+}
+
+// ---------------------------------------------------------------------------
 // การตั้งค่าระบบ (เลือกได้จากหน้าเว็บ)
 // ---------------------------------------------------------------------------
 export interface AppSettings {
@@ -449,6 +471,7 @@ export interface DatabaseState {
   fuelEntries: FuelEntry[];
   deductions: DeductionEntry[];
   tripNotes?: TripNote[]; // หมายเหตุพิมพ์มือต่อใบกระจาย
+  bankAccounts?: BankAccount[]; // เลขบัญชีคนขับ — ห้ามส่งออกทาง /api/state (ดูผ่าน /api/bank-accounts)
   loanPlans?: LoanPlan[]; // สัญญาผ่อนหัก (optional กัน DB เก่า) — ไม่ส่งออกทาง /api/state (admin/HQ ดูผ่าน /api/loan-plans)
   oilPrices?: OilPriceRecord[]; // [ทดลอง] ราคาน้ำมัน OR ที่บันทึกถาวร (optional กัน DB เก่า)
   tripDistances?: TripDistanceRecord[]; // [ทดลอง] cache ระยะลูปต่อใบ (คิดจาก DOH ครั้งเดียว เก็บไว้)

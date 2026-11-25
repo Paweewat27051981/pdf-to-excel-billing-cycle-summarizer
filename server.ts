@@ -5,12 +5,13 @@ import fs from 'fs';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
-import { getDb, peekCache, peekCacheAsync, warmCacheOnBoot, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed } from './server-db.js';
+import { getDb, peekCache, peekCacheAsync, warmCacheOnBoot, saveDb, saveRecord, saveRecords, removeRecord, removeRecords, flushCollection, isIdKeyed, usingFirebase } from './server-db.js';
 import {
   DatabaseState,
   BillingCycle,
   Branch,
   Vehicle,
+  BankAccount,
   RateMaster,
   RateMasterHistory,
   RateOverride,
@@ -28,6 +29,8 @@ import {
   ExtractedTripDocument,
 } from './src/types.js';
 import { computeTripDocument, normPlate, normDoc, round2, textContains, isDateInCycle, makeCollectBackCheck, matchRate, rateImportNameWarnings } from './src/calc.js';
+import { bankAccountId, bankDigits, checkAccountNo, findVehicle, planBankImport } from './src/bankAccounts.js'; // เลขบัญชีคนขับ (ใบปะ)
+import { parseBankSheets } from './bank-import.js';
 import { suspectDupReceipts } from './src/serviceArea.js'; // จับบิลซ้ำจากจัสทราน (ใช้ตัวเดียวกับ frontend)
 import { parseDistributionExcel, parseRateExcel, parseFuelExcel } from './excel-import.js';
 import { registerExperimentalRoutes } from './experimental-routes.js'; // [ทดลอง] แยก 100%
@@ -1115,6 +1118,8 @@ async function startServer() {
         })(),
         // สัญญาผ่อนหัก "ไม่ส่งออก" ทาง state (endpoint นี้ไม่มีด่านสิทธิ์) — admin/HQ ดูผ่าน /api/loan-plans
         loanPlans: [],
+        // เลขบัญชีคนขับ "ห้ามส่งออก" ทาง state เด็ดขาด — ดูผ่าน /api/bank-accounts (ต้องล็อกอิน)
+        bankAccounts: [],
       };
       // บอก client ว่า tripDocuments ในก้อนนี้ครอบคลุมแค่งวดไหน ('' = ทุกงวด)
       res.json({ ...safe, _tripsCycleId: tripsCycleId });
@@ -1850,6 +1855,131 @@ async function startServer() {
       target.cancelledBy = by; target.cancelledAt = new Date().toISOString(); target.cancelledAccount = ctx.sess.name;
       await saveRecord('tripNotes', target);
       res.json(target);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ===================== เลขบัญชีคนขับ (ใบปะสรุปยอดโอน) — เจ้าของเคาะ 25 พ.ย.69 =====================
+  //   · ดู: ต้องล็อกอิน สาขาเห็นเฉพาะของตัวเอง (ไม่เชื่อ branchId จาก client) · HQ/admin ดูตามสาขาที่ขอ
+  //   · แก้/นำเข้า: เฉพาะ HQ + admin · ทุกการแก้เก็บประวัติ (ใคร/เมื่อไหร่/เลขเดิม)
+  //   · ห้ามเขียนเลขบัญชีลง log
+  const bankCtx = async (req: any, res: any, askedBranch: string, write: boolean) => {
+    const sess = getSession(req);
+    if (!sess) { res.status(401).json({ error: 'กรุณาเข้าสู่ระบบก่อน' }); return null; }
+    const db = await getDb();
+    const me = db.branches.find((b) => b.id === sess.branchId);
+    if (!me || me.status !== 'active') { res.status(403).json({ error: 'บัญชีนี้ถูกปิดใช้งานแล้ว' }); return null; }
+    const canEdit = !!(me.isHQ || me.canEditRates);
+    if (write && !canEdit) { res.status(403).json({ error: 'แก้เลขบัญชีคนขับได้เฉพาะสำนักงานใหญ่ (HQ) หรือ admin' }); return null; }
+    const branchId = canEdit || me.isSystemUser ? askedBranch : me.id; // บัญชีระบบเลือกดูสาขาได้ (แก้ไม่ได้)
+    if (!branchId || !db.branches.some((b) => b.id === branchId)) { res.status(400).json({ error: 'ต้องระบุสาขา' }); return null; }
+    return { db, sess, branchId, canEdit };
+  };
+  const bankNext = (cur: BankAccount | undefined, v: Vehicle, branchId: string, accountNo: string, note: string, by: string, sessName: string, via: 'manual' | 'import'): BankAccount => {
+    const at = new Date().toISOString();
+    const h = { at, by, account: sessName, oldAccountNo: cur?.accountNo || '', newAccountNo: accountNo, oldNote: cur?.note || '', newNote: note, driverName: v.driverName || '', via };
+    return {
+      id: cur?.id || bankAccountId(branchId, v.plateNo), branchId, plateNo: v.plateNo, accountNo, note,
+      driverName: v.driverName || '', updatedAt: at, updatedBy: by, history: [...(cur?.history || []), h],
+    };
+  };
+  // Firebase ยืนยันก่อน ค่อยแก้หน่วยความจำ -> ใบปะไม่มีวันใช้เลขที่ยังไม่ได้บันทึกจริง
+  //   (โหมดไฟล์ local เขียนจาก cache จึงแก้ cache ก่อน ล้มแล้วคืนค่าเดิม)
+  // Firebase ค้างเกิน 20 วิ -> ตอบ error ปล่อยคิว แต่ล็อกการเขียนเลขบัญชีไว้จนรู้ผลครั้งก่อน (กันเขียนทับกันจนประวัติหาย)
+  let bankPending = false;
+  const bankPersist = async (db: DatabaseState, recs: BankAccount[]) => {
+    const ids = new Set(recs.map((r) => r.id));
+    const put = () => { const live = peekCache() || db; live.bankAccounts = [...(live.bankAccounts || []).filter((a) => !ids.has(a.id)), ...recs]; };
+    if (!usingFirebase()) {
+      const before = db.bankAccounts;
+      put();
+      try { await saveRecords('bankAccounts', recs); } catch (e) { db.bankAccounts = before; throw e; }
+      return;
+    }
+    bankPending = true;
+    const write = saveRecords('bankAccounts', recs).then(put).finally(() => { bankPending = false; });
+    write.catch(() => {}); // ผลที่มาหลังหมดเวลา ไม่ให้เป็น unhandled rejection
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('ฐานข้อมูลไม่ตอบใน 20 วินาที — ยังไม่ยืนยันว่าบันทึกแล้ว รอสักครู่แล้วโหลดหน้าใหม่เพื่อตรวจ')), 20000); });
+    try { await Promise.race([write, timeout]); } finally { clearTimeout(timer); }
+  };
+  // เขียนทีละคำขอ — กัน 2 คนแก้พร้อมกันแล้วประวัติของคนแรกหาย
+  let bankQueue: Promise<any> = Promise.resolve();
+  const bankSerial = <T,>(fn: () => Promise<T>): Promise<T> => {
+    const run = () => { if (bankPending) throw new Error('กำลังรอฐานข้อมูลยืนยันการบันทึกเลขบัญชีครั้งก่อน — ลองใหม่ภายหลัง'); return fn(); };
+    const p = bankQueue.then(run, run);
+    bankQueue = p.catch(() => {});
+    return p;
+  };
+  const findBank = (db: DatabaseState, branchId: string, plateNo: string) =>
+    (db.bankAccounts || []).find((a) => a.branchId === branchId && normPlate(a.plateNo) === normPlate(plateNo));
+
+  app.get('/api/bank-accounts', async (req, res) => {
+    try {
+      const ctx = await bankCtx(req, res, String(req.query.branchId || ''), false);
+      if (!ctx) return;
+      res.set('Cache-Control', 'no-store');
+      const accounts = (ctx.db.bankAccounts || []).filter((a) => a.branchId === ctx.branchId)
+        .map((a) => (ctx.canEdit ? a : { ...a, history: [] })); // ประวัติเลขเก่า เห็นเฉพาะ HQ/admin
+      res.json({ accounts, canEdit: ctx.canEdit });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+  app.put('/api/bank-accounts', async (req, res) => {
+    try {
+      const ctx = await bankCtx(req, res, String(req.body?.branchId || ''), true);
+      if (!ctx) return;
+      const by = cleanLine(req.body?.by, 60), note = cleanLine(req.body?.note, 200);
+      if (by.length < 2) return res.status(400).json({ error: 'ต้องใส่ชื่อผู้แก้ (อย่างน้อย 2 ตัวอักษร)' });
+      const plateNo = String(req.body?.plateNo || '');
+      if (!findVehicle(ctx.db.vehicles, ctx.branchId, plateNo)) return res.status(404).json({ error: 'ไม่พบทะเบียนนี้ในสาขา' });
+      let digits = '';
+      if (String(req.body?.accountNo ?? '').trim()) {
+        const c = checkAccountNo(req.body.accountNo);
+        if (c.ok === false) return res.status(400).json({ error: c.error });
+        digits = c.digits;
+      }
+      const saved = await bankSerial(async () => {
+        const v = findVehicle(ctx.db.vehicles, ctx.branchId, plateNo);
+        const cur = findBank(ctx.db, ctx.branchId, plateNo);
+        // ต้องตรงกับที่ผู้แก้เห็นในกล่อง — คนขับ/เลขเปลี่ยนไปแล้ว ห้ามยืนยันเลขเก่าให้คนใหม่
+        if (!v || String(req.body?.seenDriver ?? '') !== (v.driverName || '') || bankDigits(req.body?.seenAccount) !== (cur?.accountNo || '')) return 'stale' as const;
+        if (!cur && !digits) return null;
+        const rec = bankNext(cur, v, ctx.branchId, digits, note, by, ctx.sess.name, 'manual');
+        await bankPersist(ctx.db, [rec]);
+        return rec;
+      });
+      if (saved === 'stale') return res.status(409).json({ error: 'คนขับหรือเลขบัญชีเปลี่ยนไปแล้วระหว่างแก้ — โหลดหน้าใหม่แล้วแก้อีกครั้ง' });
+      if (!saved) return res.status(400).json({ error: 'ยังไม่มีเลขบัญชีให้ลบ' });
+      res.json(saved);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+  app.post('/api/bank-accounts/import', async (req, res) => {
+    try {
+      const ctx = await bankCtx(req, res, String(req.body?.branchId || ''), true);
+      if (!ctx) return;
+      const b64 = String(req.body?.fileBase64 || '').replace(/^data:[^;]+;base64,/, '');
+      if (!b64) return res.status(400).json({ error: 'ต้องแนบไฟล์ Excel' });
+      let sheetRows: ReturnType<typeof parseBankSheets>;
+      try { sheetRows = parseBankSheets(Buffer.from(b64, 'base64')); }
+      catch { return res.status(422).json({ error: 'เปิดไฟล์ไม่ได้ — ต้องเป็นไฟล์ Excel (.xls/.xlsx)' }); }
+      if (!sheetRows.length) return res.status(422).json({ error: 'ไม่พบตารางที่มีหัวคอลัมน์ "ทะเบียน" และ "เลขบัญชี" ในไฟล์' });
+      const apply = req.body?.dryRun === false;
+      const by = cleanLine(req.body?.by, 60);
+      if (apply && by.length < 2) return res.status(400).json({ error: 'ต้องใส่ชื่อผู้นำเข้า (อย่างน้อย 2 ตัวอักษร)' });
+      const result = await bankSerial(async () => {
+        const plan = planBankImport(sheetRows, ctx.db.vehicles, ctx.db.bankAccounts || [], ctx.branchId);
+        const todo = plan.blocked ? [] : plan.rows.filter((r) => r.status === 'new' || r.status === 'changed');
+        // ลายเซ็นของสิ่งที่ผู้ใช้เห็นตอนตรวจ — มีคนแก้ระหว่างนั้น = ไม่ตรง = หยุด ให้ตรวจใหม่
+        const expect = todo.map((r) => [normPlate(r.plate), bankDigits(r.oldAccount), r.digits, r.systemDriver, r.newNote].join('>')).join('|');
+        if (!apply) return { ...plan, expect, saved: 0, stale: false };
+        if (String(req.body?.expect ?? '') !== expect) return { ...plan, expect, saved: 0, stale: true };
+        const recs = todo.map((r) => bankNext(findBank(ctx.db, ctx.branchId, r.plate), findVehicle(ctx.db.vehicles, ctx.branchId, r.plate)!, ctx.branchId, r.digits, r.newNote, by, ctx.sess.name, 'import'));
+        if (recs.length) await bankPersist(ctx.db, recs);
+        return { ...plan, expect, saved: recs.length, stale: false };
+      });
+      if (apply && result.blocked) return res.status(422).json({ error: result.blocked });
+      if (result.stale) return res.status(409).json({ error: 'ข้อมูลเปลี่ยนไประหว่างตรวจ — กดนำเข้าใหม่อีกครั้ง' });
+      res.set('Cache-Control', 'no-store');
+      res.json({ rows: result.rows, blocked: result.blocked, saved: result.saved, expect: result.expect });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 

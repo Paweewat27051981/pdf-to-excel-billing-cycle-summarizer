@@ -1,0 +1,124 @@
+// ============================================================================
+// เลขบัญชีคนขับ + ใบปะสรุปยอดโอน (pure — ใช้ร่วม client/server)
+// เจ้าของสั่ง 25 พ.ย.69: แก้ได้เฉพาะ HQ/admin · สาขาดู/พิมพ์ของตัวเองได้ · ห้ามหลุดทาง /api/state
+// ============================================================================
+import type { BankAccount, Vehicle, VehicleSummary } from './types';
+import { normPlate, round2 } from './calc';
+
+export const bankDigits = (s: any): string => String(s ?? '').replace(/\D/g, '');
+
+// เลขบัญชีธนาคารไทย: 10 หลัก (ส่วนใหญ่) หรือ 12 หลัก (ออมสิน/ธ.ก.ส./ธอส.)
+//   9/11 หลัก = เกือบแน่ว่าเลข 0 นำหน้าหายหรือพิมพ์ขาด -> บล็อก ห้ามเติมเอง
+export function checkAccountNo(raw: any): { ok: true; digits: string } | { ok: false; error: string } {
+  const s = String(raw ?? '').trim();
+  //   จุดไม่ใช่ตัวคั่นเลขบัญชี: "123456789.0" (9 หลัก 0 หาย) ห้ามกลายเป็น 10 หลัก
+  if (/[^\d\s\-–]/.test(s)) return { ok: false, error: 'เลขบัญชีมีตัวอักษรอื่นปน' };
+  const digits = bankDigits(s);
+  if (!digits) return { ok: false, error: 'ไม่มีเลขบัญชี' };
+  if (digits.length !== 10 && digits.length !== 12) {
+    return { ok: false, error: `เลขบัญชีมี ${digits.length} หลัก (ต้อง 10 หรือ 12 หลัก) — เลข 0 นำหน้าอาจหาย` };
+  }
+  if (/^0+$/.test(digits)) return { ok: false, error: 'เลขบัญชีเป็นศูนย์ทั้งหมด' };
+  return { ok: true, digits };
+}
+
+// แสดงแบบใบปะ: 10 หลัก -> xxx-x-xxxxx-x · อื่น ๆ แสดงตัวเลขล้วน
+export function fmtAccountNo(digits: string): string {
+  const d = bankDigits(digits);
+  return d.length === 10 ? `${d.slice(0, 3)}-${d.slice(3, 4)}-${d.slice(4, 9)}-${d.slice(9)}` : d;
+}
+
+// id ตายตัวต่อสาขา+ทะเบียน -> 1 คันมี 1 ระเบียนเสมอ (ห้ามมีตัวอักษรต้องห้ามของ Firebase key)
+export const bankAccountId = (branchId: string, plateNo: string): string =>
+  `bank-${branchId}-${normPlate(plateNo)}`.replace(/[.#$\[\]/\s]/g, '_');
+
+export const normDriver = (s: string): string => (s || '').replace(/\s+/g, '');
+
+// รถของสาขานี้ตามทะเบียน (active ก่อน)
+export function findVehicle(vehicles: Vehicle[], branchId: string, plateNo: string): Vehicle | undefined {
+  const k = normPlate(plateNo);
+  if (!k) return undefined;
+  const list = vehicles.filter((v) => v.branchId === branchId && normPlate(v.plateNo) === k);
+  return list.find((v) => v.status === 'active') || list[0];
+}
+
+export interface PayslipRow { plateNo: string; driverName: string; accountNo: string; net: number; note: string }
+export interface PayslipHold { plateNo: string; driverName: string; reason: string; net: number }
+
+// แยก "โอนได้" กับ "ยังโอนไม่ได้" — สองกลุ่มรวมกันต้องเท่ารับสุทธิทุกคันเสมอ (ห้ามมีคันหายเงียบ)
+export function buildPayslip(
+  sums: VehicleSummary[], accounts: BankAccount[], branchId: string,
+): { pay: PayslipRow[]; hold: PayslipHold[]; payTotal: number; holdTotal: number } {
+  const byPlate = new Map<string, BankAccount>();
+  for (const a of accounts) if (a.branchId === branchId && a.accountNo) byPlate.set(normPlate(a.plateNo), a);
+  const pay: PayslipRow[] = [];
+  const hold: PayslipHold[] = [];
+  for (const s of sums) {
+    const a = byPlate.get(normPlate(s.plateNo));
+    const base = { plateNo: s.plateNo, driverName: s.driverName, net: s.netReceive };
+    if (!a) hold.push({ ...base, reason: 'ยังไม่มีเลขบัญชี' });
+    else if (normDriver(a.driverName) !== normDriver(s.driverName)) {
+      // คนขับในทะเบียนรถเปลี่ยนหลังผูกเลขบัญชี -> เลขอาจเป็นของคนเก่า ให้ HQ ยืนยันก่อน
+      hold.push({ ...base, reason: `คนขับเปลี่ยนจาก "${a.driverName || '-'}" — ให้ HQ ยืนยันเลขบัญชีก่อนโอน` });
+    } else if (s.netReceive <= 0) hold.push({ ...base, reason: 'รับสุทธิไม่เกิน 0 — ไม่ต้องโอน' });
+    else pay.push({ ...base, accountNo: fmtAccountNo(a.accountNo), note: a.note || '' });
+  }
+  const sum = (xs: { net: number }[]) => round2(xs.reduce((t, x) => t + x.net, 0));
+  return { pay, hold, payTotal: sum(pay), holdTotal: sum(hold) };
+}
+
+// ---------------------------------------------------------------------------
+// นำเข้าจากไฟล์ใบปะ — แถวดิบ (server อ่าน Excel แล้ว) -> ผลเทียบก่อนบันทึก
+// ---------------------------------------------------------------------------
+export interface BankSheetRow { sheet: string; row: number; plate: string; driver: string; account: string; note: string; numeric: boolean }
+export type BankImportStatus = 'new' | 'changed' | 'same' | 'error';
+export interface BankImportRow extends BankSheetRow {
+  status: BankImportStatus; error?: string; warnings: string[]; digits: string; oldAccount: string; systemDriver: string; newNote: string;
+}
+
+export function planBankImport(
+  rows: BankSheetRow[], vehicles: Vehicle[], accounts: BankAccount[], branchId: string,
+): { rows: BankImportRow[]; blocked: string } {
+  const digitsByPlate = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const k = normPlate(r.plate); if (!k) continue;
+    const set = digitsByPlate.get(k) || new Set<string>(); set.add(bankDigits(r.account)); digitsByPlate.set(k, set);
+  }
+  const out: BankImportRow[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const k = normPlate(r.plate);
+    if (!k) continue;
+    const v = findVehicle(vehicles, branchId, r.plate);
+    const cur = accounts.find((a) => a.branchId === branchId && normPlate(a.plateNo) === k);
+    const base: BankImportRow = {
+      ...r, status: 'error', warnings: [], digits: '', oldAccount: cur?.accountNo || '', systemDriver: v?.driverName || '', newNote: '',
+    };
+    if (!v) { out.push({ ...base, error: 'ไม่มีทะเบียนนี้ในสาขา' }); continue; }
+    if ((digitsByPlate.get(k)?.size || 0) > 1) { out.push({ ...base, error: 'ทะเบียนนี้มีเลขบัญชีมากกว่า 1 เลขในไฟล์' }); continue; }
+    if (seen.has(k)) continue; // ซ้ำแต่เลขเดียวกัน -> เอาแถวแรก
+    seen.add(k);
+    const c = checkAccountNo(r.account);
+    if (c.ok === false) { out.push({ ...base, error: c.error }); continue; }
+    if (r.numeric) base.warnings.push('เซลล์เก็บเป็นตัวเลข เลข 0 นำหน้าอาจหาย — ตรวจอีกครั้ง');
+    // ชื่อในไฟล์ต้องตรงกับคนขับในระบบ ("ยศพล สวนม่วง (พิไลพร)" = คนขับ ยศพล โอนเข้าชื่อ พิไลพร)
+    //   ไม่ตรง = ไฟล์อาจเก่ากว่าการเปลี่ยนคนขับ -> บล็อก ให้ HQ/admin แก้ทีละคัน (เงินห้ามโอนผิดคน)
+    const fileDriver = (r.driver || '').replace(/\s+/g, ' ').trim();
+    const paren = /[(（]([^)）]*)[)）]/.exec(fileDriver)?.[1]?.trim() || '';
+    const bare = fileDriver.replace(/[(（][^)）]*[)）]/g, '').trim();
+    if (!bare) { out.push({ ...base, error: 'ไม่มีชื่อคนขับในไฟล์ให้เทียบ — กดแก้ทีละคัน' }); continue; }
+    if (normDriver(bare) !== normDriver(v.driverName)) {
+      out.push({ ...base, error: `ชื่อในไฟล์ "${fileDriver}" ไม่ตรงกับคนขับในระบบ "${v.driverName || '-'}" — กดแก้ทีละคัน` }); continue;
+    }
+    // หมายเหตุจากไฟล์มาก่อน · ชื่อในวงเล็บ = ชื่อผู้รับโอน · คงของเดิมเฉพาะเมื่อเลขและคนขับไม่เปลี่ยน
+    //   (เลขใหม่ห้ามติดหมายเหตุผู้รับโอนของเลขเก่า)
+    const unchanged = !!cur && cur.accountNo === c.digits && normDriver(cur.driverName) === normDriver(v.driverName);
+    const note = (r.note || (unchanged && cur!.note) || (paren ? `โอนเข้าชื่อ ${paren}` : '')).slice(0, 200);
+    const same = unchanged && (cur!.note || '') === note;
+    out.push({ ...base, digits: c.digits, newNote: note, status: same ? 'same' : cur?.accountNo ? 'changed' : 'new' });
+  }
+  const miss = out.filter((r) => r.error === 'ไม่มีทะเบียนนี้ในสาขา').length;
+  const blocked = out.length && miss * 2 > out.length
+    ? `ทะเบียนในไฟล์ไม่อยู่ในสาขานี้ ${miss}/${out.length} แถว — น่าจะเป็นไฟล์ของสาขาอื่น ไม่นำเข้าทั้งไฟล์` : '';
+  return { rows: out, blocked };
+}

@@ -218,6 +218,7 @@ const ID_KEYED: (keyof DatabaseState)[] = [
   'oilPrices', 'tripDistances', 'mountainRoutes', // [ทดลอง] ราคาน้ำมัน OR + cache ระยะลูป + master ขึ้นเขา
   'loanPlans', // สัญญาผ่อนหัก — แก้ทีละฉบับ
   'tripNotes', // หมายเหตุพิมพ์มือต่อใบกระจาย
+  'bankAccounts', // เลขบัญชีคนขับ (ใบปะ)
 ];
 export function isIdKeyed(collKey: keyof DatabaseState): boolean {
   return ID_KEYED.includes(collKey);
@@ -258,6 +259,8 @@ export function ensureShape(state: Partial<DatabaseState>): DatabaseState {
     // สัญญาผ่อนหัก: history เป็น array -> Firebase ตัด array ว่างทิ้ง ต้องเติมกลับ (ดู memory firebase-strips-empty-arrays)
     loanPlans: toArray(state.loanPlans).map((p: any) => ({ ...p, history: toArray(p.history) })),
     tripNotes: toArray(state.tripNotes),
+    // เลขบัญชีคนขับ: history เป็น array -> Firebase ตัด array ว่างทิ้ง ต้องเติมกลับ
+    bankAccounts: toArray(state.bankAccounts).map((p: any) => ({ ...p, accountNo: p.accountNo || '', note: p.note || '', driverName: p.driverName || '', history: toArray(p.history) })),
     oilPrices: toArray(state.oilPrices), // [ทดลอง] อ่านได้ทั้ง array/map (ว่าง = [])
     tripDistances: toArray(state.tripDistances), // [ทดลอง] cache ระยะลูป
     mountainRoutes: toArray(state.mountainRoutes), // [ทดลอง] master น้ำมันขึ้นเขา
@@ -283,7 +286,7 @@ const ROOT_NODES = [
   'settings', 'branches', 'cycles', 'vehicles', 'rateMasters', 'rateOverrides', 'rateMasterHistory',
   'receiverGroups', 'receiverGroupAliases', 'conversionRules', 'manualBoxSenders', 'destinationOverrides',
   'moneyCategories', 'tripDocuments', 'fuelEntries', 'deductions', 'tripDistances', 'oilPrices',
-  'mountainRoutes', 'fuelPolicy', 'loanPlans', 'tripNotes',
+  'mountainRoutes', 'fuelPolicy', 'loanPlans', 'tripNotes', 'bankAccounts',
 ] as const;
 
 // อ่าน Firebase ทีละ top-level node (ไม่อ่าน root ทั้งก้อน) — กัน .val() build object 35MB
@@ -489,6 +492,8 @@ export async function saveRecord(collKey: keyof DatabaseState, record: { id: str
   else await persistLocal();
   scheduleSnapshot();
 }
+// เขียนลง Firebase จริงหรือโหมดไฟล์ local (โหมดไฟล์เขียนจาก cache จึงต้องแก้ cache ก่อนเขียน)
+export const usingFirebase = (): boolean => !!initFirebase();
 // บันทึกหลาย record ครั้งเดียว (multi-path update — 1 round-trip)
 export async function saveRecords(collKey: keyof DatabaseState, records: { id: string }[]): Promise<void> {
   if (!records.length) return;

@@ -13,8 +13,11 @@ import {
   Vehicle,
   RateMaster,
   TripNote,
+  BankAccount,
 } from './types';
 import { summarizeByVehicle, normPlate, normDoc, round2 } from './calc';
+import { splitSummaries, loadEfficiency, type SplitRow } from './summarySplit';
+import { buildPayslip } from './bankAccounts';
 
 const FONT = 'Cordia New';
 
@@ -79,6 +82,7 @@ function bodyCell(cell: ExcelJS.Cell, opts: { bold?: boolean; color?: string; al
 }
 
 const NUM = '#,##0.00';
+const NUM_DASH = '#,##0.00;-#,##0.00;"-"'; // 0 แสดงเป็น - (ตามแบบรายงานของทีม)
 // round2 ใช้ตัวเดียวกับ calc.ts (เดิมนิยามซ้ำที่นี่ด้วยสูตรเก่า -> Excel กับหน้าจอปัดเศษไม่ตรงกัน)
 
 // โหลด ExcelJS แบบ dynamic เฉพาะตอนผู้ใช้กด export จริง (code-splitting)
@@ -86,6 +90,33 @@ const NUM = '#,##0.00';
 async function newWorkbook(): Promise<ExcelJS.Workbook> {
   const mod = await import('exceljs');
   return new mod.default.Workbook();
+}
+
+// โลโก้หัวรายงาน — โหลดครั้งเดียวต่อไฟล์ ใช้ซ้ำทุกชีต (โหลดไม่ได้ = ไม่ใส่ ไม่ให้ export เงินพัง)
+async function loadLogo(wb: ExcelJS.Workbook, url: string): Promise<number | null> {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok || !/image\/png/i.test(resp.headers.get('content-type') || '')) return null;
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return wb.addImage({ base64: btoa(bin), extension: 'png' });
+  } catch { return null; }
+}
+// วางโลโก้มุมขวาบน (ชิดขวาของคอลัมน์ lastCol กว้างไม่เกินช่วงคอลัมน์ firstCol..lastCol) สูงไม่เกิน 3 แถวหัว ไม่ดันแถวข้อมูล
+const LOGO_RATIO = 640 / 246;
+function addLogo(ws: ExcelJS.Worksheet, logo: number | null, firstCol: number, lastCol: number) {
+  if (logo == null) return;
+  let avail = 0;
+  for (let c = firstCol; c <= lastCol; c++) avail += Math.floor((ws.getColumn(c).width || 9) * 7 + 5);
+  const w = Math.min(150, avail - 8);
+  const h = Math.round(w / LOGO_RATIO);
+  ws.getRow(2).height = 20; ws.getRow(3).height = Math.max(15, Math.ceil((h + 6) * 0.75 - 28 - 20));
+  // แปลงระยะพิกเซลจากซ้าย -> ตำแหน่งคอลัมน์ (เศษ = สัดส่วนในคอลัมน์)
+  let x = avail - w - 4, c = firstCol;
+  for (; c < lastCol; c++) { const cw = Math.floor((ws.getColumn(c).width || 9) * 7 + 5); if (x < cw) break; x -= cw; }
+  const cw = Math.floor((ws.getColumn(c).width || 9) * 7 + 5);
+  ws.addImage(logo, { tl: { col: c - 1 + x / cw, row: 0.08 }, ext: { width: w, height: h }, editAs: 'oneCell' });
 }
 
 // ===========================================================================
@@ -371,9 +402,16 @@ export async function exportPerVehicleReport(
   deductions: DeductionEntry[],
   vehicles: Vehicle[],
   imgBase?: string, // URL prefix ของรูปแนบ เช่น "/neosiam/api/uploads/" (ถ้าไม่ส่ง = ไม่ฝังรูป)
-  tripNotes: TripNote[] = [] // หมายเหตุพิมพ์มือต่อใบ (แสดงในคอลัมน์หมายเหตุ แถวแรกของใบ)
+  tripNotes: TripNote[] = [], // หมายเหตุพิมพ์มือต่อใบ (แสดงในคอลัมน์หมายเหตุ แถวแรกของใบ)
+  extra: {
+    splitZoneText?: string;              // พื้นที่ที่แยกตารางในชีตสรุปรวม (ตั้งค่าต่อสาขา)
+    logoUrl?: string;                    // โลโก้หัวรายงาน (โหลดไม่ได้ = ไม่ใส่ ไม่ให้ export พัง)
+    bankAccounts?: BankAccount[] | null; // เลขบัญชีคนขับ (null/ไม่ส่ง = ไม่ทำชีตใบปะ)
+    branchId?: string;
+  } = {}
 ) {
   const wb = await newWorkbook();
+  const logo = extra.logoUrl ? await loadLogo(wb, extra.logoUrl) : null;
   wb.creator = 'ระบบค่าเที่ยว+ค่าน้ำมันรถร่วม';
   wb.created = new Date();
 
@@ -386,51 +424,83 @@ export async function exportPerVehicleReport(
     ws.getCell(1, 1).value = 'ยังไม่มีข้อมูลในรอบนี้';
   }
 
-  // จำนวนชิ้นรวมต่อทะเบียน — ใช้ totalQty (จำนวนจริงทุกใบรับ รวมงานเก็บคืน/งานพิเศษ)
-  //   ไม่ใช้ billingQty เพราะนั่นคือจำนวน "หลังปรับตัวหาร" ไว้คิดเงิน
-  //   ผู้ใช้ยืนยัน (4 ก.ย.69) ว่าต้องการจำนวนจริงทั้งหมด = สะท้อนภาระงานจริงของรถ
-  const qtyByPlate = new Map<string, number>();
-  for (const t of cycleTrips) {
-    const k = normPlate(t.plateNo);
-    if (!k) continue;
-    qtyByPlate.set(k, (qtyByPlate.get(k) || 0) + Number(t.totalQty || 0));
-  }
-  const qtyOf = (plate: string) => qtyByPlate.get(normPlate(plate)) || 0;
-  // ประสิทธิภาพในการบรรทุก = จำนวนชิ้น ÷ ค่าเที่ยว (ชิ้นต่อบาท — ยิ่งสูงยิ่งคุ้ม)
-  //   สูตรนี้ถอดจากไฟล์ Excel ที่ผู้ใช้ทำเองแล้วเทียบตรง 17/17 แถว
-  //   ค่าเที่ยว 0 -> คืน 0 กัน Infinity/NaN โผล่ในไฟล์
-  const effOf = (qty: number, tripAmount: number) => (tripAmount > 0 ? round2(qty / tripAmount) : 0);
-
   const cycleFuel = fuel.filter((f) => f.cycleId === cycle.id);
   const driverOf = (plate: string) =>
     summaries.find((s) => normPlate(s.plateNo) === normPlate(plate))?.driverName ||
     vehicles.find((v) => normPlate(v.plateNo) === normPlate(plate))?.driverName || '';
 
   // ===== Sheet สรุปรวมต่อทะเบียน (แบบ Dashboard) =====
+  // จำนวนชิ้น = ยอดหลังหาร (billingQty) และประสิทธิภาพ = รายได้ ÷ จำนวนชิ้น — เจ้าของเคาะ 25 พ.ย.69
+  //   (ยกเลิกของเดิม 4 ก.ย.69 ที่ใช้จำนวนจริง totalQty และคิด ชิ้น ÷ รายได้)
+  // เที่ยวที่วิ่งไปพื้นที่ใน splitZoneText (เช่น แม่ฮ่องสอน/แม่สอด) แยกเป็นตารางที่ 2 + หมายเหตุท้ายแถว
   if (summaries.length) {
     const ws = wb.addWorksheet('สรุปรวม');
-    // คอลัมน์ C = จำนวนชิ้น, D = ประสิทธิภาพในการบรรทุก (แทรกก่อน "รายได้")
-    styleTitle(ws, `สรุปรวมต่อทะเบียน — สาขา${branchName}`, 10, `รอบ ${cycle.name}`);
+    styleTitle(ws, `สรุปรวมต่อทะเบียน — สาขา${branchName}`, 8, `รอบ ${cycle.name}`);
+    const { main, zone } = splitSummaries(cycle.id, trips, fuel, deductions, vehicles, extra.splitZoneText);
+    const table = (rows: SplitRow[], withNote: boolean) => {
+      ws.addRow([]);
+      const hr = ws.addRow(['ทะเบียน', 'คนขับ', 'จำนวนชิ้น', 'ประสิทธิภาพใน\nการบรรทุก', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ']);
+      styleHeaderRow(hr);
+      hr.height = 42;
+      let z = false; const g = { qty: 0, trip: 0, d1: 0, fuel: 0, inc: 0, ded: 0, net: 0 };
+      for (const s of rows) {
+        const r = ws.addRow([s.plateNo, s.driverName, s.qty, loadEfficiency(s.trip, s.qty), s.trip, s.d1, s.fuel, s.inc, s.ded, s.net]);
+        r.eachCell((cell, col) => bodyCell(cell, { align: col <= 2 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: col === 10, color: col === 10 ? C.billingText : undefined }));
+        for (let c = 3; c <= 10; c++) r.getCell(c).numFmt = NUM_DASH;
+        if (withNote && s.note) {
+          const nc = r.getCell(11);
+          nc.value = s.note;
+          nc.font = { name: FONT, size: 13, color: { argb: 'FF00A651' } };
+          nc.alignment = { vertical: 'middle', horizontal: 'left' };
+        }
+        z = !z; g.qty += s.qty; g.trip += s.trip; g.d1 += s.d1; g.fuel += s.fuel; g.inc += s.inc; g.ded += s.ded; g.net += s.net;
+      }
+      // แถวรวม: ประสิทธิภาพ = รายได้รวม ÷ ชิ้นรวม ไม่ใช่เฉลี่ยของแต่ละคัน (เจ้าของเคาะ 25 พ.ย.69)
+      const tr = ws.addRow(['รวมทุกคัน', '', round2(g.qty), loadEfficiency(g.trip, g.qty), round2(g.trip), round2(g.d1), round2(g.fuel), round2(g.inc), round2(g.ded), round2(g.net)]);
+      tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col <= 2 ? 'left' : 'right', bg: C.totalBg, color: C.title }));
+      for (let c = 3; c <= 10; c++) tr.getCell(c).numFmt = NUM_DASH;
+    };
+    if (main.length) table(main, false);
+    if (zone.length) table(zone, true);
+    [13, 24, 13, 15, 15, 13, 14, 14, 15, 15, 16].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    addLogo(ws, logo, 9, 10);
+  }
+
+  // ===== Sheet ใบปะ — สรุปยอดโอนเข้าบัญชีคนขับ =====
+  // รับสุทธิ = ยอดรวมทั้งคัน (ไม่แยกพื้นที่) · คันที่ยังโอนไม่ได้แยกไว้ล่าง ไม่หายเงียบ: ยอดโอน + รอ = รับสุทธิทุกคัน
+  if (summaries.length && extra.bankAccounts) {
+    const ws = wb.addWorksheet('ใบปะ');
+    styleTitle(ws, `ใบปะ — สรุปยอดโอนเข้าบัญชีคนขับ สาขา${branchName}`, 3, `รอบ ${cycle.name}`);
+    const { pay, hold, payTotal, holdTotal } = buildPayslip(summaries, extra.bankAccounts, extra.branchId || '');
     ws.addRow([]);
-    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'จำนวนชิ้น', 'ประสิทธิภาพในการบรรทุก', 'รายได้', 'หัก 1%', 'ค่าน้ำมัน', '+ รายได้เพิ่ม', 'รวมรายการหัก', 'รับสุทธิ']));
-    let z = false; const g = { qty: 0, trip: 0, d1: 0, fuel: 0, inc: 0, ded: 0, net: 0 };
-    for (const s of summaries) {
-      const qty = qtyOf(s.plateNo);
-      const r = ws.addRow([s.plateNo, s.driverName, qty, effOf(qty, s.totalTripAmount), s.totalTripAmount, s.deduction1Percent, s.fuelTotal, s.incomeAdd, s.deductionTotal, s.netReceive]);
-      r.eachCell((cell, col) => bodyCell(cell, { align: col <= 2 ? 'left' : 'right', bg: z ? C.zebra : undefined, bold: col === 10, color: col === 10 ? C.billingText : undefined }));
-      r.getCell(3).numFmt = '#,##0';        // ชิ้น = จำนวนเต็ม
-      r.getCell(4).numFmt = '0.00';         // ประสิทธิภาพ = ทศนิยม 2 ตำแหน่ง
-      [5, 6, 7, 8, 9, 10].forEach((c) => (r.getCell(c).numFmt = NUM));
-      z = !z; g.qty += qty; g.trip += s.totalTripAmount; g.d1 += s.deduction1Percent; g.fuel += s.fuelTotal; g.inc += s.incomeAdd; g.ded += s.deductionTotal; g.net += s.netReceive;
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'เลขบัญชี', 'รับสุทธิ']));
+    const moneyRow = (vals: any[], z: boolean) => {
+      const r = ws.addRow(vals);
+      r.eachCell((cell, col) => bodyCell(cell, { align: col === 4 ? 'right' : col === 3 ? 'center' : 'left', bg: z ? C.zebra : undefined, bold: col === 4, color: col === 4 ? C.billingText : undefined }));
+      r.getCell(4).numFmt = NUM;
+      return r;
+    };
+    const totalRow = (label: string, n: number) => {
+      const tr = ws.addRow([label, '', '', n]);
+      tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col === 4 ? 'right' : 'left', bg: C.totalBg, color: C.title }));
+      tr.getCell(4).numFmt = NUM;
+      ws.mergeCells(tr.number, 1, tr.number, 3); // ข้อความยาวกว่าคอลัมน์ทะเบียน
+    };
+    pay.forEach((p, i) => {
+      const r = moneyRow([p.plateNo, p.driverName, p.accountNo, p.net], i % 2 === 1);
+      r.getCell(3).numFmt = '@'; // เก็บเป็นข้อความ เลข 0 นำหน้าไม่หาย
+      if (p.note) { r.getCell(5).value = p.note; r.getCell(5).font = { name: FONT, size: 13 }; r.getCell(5).alignment = { vertical: 'middle' }; }
+    });
+    totalRow(hold.length ? 'รวมยอดโอน' : 'รวมทุกคัน', payTotal);
+    if (hold.length) {
+      ws.addRow([]);
+      styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'ยังไม่โอน เพราะ', 'รับสุทธิ']));
+      hold.forEach((h, i) => { moneyRow([h.plateNo, h.driverName, h.reason, h.net], i % 2 === 1).getCell(3).alignment = { vertical: 'middle', horizontal: 'left', wrapText: true }; });
+      totalRow('รวมที่ยังไม่โอน', holdTotal);
+      totalRow('รวมทั้งหมด (เท่ากับรับสุทธิในชีตสรุปรวม)', round2(payTotal + holdTotal));
     }
-    // แถวรวม: ประสิทธิภาพคิดจากยอดรวม (ชิ้นรวม ÷ รายได้รวม) ไม่ใช่เฉลี่ยของแต่ละคัน
-    // — ค่าเฉลี่ยของอัตราส่วนจะบิดเบือนถ้ารถแต่ละคันงานไม่เท่ากัน
-    const tr = ws.addRow(['รวมทุกคัน', '', g.qty, effOf(g.qty, g.trip), round2(g.trip), round2(g.d1), round2(g.fuel), round2(g.inc), round2(g.ded), round2(g.net)]);
-    tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col <= 2 ? 'left' : 'right', bg: C.totalBg, color: C.title }));
-    tr.getCell(3).numFmt = '#,##0';
-    tr.getCell(4).numFmt = '0.00';
-    [5, 6, 7, 8, 9, 10].forEach((c) => (tr.getCell(c).numFmt = NUM));
-    [13, 20, 12, 22, 13, 11, 13, 14, 14, 13].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    [14, 30, 26, 18, 40].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    addLogo(ws, logo, 4, 4);
   }
 
   // ===== Sheet ค่าน้ำมันรวมทุกคัน — สรุปยอดรวมต่อทะเบียน (ไม่ลงรายละเอียดทุกใบ) =====
@@ -463,7 +533,7 @@ export async function exportPerVehicleReport(
   // ===== Sheet สรุปภาษีหัก ณ ที่จ่าย 1% (รายได้ก่อน/หลังหัก) =====
   if (summaries.length) {
     const ws = wb.addWorksheet('ภาษีหัก ณ ที่จ่าย 1%');
-    styleTitle(ws, `สรุปภาษีหัก ณ ที่จ่าย 1% — สาขา${branchName}`, 5, `รอบ ${cycle.name} · คิด 1% จากค่าเที่ยว + รายได้เพิ่ม (ยกเว้นค่าอัพเดทบิล)`);
+    styleTitle(ws, `สรุปภาษีหัก ณ ที่จ่าย 1% — สาขา${branchName}`, 4, `รอบ ${cycle.name} · คิด 1% จากค่าเที่ยว + รายได้เพิ่ม (ยกเว้นค่าอัพเดทบิล)`);
     ws.addRow([]);
     styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'รายได้ก่อนหัก (ค่าเที่ยว)', 'ภาษีหัก ณ ที่จ่าย 1%', 'รายได้หลังหัก 1%']));
     let z = false; const g = { gross: 0, tax: 0, net: 0 };
@@ -478,6 +548,7 @@ export async function exportPerVehicleReport(
     tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col <= 2 ? 'left' : 'right', bg: C.totalBg, color: C.title }));
     [3, 4, 5].forEach((c) => (tr.getCell(c).numFmt = NUM));
     [16, 24, 22, 20, 20].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    addLogo(ws, logo, 5, 5);
   }
 
   for (const s of summaries) {
@@ -489,7 +560,7 @@ export async function exportPerVehicleReport(
     const vDeduct = deductions.filter((d) => d.cycleId === cycle.id && d.kind === 'deduction' && normPlate(d.plateNo) === np);
 
     const ws = wb.addWorksheet(safeSheetName(plate, usedNames));
-    styleTitle(ws, `สรุปค่าบรรทุกรถร่วม — สาขา${branchName}`, 10,
+    styleTitle(ws, `สรุปค่าบรรทุกรถร่วม — สาขา${branchName}`, 8,
       `รอบ ${cycle.name}  ·  ทะเบียน ${plate}  ·  ${s.driverName || '-'}`);
     ws.addRow([]);
 
@@ -579,6 +650,7 @@ export async function exportPerVehicleReport(
 
     // ความกว้างคอลัมน์ (sheet ค่าบรรทุก)
     [13, 22, 18, 11, 11, 11, 13, 16, 13, 12].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    addLogo(ws, logo, 9, 10);
 
     // ---- รูปแนบ (รายได้เพิ่มที่มีรูป) — ฝังรูปเล็กในชีต ----
     const imgIncomes = vIncome.filter((d) => d.imageFile);

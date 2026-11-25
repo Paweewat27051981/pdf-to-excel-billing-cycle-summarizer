@@ -1111,7 +1111,9 @@ export function summarizeByVehicle(
 
   const out: VehicleSummary[] = [];
   for (const [key, plate] of plateKeys) {
-    const v = vehicles.find((x) => normPlate(x.plateNo) === key);
+    // ทะเบียนซ้ำ (คันเก่าปิดใช้งาน + คันใหม่) -> ใช้ชื่อคนขับของคันที่ใช้งานอยู่ (กติกาเดียวกับ findVehicle ของใบปะ)
+    const same = vehicles.filter((x) => normPlate(x.plateNo) === key);
+    const v = same.find((x) => x.status === 'active') || same[0];
     const plateTrips = trips.filter((t) => t.cycleId === cycleId && normPlate(t.plateNo) === key);
     const totalTripAmount = round2(plateTrips.reduce((s, t) => s + t.tripAmount, 0));
 

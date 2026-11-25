@@ -103,7 +103,7 @@ export function alertBox(title: string, text?: string, icon: 'success' | 'error'
 //   withText=false = ใช้ตอนยกเลิกหมายเหตุ (ขอแค่ชื่อ) · จำชื่อล่าสุดไว้ในเครื่อง (แก้ได้ทุกครั้ง)
 //   ใส่ค่าใน input ผ่าน DOM (ไม่ต่อ string ลง html) กันอักขระพิเศษในชื่อ/ข้อความทำ html พัง
 const NOTE_NAME_KEY = 'neosiam.noteAuthor';
-export async function promptNote(opts: { title: string; subtitle?: string; withText?: boolean; confirmText?: string; danger?: boolean }): Promise<{ text: string; by: string } | null> {
+export async function promptNote(opts: { title: string; subtitle?: string; withText?: boolean; confirmText?: string; danger?: boolean; byLabel?: string; hint?: string }): Promise<{ text: string; by: string } | null> {
   const withText = opts.withText !== false;
   let remembered = '';
   try { remembered = localStorage.getItem(NOTE_NAME_KEY) || ''; } catch { /* บางเบราว์เซอร์ปิด storage */ }
@@ -114,9 +114,9 @@ export async function promptNote(opts: { title: string; subtitle?: string; withT
       ${opts.subtitle ? `<div style="color:#64748b;margin-bottom:8px">${escapeHtml(opts.subtitle)}</div>` : ''}
       ${withText ? `<label for="nt-text" style="font-weight:600">หมายเหตุ <span style="color:#C00000">*</span></label>
       <textarea id="nt-text" rows="3" maxlength="300" placeholder="เช่น รถเสียกลางทาง เปลี่ยนคันส่งต่อ" style="${inputCss};resize:vertical"></textarea>` : ''}
-      <label for="nt-by" style="font-weight:600;display:block;margin-top:10px">ชื่อผู้${withText ? 'ใส่หมายเหตุ' : 'ยกเลิก'} <span style="color:#C00000">*</span></label>
+      <label for="nt-by" style="font-weight:600;display:block;margin-top:10px">${escapeHtml(opts.byLabel || `ชื่อผู้${withText ? 'ใส่หมายเหตุ' : 'ยกเลิก'}`)} <span style="color:#C00000">*</span></label>
       <input id="nt-by" maxlength="60" placeholder="พิมพ์ชื่อของคุณ" autocomplete="off" style="${inputCss}" />
-      <div style="color:#94a3b8;font-size:11px;margin-top:6px">ระบบบันทึกชื่อ วันเวลา และบัญชีที่ล็อกอินอยู่ ${withText ? 'แก้ข้อความทีหลังไม่ได้ ทำได้แค่ยกเลิก' : 'หมายเหตุที่ยกเลิกยังอยู่ในประวัติ'}</div>
+      <div style="color:#94a3b8;font-size:11px;margin-top:6px">${opts.hint ? escapeHtml(opts.hint) : `ระบบบันทึกชื่อ วันเวลา และบัญชีที่ล็อกอินอยู่ ${withText ? 'แก้ข้อความทีหลังไม่ได้ ทำได้แค่ยกเลิก' : 'หมายเหตุที่ยกเลิกยังอยู่ในประวัติ'}`}</div>
     </div>`,
     showCancelButton: true, confirmButtonText: opts.confirmText || 'บันทึก', cancelButtonText: 'ปิด',
     confirmButtonColor: opts.danger ? RED : NAVY, focusConfirm: false,
@@ -136,6 +136,47 @@ export async function promptNote(opts: { title: string; subtitle?: string; withT
   if (!res.isConfirmed || !res.value) return null;
   try { localStorage.setItem(NOTE_NAME_KEY, res.value.by); } catch { /* ไม่เป็นไร */ }
   return res.value as { text: string; by: string };
+}
+
+// กล่องแก้เลขบัญชีคนขับ (ใบปะ) — HQ/admin เท่านั้น (server ตัดสินสิทธิ์) · บังคับชื่อผู้แก้ · โชว์ประวัติ
+export async function promptBank(opts: {
+  title: string; subtitle?: string; accountNo: string; note: string; history: string[]; validate: (s: string) => string;
+}): Promise<{ accountNo: string; note: string; by: string } | null> {
+  let remembered = '';
+  try { remembered = localStorage.getItem(NOTE_NAME_KEY) || ''; } catch { /* บางเบราว์เซอร์ปิด storage */ }
+  const css = 'width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:10px;padding:8px 10px;font-size:14px;font-family:inherit;margin-top:4px';
+  const label = 'font-weight:600;display:block;margin-top:10px';
+  const res = await Themed.fire({
+    title: opts.title,
+    html: `<div style="text-align:left;font-size:13px">
+      ${opts.subtitle ? `<div style="color:#64748b">${escapeHtml(opts.subtitle)}</div>` : ''}
+      <label for="bk-no" style="${label}">เลขบัญชี (10 หรือ 12 หลัก · ลบให้ว่าง = เอาเลขออก)</label>
+      <input id="bk-no" inputmode="numeric" maxlength="24" autocomplete="off" style="${css}" />
+      <label for="bk-note" style="${label}">หมายเหตุท้ายแถวใบปะ (ถ้ามี)</label>
+      <input id="bk-note" maxlength="200" autocomplete="off" placeholder="เช่น โอนเป็นคุณ..." style="${css}" />
+      <label for="bk-by" style="${label}">ชื่อผู้แก้ <span style="color:#C00000">*</span></label>
+      <input id="bk-by" maxlength="60" autocomplete="off" placeholder="พิมพ์ชื่อของคุณ" style="${css}" />
+      ${opts.history.length ? `<div style="${label}">ประวัติการแก้</div><ul style="margin:4px 0 0;padding-left:18px;max-height:130px;overflow:auto;font-size:11px;color:#64748b">${opts.history.map((h) => `<li>${escapeHtml(h)}</li>`).join('')}</ul>` : ''}
+    </div>`,
+    showCancelButton: true, confirmButtonText: 'บันทึก', cancelButtonText: 'ปิด', focusConfirm: false,
+    didOpen: (el) => {
+      const set = (id: string, v: string) => { const i = el.querySelector<HTMLInputElement>(id); if (i) i.value = v; };
+      set('#bk-no', opts.accountNo); set('#bk-note', opts.note); set('#bk-by', remembered);
+      el.querySelector<HTMLElement>('#bk-no')?.focus();
+    },
+    preConfirm: () => {
+      const el = Swal.getPopup()!;
+      const get = (id: string) => (el.querySelector<HTMLInputElement>(id)?.value || '').replace(/\s+/g, ' ').trim();
+      const accountNo = get('#bk-no'), note = get('#bk-note'), by = get('#bk-by');
+      const err = opts.validate(accountNo);
+      if (err) { Swal.showValidationMessage(err); return false; }
+      if (by.length < 2) { Swal.showValidationMessage('ต้องใส่ชื่อผู้แก้ (อย่างน้อย 2 ตัวอักษร)'); return false; }
+      return { accountNo, note, by };
+    },
+  });
+  if (!res.isConfirmed || !res.value) return null;
+  try { localStorage.setItem(NOTE_NAME_KEY, res.value.by); } catch { /* ไม่เป็นไร */ }
+  return res.value as { accountNo: string; note: string; by: string };
 }
 
 // กล่องรายงานแบบมีระดับ (ok/info/warn/error) — ใช้กับสรุปการนำเข้า
