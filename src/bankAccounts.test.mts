@@ -67,6 +67,7 @@ check('ใบปะ export แล้วนำเข้ากลับ = same', P
 check('นำเข้าซ้ำ ชื่อไม่ตรง+หมายเหตุ = same พร้อมเตือน', [P({ driver: 'คนที่สาม', note: 'โทรแล้ว' }, 'โทรแล้ว · ชื่อในใบปะ: คนที่สาม').status, P({ driver: 'คนที่สาม', note: 'โทรแล้ว' }, 'โทรแล้ว · ชื่อในใบปะ: คนที่สาม').warnings.length], ['same', 1]);
 check('ทะเบียนซ้ำชื่อต่างกัน = เตือน', planBankImport([rows[0], { ...rows[0], driver: 'อีกคน' }], vs, [], 'b').rows[0].warnings.length, 1);
 const shift = (n: number) => planBankImport(Array.from({ length: 6 }, (_, i) => ({ ...rows[0], plate: 'S-' + i, driver: 'd' + (i < n ? i + 1 : i), account: '012345678' + i })), Array.from({ length: 6 }, (_, i) => V('S-' + i, 'd' + i)), [], 'b').blocked;
+check('แก้เลขในช่องผสาน = เตือนทุกคันที่เปลี่ยน', planBankImport([rows[0], { ...rows[0], plate: 'C-3', driver: 'นาย ค' }].map((r) => ({ ...r, account: '0555555555' })), vs, [A('A-1', '0123456789', 'นาย ก'), A('C-3', '0123456789', 'นาย ค')], 'b').rows.map((r) => r.warnings.length), [1, 1]);
 check('แถวเลื่อนเกินครึ่งไฟล์ = บล็อก · ไม่กี่คัน = ผ่าน', [!!shift(5), !!shift(3)], [true, false]);
 check('นำเข้าไฟล์เดิมซ้ำ (ชื่อไม่ตรง) = same', planBankImport([rows[4]], vs, [A('F-6', '0123456784', 'นาย ฉ', 'ชื่อในใบปะ: คนละคน')], 'b').rows[0].status, 'same');
 check('ไม่มีชื่อในไฟล์ (ยังไม่เคยผูก) = เตือนแต่บันทึกได้', planBankImport([{ ...rows[0], driver: '' }], vs, [], 'b').rows[0].status, 'new');
@@ -104,9 +105,23 @@ check('ตารางหลัก', sum.filter((r) => r[0] === 'A-1')[0].slice(
 check('ตารางพื้นที่ + หมายเหตุ', sum.filter((r) => r[0] === 'A-1')[1], ['A-1', 'นาย ก', 20, 25, 500, 5, 0, 0, 0, 495, 'แม่สอด']);
 check('แถวรวม = รายได้รวม ÷ ชิ้นรวม', sum.filter((r) => r[0] === 'รวมทุกคัน').map((r) => [r[2], r[3]]), [[130, 10], [20, 25]]);
 const pay = dump('ใบปะ');
-check('ใบปะ รวมยอดทั้งคัน เป็นข้อความ', pay.find((r) => r[0] === 'A-1'), ['A-1', 'นาย ก', '012-3-45678-9', 1485, 'หมายเหตุ1']);
+check('ใบปะ รวมยอดทั้งคัน เป็นข้อความ', pay.find((r) => r[0] === 'A-1'), ['A-1', 'นาย ก', '012-3-45678-9', 1485, 1485, 'หมายเหตุ1']);
 check('ใบปะ ยอดรวม', pay.filter((r) => /^รวม/.test(String(r[0]))).map((r) => [r[0], r[3]]), [['รวมยอดโอน', 1485], ['รวมที่ยังไม่โอน', 297], ['รวมทั้งหมด (เท่ากับรับสุทธิในชีตสรุปรวม)', 1782]]);
 const round = parseBankSheets(Buffer.from(await (blob as any).arrayBuffer()));
+// หลายคันบัญชีเดียวกัน -> เรียงติดกัน + ผสานช่องเลขบัญชี + นำเข้ากลับได้ครบทุกคัน
+await exportPerVehicleReport({ id: 'c', name: 'x' } as any, 'ทดสอบ', [T('J1', 'A-1', 1000, 100, 'เมือง', 'ตาก'), T('J3', 'B-2', 300, 30, 'เมือง', 'ตาก'), T('J4', 'C-3', 200, 30, 'เมือง', 'ตาก')], [], [], [...vx, V('C-3', 'นาย ค')], undefined, [], {
+  bankAccounts: [A('A-1', '0123456789', 'นาย ก'), A('B-2', '0222222222', 'นาย ข', 'หมายเหตุ2'), A('C-3', '0123456789', 'นาย ค', 'หมายเหตุ3')], branchId: 'b',
+});
+const wb3 = new ExcelJS.Workbook(); await wb3.xlsx.load(await (blob as any).arrayBuffer()); const p3 = wb3.getWorksheet('ใบปะ')!;
+const rowsOf = (ws: any) => { const o: any[] = []; ws.eachRow((r: any) => o.push((r.values as any[]).slice(1))); return o; };
+check('บัญชีเดียวกันเรียงติดกัน', rowsOf(p3).filter((r) => /^[A-C]-/.test(r[0])).map((r) => r[0]), ['A-1', 'C-3', 'B-2']);
+const rowNo = (pl: string) => { let n = 0; p3.eachRow((r: any, i: number) => { if (r.getCell(1).value === pl) n = i; }); return n; };
+check('ผสานช่องเลขบัญชีเฉพาะ A-1..C-3', (p3.model as any).merges.filter((m: string) => /^C/.test(m)), [`C${rowNo('A-1')}:C${rowNo('C-3')}`]);
+check('รวมเข้าบัญชีนี้ = ยอดรวมของกลุ่ม ผสานช่องเดียว', [p3.getCell(rowNo('A-1'), 5).value, (p3.model as any).merges.filter((m: string) => /^E/.test(m))], [1188, [`E${rowNo('A-1')}:E${rowNo('C-3')}`]]);
+check('บัญชีเดี่ยว ยอดโอน = รับสุทธิ', p3.getCell(rowNo('B-2'), 5).value, 297);
+check('หัวตาราง', (p3.getRow(rowNo('A-1') - 1).values as any[]).slice(1), ['ทะเบียน', 'คนขับ', 'เลขบัญชี', 'รับสุทธิ', 'ยอดโอนเข้าบัญชี', 'หมายเหตุ']);
+const tot = rowsOf(p3).find((r) => r[0] === 'รวมทุกคัน'); check('รวมยอดโอน = ผลรวมคอลัมน์ยอดโอน', [tot[3], tot[4]], [1485, 1485]);
+check('นำเข้ากลับได้ทุกคัน + หมายเหตุ', parseBankSheets(Buffer.from(await (blob as any).arrayBuffer())).map((r) => [r.plate, r.account, r.note]), [['A-1', '012-3-45678-9', ''], ['C-3', '012-3-45678-9', 'หมายเหตุ3'], ['B-2', '022-2-22222-2', 'หมายเหตุ2']]);
 check('ไฟล์ที่ export นำเข้ากลับได้', round.map((r) => [r.plate, r.account, r.note]), [['A-1', '012-3-45678-9', 'หมายเหตุ1']]);
 await exportPerVehicleReport({ id: 'c', name: 'x' } as any, 'ทดสอบ', [T('J1', 'A-1', 1000, 100, 'แม่สอด', 'ตาก')], [], [], vx, undefined, []);
 const out2 = new ExcelJS.Workbook(); await out2.xlsx.load(await (blob as any).arrayBuffer());

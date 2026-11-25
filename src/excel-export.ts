@@ -472,26 +472,41 @@ export async function exportPerVehicleReport(
     const ws = wb.addWorksheet('ใบปะ');
     styleTitle(ws, `ใบปะ — สรุปยอดโอนเข้าบัญชีคนขับ สาขา${branchName}`, 3, `รอบ ${cycle.name}`);
     const { pay, hold, payTotal, holdTotal } = buildPayslip(summaries, extra.bankAccounts, extra.branchId || '');
+    // หลายคันเข้าบัญชีเดียวกัน (เช่น เชียงใหม่ 4 คัน 1 บัญชี) -> เรียงติดกัน (ตามทะเบียนคันแรกของบัญชี) แล้วผสานช่องเลขบัญชี แบบใบปะของทีม
+    //   รับสุทธิยังแยกรายคัน + คอลัมน์ "ยอดโอนเข้าบัญชี" = ยอดโอนครั้งเดียวของบัญชีนั้น ทุกแถว (เจ้าของสั่ง 25 พ.ย.69 กันบวกผิด)
+    //   ผลรวมคอลัมน์นี้ = รวมยอดโอน · หมายเหตุอยู่คอลัมน์ F มีหัว "หมายเหตุ" ตายตัว (ตัวอ่านใบปะนำเข้ากลับได้)
+    const byAcc = new Map<string, typeof pay>();
+    for (const p of pay) byAcc.set(p.accountNo, [...(byAcc.get(p.accountNo) || []), p]);
+    const grouped = [...byAcc.values()].flat();
     ws.addRow([]);
-    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'เลขบัญชี', 'รับสุทธิ']));
+    styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'เลขบัญชี', 'รับสุทธิ', 'ยอดโอนเข้าบัญชี', 'หมายเหตุ']));
     const moneyRow = (vals: any[], z: boolean) => {
       const r = ws.addRow(vals);
-      r.eachCell((cell, col) => bodyCell(cell, { align: col === 4 ? 'right' : col === 3 ? 'center' : 'left', bg: z ? C.zebra : undefined, bold: col === 4, color: col === 4 ? C.billingText : undefined }));
+      r.eachCell((cell, col) => bodyCell(cell, { align: col === 4 || col === 5 ? 'right' : col === 3 ? 'center' : 'left', bg: z ? C.zebra : undefined, bold: col === 4 || col === 5, color: col === 4 ? C.billingText : col === 5 ? C.title : undefined }));
       r.getCell(4).numFmt = NUM;
       return r;
     };
-    const totalRow = (label: string, n: number) => {
-      const tr = ws.addRow([label, '', '', n]);
-      tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col === 4 ? 'right' : 'left', bg: C.totalBg, color: C.title }));
-      tr.getCell(4).numFmt = NUM;
+    const totalRow = (label: string, n: number, withTransfer = false) => {
+      const tr = ws.addRow([label, '', '', n, withTransfer ? n : '', '']);
+      tr.eachCell((cell, col) => bodyCell(cell, { bold: true, align: col === 4 || col === 5 ? 'right' : 'left', bg: C.totalBg, color: C.title }));
+      tr.getCell(4).numFmt = NUM; tr.getCell(5).numFmt = NUM;
       ws.mergeCells(tr.number, 1, tr.number, 3); // ข้อความยาวกว่าคอลัมน์ทะเบียน
     };
-    pay.forEach((p, i) => {
-      const r = moneyRow([p.plateNo, p.driverName, p.accountNo, p.net], i % 2 === 1);
+    let firstRow = 0, g = -1; // สลับสีพื้นทีละ "บัญชี" ไม่ใช่ทีละแถว (ช่องที่ผสานสีเดียวกันทั้งกลุ่ม)
+    grouped.forEach((p, i) => {
+      const isFirst = i === 0 || grouped[i - 1].accountNo !== p.accountNo;
+      if (isFirst) g++;
+      const group = byAcc.get(p.accountNo)!;
+      const sum = round2(group.reduce((t, x) => t + x.net, 0));
+      const r = moneyRow([p.plateNo, p.driverName, p.accountNo, p.net, isFirst ? sum : '', p.note || ''], g % 2 === 1);
       r.getCell(3).numFmt = '@'; // เก็บเป็นข้อความ เลข 0 นำหน้าไม่หาย
-      if (p.note) { r.getCell(5).value = p.note; r.getCell(5).font = { name: FONT, size: 13 }; r.getCell(5).alignment = { vertical: 'middle' }; }
+      r.getCell(5).numFmt = NUM;
+      r.getCell(6).font = { name: FONT, size: 13 };
+      if (isFirst) firstRow = r.number;
+      const last = i === grouped.length - 1 || grouped[i + 1].accountNo !== p.accountNo;
+      if (last && r.number > firstRow) { ws.mergeCells(firstRow, 3, r.number, 3); ws.mergeCells(firstRow, 5, r.number, 5); }
     });
-    totalRow(hold.length ? 'รวมยอดโอน' : 'รวมทุกคัน', payTotal);
+    totalRow(hold.length ? 'รวมยอดโอน' : 'รวมทุกคัน', payTotal, true);
     if (hold.length) {
       ws.addRow([]);
       styleHeaderRow(ws.addRow(['ทะเบียน', 'คนขับ', 'ยังไม่โอน เพราะ', 'รับสุทธิ']));
@@ -499,8 +514,8 @@ export async function exportPerVehicleReport(
       totalRow('รวมที่ยังไม่โอน', holdTotal);
       totalRow('รวมทั้งหมด (เท่ากับรับสุทธิในชีตสรุปรวม)', round2(payTotal + holdTotal));
     }
-    [14, 30, 26, 18, 40].forEach((w, i) => (ws.getColumn(i + 1).width = w));
-    addLogo(ws, logo, 4, 4);
+    [14, 30, 26, 18, 18, 40].forEach((w, i) => (ws.getColumn(i + 1).width = w));
+    addLogo(ws, logo, 4, 5);
   }
 
   // ===== Sheet ค่าน้ำมันรวมทุกคัน — สรุปยอดรวมต่อทะเบียน (ไม่ลงรายละเอียดทุกใบ) =====

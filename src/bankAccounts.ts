@@ -132,6 +132,12 @@ export function planBankImport(
     const same = unchanged && (cur!.note || '') === note;
     out.push({ ...base, digits: c.digits, newNote: note, status: same ? 'same' : cur?.accountNo ? 'changed' : 'new' });
   }
+  // แก้เลขในช่องที่ผสานหลายคัน = ทุกคันในกลุ่มเปลี่ยนตาม -> เตือนให้ตรวจว่าตั้งใจเปลี่ยนทุกคันจริง
+  for (const r of out) {
+    if (r.status !== 'changed' || bankDigits(r.oldAccount) === r.digits) continue;
+    const n = out.filter((x) => x.status === 'changed' && x.digits === r.digits && bankDigits(x.oldAccount) !== x.digits).length;
+    if (n > 1) r.warnings.push(`เลขบัญชีนี้ถูกเปลี่ยนพร้อมกัน ${n} คัน — ตรวจว่าตั้งใจเปลี่ยนทุกคัน`);
+  }
   const miss = out.filter((r) => r.error === 'ไม่มีทะเบียนนี้ในสาขา').length;
   // ชื่อไม่ตรงรายคันอนุโลม แต่ถ้าไม่ตรงเกินครึ่งไฟล์ (4 แถวขึ้นไป) = น่าจะเรียง/เลื่อนแถวผิด ทุกคันจะโอนสลับคน
   const diff = out.filter((r) => r.systemDriver && r.warnings.some((w) => w.startsWith('ชื่อในไฟล์'))).length;
