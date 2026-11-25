@@ -33,6 +33,10 @@ export const bankAccountId = (branchId: string, plateNo: string): string =>
   `bank-${branchId}-${normPlate(plateNo)}`.replace(/[.#$\[\]/\s]/g, '_');
 
 export const normDriver = (s: string): string => (s || '').replace(/\s+/g, '');
+// เทียบ "ชื่อในไฟล์ใบปะ" กับระบบเท่านั้น: ไม่สนคำนำหน้า ("สำเริง" = "นายสำเริง") — ไฟล์ทีมใส่บ้างไม่ใส่บ้าง
+//   ห้ามใช้กับด่าน "คนขับเปลี่ยน" ของใบปะ (ชื่อในระบบทั้งคู่ ต้องเข้มเหมือนเดิม — เรื่องเงิน)
+const TITLE = /^(นางสาว|นาง|นาย|น\.ส\.?|นส\.|(mrs|mr|ms|miss)(\.|\s)+)\s*/i;
+const fileName = (s: string): string => normDriver((s || '').trim().replace(TITLE, ''));
 
 // รถของสาขานี้ตามทะเบียน (active ก่อน)
 export function findVehicle(vehicles: Vehicle[], branchId: string, plateNo: string): Vehicle | undefined {
@@ -80,13 +84,30 @@ const FILE_NAME_NOTE = 'ชื่อในใบปะ: ';
 
 export function planBankImport(
   rows: BankSheetRow[], vehicles: Vehicle[], accounts: BankAccount[], branchId: string,
-): { rows: BankImportRow[]; blocked: string } {
+): { rows: BankImportRow[]; blocked: string; skippedSheets: string[] } {
+  // ไฟล์รวมหลายสาขา (1 ชีตต่อสาขา เช่น "สรุปยอดจ่าย - รถร่วมภาคเหนือ") -> ใช้เฉพาะชีตที่ทะเบียนส่วนใหญ่อยู่สาขานี้
+  //   ชีตเดียว = กติกาเดิม (ทะเบียนนอกสาขาเกินครึ่ง = บล็อกทั้งไฟล์ กันนำเข้าผิดสาขา)
+  const sheets = [...new Set(rows.map((r) => r.sheet))];
+  const localOf = (sh: string) => {
+    const ps = [...new Set(rows.filter((r) => r.sheet === sh).map((r) => normPlate(r.plate)).filter(Boolean))];
+    return { all: ps.length, local: ps.filter((p) => findVehicle(vehicles, branchId, p)).length };
+  };
+  const skippedSheets = sheets.length < 2 ? [] : sheets.filter((sh) => { const c = localOf(sh); return c.local * 2 < c.all; });
+  if (skippedSheets.length && skippedSheets.length === sheets.length) {
+    return { rows: [], skippedSheets, blocked: `ไม่มีชีตของสาขานี้ในไฟล์ (ทุกชีตเป็นทะเบียนสาขาอื่น: ${skippedSheets.join(', ')}) — เลือกสาขาให้ถูกก่อนนำเข้า` };
+  }
+  const skippedAll = skippedSheets.reduce((t, sh) => t + localOf(sh).all, 0); // นับก่อนกรองแถวทิ้ง
+  rows = rows.filter((r) => !skippedSheets.includes(r.sheet));
+  // ไฟล์ส่วนใหญ่เป็นของสาขาอื่น แต่มีชีตเล็กที่ทะเบียนตรงสาขานี้ (เช่นรถที่ลงทะเบียน 2 สาขา) -> เตือนทุกแถวให้ตรวจว่าเลือกสาขาถูก
+  const keptLocal = new Set(rows.map((r) => normPlate(r.plate)).filter((p) => p && findVehicle(vehicles, branchId, p))).size;
+  const wrongBranch = skippedSheets.length > 0 && keptLocal < 3 && skippedAll > keptLocal
+    ? `ไฟล์นี้ส่วนใหญ่เป็นทะเบียนสาขาอื่น (${skippedAll} คัน) มีของสาขานี้แค่ ${keptLocal} คัน — ตรวจว่าเลือกสาขาถูก` : '';
   const digitsByPlate = new Map<string, Set<string>>();
   const namesByPlate = new Map<string, Set<string>>();
   for (const r of rows) {
     const k = normPlate(r.plate); if (!k) continue;
     const set = digitsByPlate.get(k) || new Set<string>(); set.add(bankDigits(r.account)); digitsByPlate.set(k, set);
-    const names = namesByPlate.get(k) || new Set<string>(); names.add(normDriver(r.driver)); namesByPlate.set(k, names);
+    const names = namesByPlate.get(k) || new Set<string>(); names.add(fileName(r.driver)); namesByPlate.set(k, names);
   }
   const out: BankImportRow[] = [];
   const seen = new Set<string>();
@@ -105,12 +126,13 @@ export function planBankImport(
     const c = checkAccountNo(r.account);
     if (c.ok === false) { out.push({ ...base, error: c.error }); continue; }
     if (r.numeric) base.warnings.push('เซลล์เก็บเป็นตัวเลข เลข 0 นำหน้าอาจหาย — ตรวจอีกครั้ง');
+    if (wrongBranch) base.warnings.push(wrongBranch);
     // เจ้าของเคาะ 25 พ.ย.69: บัญชีไม่ต้องเป็นชื่อเดียวกับคนขับ -> ชื่อไม่ตรง = เตือนแต่บันทึกได้ (จดชื่อในไฟล์ไว้เป็นหมายเหตุ)
     //   "ยศพล สวนม่วง (พิไลพร)" = คนขับ ยศพล โอนเข้าชื่อ พิไลพร
     const fileDriver = (r.driver || '').replace(/\s+/g, ' ').trim();
     const paren = /[(（]([^)）]*)[)）]/.exec(fileDriver)?.[1]?.trim() || '';
     const bare = fileDriver.replace(/[(（][^)）]*[)）]/g, '').trim();
-    const nameDiff = !!bare && normDriver(bare) !== normDriver(v.driverName);
+    const nameDiff = !!bare && fileName(bare) !== fileName(v.driverName);
     // ข้อยกเว้นเดียวที่ยังกัน: เคยผูกเลขแล้ว คนขับในระบบเปลี่ยนทีหลัง และไฟล์ไม่ได้เป็นชื่อคนใหม่
     //   ไฟล์อาจเก่า (รวมเลขที่ HQ ลบ/แก้ไปแล้ว) ถ้าปล่อยผ่าน = ยืนยันเลขคนเก่าให้คนใหม่โดยไม่มีใครตรวจ
     if (cur && normDriver(cur.driverName) !== normDriver(v.driverName) && (nameDiff || !bare)) {
@@ -145,5 +167,5 @@ export function planBankImport(
     ? `ทะเบียนในไฟล์ไม่อยู่ในสาขานี้ ${miss}/${out.length} แถว — น่าจะเป็นไฟล์ของสาขาอื่น ไม่นำเข้าทั้งไฟล์`
     : diff >= 4 && diff * 2 > out.length
       ? `ชื่อคนขับไม่ตรงระบบ ${diff}/${out.length} แถว — ไฟล์น่าจะเรียงแถวสลับกัน ตรวจว่าทะเบียน/ชื่อ/เลขบัญชีอยู่แถวเดียวกัน ไม่นำเข้าทั้งไฟล์` : '';
-  return { rows: out, blocked };
+  return { rows: out, blocked, skippedSheets };
 }

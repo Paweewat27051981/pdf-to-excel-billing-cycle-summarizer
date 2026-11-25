@@ -127,5 +127,50 @@ await exportPerVehicleReport({ id: 'c', name: 'x' } as any, 'ทดสอบ', [
 const out2 = new ExcelJS.Workbook(); await out2.xlsx.load(await (blob as any).arrayBuffer());
 check('ไม่ตั้งค่า = ไม่มีใบปะ/ไม่แยกตาราง', [!!out2.getWorksheet('ใบปะ'), out2.getWorksheet('สรุปรวม')!.rowCount], [false, 6]);
 
+// --- r44: ไฟล์รวมหลายสาขา (โครงตามไฟล์ทีม "สรุปยอดจ่าย - รถร่วมภาคเหนือ" 25 พ.ย.69 · เลขสมมติ)
+const mwb = XLSX.utils.book_new();
+const own = XLSX.utils.aoa_to_sheet([
+  ['ใบปะ — สรุปยอดโอนเข้าบัญชีคนขับ สาขาบี'], ['รอบ ต.ค. 69'], [],
+  ['ทะเบียน', 'คนขับ', 'เลขบัญชี', 'รับสุทธิ'],
+  ['A-1', 'ก', '0123456789', 10], ['C-3', 'นาย ค', '0222222222', 20, 1234.56], ['D-4', 'นาย ง', '0222222222', 30, 1234.56], ['F-6', 'นาย ฉ', '0333333333', 5, '08.10.2569 โทรแล้ว'],
+  ['รวมทุกคัน', '', '', 65],
+]);
+XLSX.utils.book_append_sheet(mwb, own, 'สาขาบี');
+XLSX.utils.book_append_sheet(mwb, XLSX.utils.aoa_to_sheet([[], [], [], ['ทะเบียน', 'คนขับ', 'เลขบัญชี', 'รับสุทธิ'], ...['X-1', 'X-2', 'X-3', 'X-4', 'X-5'].map((p, i) => [p, 'คนอื่น', '044444444' + i, 1])]), 'สาขาอื่น');
+const outside = XLSX.utils.aoa_to_sheet([
+  ['รายละเอียดกระจายสินค้า รอบวันที่ 16-30 ต.ค.'], ['ลำดับ', 'ทะเบียนรถ', 'เจ้าของรถ', 'จำนวนชิ้น', 'ค่าบรรทุก'], ['1', 'G-7', 'นาย ช', 10, 100], [],
+  ['สรุปค่าบรรทุกรถนอก'], ['กำหนดจ่าย 20 พ.ย.'],
+  ['ลำดับ', 'ทะเบียนรถ', ' ชื่อ - นามสกุล', '', 'ธนาคาร / เลขบัญชี / สาขา', '', '', '', 'สุทธิจ่าย'],
+  ['1', 'G-7', 'นาย ช', 'นาย ช', 'กสิกรไทย  055-5-55555-5', '', '', '', 99],
+  ['', '', '', '', '', '', '', '', 99],
+]);
+outside['!merges'] = [{ s: { r: 6, c: 2 }, e: { r: 6, c: 3 } }, { s: { r: 7, c: 4 }, e: { r: 7, c: 7 } }];
+XLSX.utils.book_append_sheet(mwb, outside, 'รถนอก');
+const mrows = parseBankSheets(XLSX.write(mwb, { type: 'buffer', bookType: 'xlsx' }));
+check('คอลัมน์ธนาคาร: ชื่อธนาคาร+เลข 2 กลุ่ม = ไม่เดา (ตัวตรวจปฏิเสธ)', (() => { const w = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(w, XLSX.utils.aoa_to_sheet([['ทะเบียน', 'ธนาคาร / เลขบัญชี / สาขา'], ['G-7', 'กสิกรไทย 0555555555 สาขา 0123']]), 's'); return checkAccountNo(parseBankSheets(XLSX.write(w, { type: 'buffer', bookType: 'xlsx' }))[0].account).ok; })(), false);
+check('คอลัมน์เลขบัญชีปกติ ยังไม่ตัดชื่อธนาคาร (เข้มเหมือนเดิม)', (() => { const w = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(w, XLSX.utils.aoa_to_sheet([['ทะเบียน', 'เลขบัญชี'], ['G-7', 'กสิกร 0555555555']]), 's'); return checkAccountNo(parseBankSheets(XLSX.write(w, { type: 'buffer', bookType: 'xlsx' }))[0].account).ok; })(), false);
+check('ชีตรถนอก หัว "ธนาคาร / เลขบัญชี / สาขา" อ่านได้', mrows.filter((r) => r.sheet === 'รถนอก').map((r) => [r.plate, r.driver, checkAccountNo(r.account).ok]), [['G-7', 'นาย ช', true]]);
+check('ยอดรวมกลุ่ม (ตัวเลข) ไม่กลายเป็นหมายเหตุ · ข้อความยังเก็บ', mrows.filter((r) => r.sheet === 'สาขาบี').map((r) => r.note), ['', '', '', '08.10.2569 โทรแล้ว']);
+const mvs = [V('A-1', 'นาย ก'), V('C-3', 'นาย ค'), V('D-4', 'นาย ง'), V('F-6', 'นาย ฉ'), V('G-7', 'นาย ช')];
+const mp = planBankImport(mrows, mvs, [], 'b');
+check('ไฟล์รวมหลายสาขา = ข้ามชีตสาขาอื่น ไม่บล็อก', [mp.blocked, (mp as any).skippedSheets, mp.rows.map((r) => r.plate + ':' + r.status)], ['', ['สาขาอื่น'], ['A-1:new', 'C-3:new', 'D-4:new', 'F-6:new', 'G-7:new']]);
+check('ไฟล์รวม ไม่มีชีตของสาขานี้ = บล็อก', /ไม่มีชีตของสาขานี้/.test(planBankImport(mrows, mvs, [], 'zz').blocked), true);
+check('ไฟล์ชีตเดียวของสาขาอื่น ยังบล็อกเหมือนเดิม', /ไม่อยู่ในสาขานี้/.test(planBankImport(mrows.filter((r) => r.sheet === 'สาขาอื่น'), mvs, [], 'b').blocked), true);
+check('คำนำหน้า นาย/นางสาว/น.ส. ไม่นับว่าชื่อไม่ตรง', ['ก', 'นางสาว ก', 'น.ส.ก', 'นาง ก'].map((d) => planBankImport([{ ...mrows[0], driver: d }], mvs, [], 'b').rows[0].warnings.length), [0, 0, 0, 0]);
+check('ชื่อต่างจริงยังเตือน', planBankImport([{ ...mrows[0], driver: 'นาย ข' }], mvs, [], 'b').rows[0].warnings.length, 1);
+check('ใบปะ: ด่านคนขับเปลี่ยนยังเข้ม (ชื่อในระบบต่างกัน = กันไว้)', buildPayslip([S('A-1', 'ก', 10)], [A('A-1', '0123456789', 'นาย ก')], 'b').hold.length, 1);
+check('ชื่อขึ้นต้นคล้ายคำนำหน้า ไม่ถูกตัด (Mrinal / Missy)', ['Mrinal', 'Missy'].map((d) => planBankImport([{ ...mrows[0], driver: d }], [V('A-1', 'inal')], [], 'b').rows[0].warnings.length), [1, 1]);
+check('Mr. ตามด้วยจุด/ช่องว่าง ตัดได้', planBankImport([{ ...mrows[0], driver: 'Mr. Somchai' }], [V('A-1', 'Somchai')], [], 'b').rows[0].warnings.length, 0);
+const B1 = (cellText: string, head = 'ธนาคาร / เลขบัญชี / สาขา') => { const w = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(w, XLSX.utils.aoa_to_sheet([['ทะเบียน', head], ['G-7', cellText]]), 's'); return parseBankSheets(XLSX.write(w, { type: 'buffer', bookType: 'xlsx' }))[0]; };
+check('เลข 9 หลัก + รหัสสาขาเว้นวรรค ห้ามต่อกันเป็น 10 หลัก', checkAccountNo(B1('กสิกร 123-4-56789 1').account).ok, false);
+check('ขีดยาว – ในคอลัมน์ธนาคาร อ่านได้', checkAccountNo(B1('กสิกรไทย 055–5–55555–5').account).ok, true);
+check('หัว "หมายเหตุ ตรวจเลขบัญชี" ไม่ถูกจับเป็นคอลัมน์เลขบัญชี', (() => { const w = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(w, XLSX.utils.aoa_to_sheet([['ทะเบียน', 'หมายเหตุ ตรวจเลขบัญชี', 'เลขบัญชี'], ['G-7', 'โทรแล้ว', '0555555555']]), 's'); const r = parseBankSheets(XLSX.write(w, { type: 'buffer', bookType: 'xlsx' }))[0]; return [r.account, r.note]; })(), ['0555555555', 'โทรแล้ว']);
+check('คอลัมน์ "หมายเหตุ" จริง ตัวเลขล้วนยังเก็บ (เบอร์โทร)', (() => { const w = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(w, XLSX.utils.aoa_to_sheet([['ทะเบียน', 'เลขบัญชี', 'หมายเหตุ'], ['G-7', '0555555555', '0812345678']]), 's'); return parseBankSheets(XLSX.write(w, { type: 'buffer', bookType: 'xlsx' }))[0].note; })(), '0812345678');
+const half = (local: number) => planBankImport([...Array.from({ length: local }, (_, i) => ({ ...mrows[0], sheet: 'k', plate: 'A-1', driver: 'ก' })), { ...mrows[0], sheet: 'k', plate: 'Z-1' }, { ...mrows[0], sheet: 'k', plate: 'Z-2' }, { ...mrows[0], sheet: 'k', plate: 'C-3', driver: 'นาย ค', account: '0222222222' }, { ...mrows[0], sheet: 'o', plate: 'X-9' }], mvs, [], 'b');
+check('ชีตที่ทะเบียนสาขานี้ครึ่งพอดี (นับไม่ซ้ำ) ยังนำเข้า', half(3).skippedSheets, ['o']);
+const tiny = planBankImport([{ ...mrows[0], sheet: 'เล็ก' }, ...['X-1', 'X-2', 'X-3', 'X-4'].map((p, i) => ({ ...mrows[0], sheet: 'ใหญ่', plate: p, account: '044444444' + i }))], mvs, [], 'b');
+check('ไฟล์สาขาอื่นที่มีชีตเล็กตรงสาขานี้ = เตือนเลือกสาขาผิด', [tiny.skippedSheets, /ตรวจว่าเลือกสาขาถูก/.test(tiny.rows[0].warnings.join())], [['ใหญ่'], true]);
+check('ไฟล์รวมปกติ (สาขานี้หลายคัน) ไม่เตือนเลือกสาขาผิด', mp.rows.some((r) => /เลือกสาขาถูก/.test(r.warnings.join())), false);
+
 console.log(`\nผ่าน ${pass}/${pass + fail}`);
 if (fail) process.exit(1);

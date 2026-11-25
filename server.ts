@@ -1979,7 +1979,7 @@ async function startServer() {
       if (apply && result.blocked) return res.status(422).json({ error: result.blocked });
       if (result.stale) return res.status(409).json({ error: 'ข้อมูลเปลี่ยนไประหว่างตรวจ — กดนำเข้าใหม่อีกครั้ง' });
       res.set('Cache-Control', 'no-store');
-      res.json({ rows: result.rows, blocked: result.blocked, saved: result.saved, expect: result.expect });
+      res.json({ rows: result.rows, blocked: result.blocked, skippedSheets: result.skippedSheets, saved: result.saved, expect: result.expect });
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
